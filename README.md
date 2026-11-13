@@ -27,6 +27,8 @@ Run `scripts/check-workflow.sh` for isolated state and persistence checks. It cr
 
 Prototype refinements use patch versions. Increment the build number for each distributed build; reserve minor versions for larger milestones.
 
+Run Product → Test in Xcode on a Simulator to check peek presentation across workflow sections. The UI test resets that Simulator’s demo messages.
+
 The checked-in Xcode project works directly. After adding source files, regenerate it with `python3 scripts/create-project.py`. Edit `Mailern/AppIcon.icon` in Icon Composer. Its three vector groups separate the rounded upper wing, rear wing, and body, with the upper wing in front. Xcode compiles the layered icon and its appearance variants directly from this file. Building the icon requires Xcode 26 or later.
 
 ## Remote development installation
