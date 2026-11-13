@@ -6,7 +6,7 @@ Open `Mailern.xcodeproj`, select the Mailern scheme and your device, then choose
 
 ## Try the workflow
 
-- Inbox’s Filter menu switches between All and Unread first. Read conversations stay visible in Unread first; pinned conversations remain first, followed by unread then read, newest first within each group. Other sections keep their existing order.
+- Inbox’s Filter button toggles between All and Unread first. Read conversations stay visible in Unread first; pinned conversations remain first, followed by unread then read, newest first within each group. Other sections keep their existing order.
 - Opening a conversation marks it read and keeps it in its current section.
 - Swipe left for Settle or Snooze. In Settled, swipe left to restore.
 - Swipe right for Read/Unread and Pin. A full right swipe toggles read status. Long press for more actions.
