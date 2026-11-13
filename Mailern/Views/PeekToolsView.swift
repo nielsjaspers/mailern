@@ -99,7 +99,7 @@ final class PeekToolsSurface: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func update(conversation: Conversation, expanded: Bool, offset: CGFloat) {
-        handle.accessibilityLabel = expanded ? "Show more message" : "Show tools"
+        handle.accessibilityLabel = expanded ? "Expand message preview" : "Show tools"
         top.constant = -offset
         if previous?.unread != conversation.unread || previous?.pinned != conversation.pinned || previous?.workflow != conversation.workflow {
             rebuild(conversation)
@@ -147,7 +147,7 @@ final class PeekToolsSurface: UIView {
         let button = UIButton(type: .system)
         var config = UIButton.Configuration.plain()
         config.image = UIImage(systemName: symbol)
-        config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: iconOnly ? 22 : 20)
+        config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: iconOnly ? 20 : 18)
         config.title = iconOnly ? nil : title
         config.imagePadding = 12
         config.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)

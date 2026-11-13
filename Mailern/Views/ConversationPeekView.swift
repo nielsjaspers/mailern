@@ -19,8 +19,9 @@ struct ConversationPeekView: View {
             let width = min(geometry.size.width - 32, 440)
             let menuHeight = min(toolsHeight, geometry.size.height * 0.5)
             let compactHeight = max(80, geometry.size.height - menuHeight - 48)
-            // Leave the grip and reply row visible beneath the tall preview.
-            let largeHeight = max(compactHeight, geometry.size.height - 92)
+            // Keep the grip and reply shortcuts visible, including above a home button.
+            let menuTeaser = max(60, 104 - geometry.safeAreaInsets.bottom)
+            let largeHeight = max(compactHeight, geometry.size.height - 32 - menuTeaser)
             let travel = largeHeight - compactHeight
             let maximum = travel + max(0, toolsHeight - menuHeight)
             let previewHeight = largeHeight - min(menuPosition, travel)
