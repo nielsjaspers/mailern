@@ -9,11 +9,15 @@ struct MailboxView: View {
     @State private var compose = false
     @State private var demo = false
     @State private var snoozing: Conversation?
+    @State private var peeking: Conversation?
+    @State private var paths: [Workflow: [UUID]] = [:]
     var body: some View {
         @Bindable var store = store
         TabView(selection: $selection) {
             ForEach(Workflow.allCases) { status in
-                NavigationStack {
+                NavigationStack(
+                    path: Binding(get: { paths[status, default: []] }, set: { paths[status] = $0 })
+                ) {
                     mailbox(status)
                         .safeAreaInset(edge: .bottom, spacing: 0) { undoBanner }
                         .navigationTitle(status.title)
@@ -59,6 +63,11 @@ struct MailboxView: View {
         .sheet(isPresented: $snoozeSettings) { NavigationStack { SnoozeSettingsView() } }
         .sheet(isPresented: $demo) { DemoView() }
         .sheet(item: $snoozing) { SnoozeView(id: $0.id) }
+        .sheet(item: $peeking) { conversation in
+            ConversationPeekView(id: conversation.id) {
+                paths[selection, default: []].append(conversation.id)
+            }
+        }
         .alert(
             "Demo storage",
             isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })
@@ -119,12 +128,13 @@ struct MailboxView: View {
                                     systemImage: conversation.pinned ? "pin.slash" : "pin"
                                 ) { act { store.togglePin(conversation.id) } }.tint(.orange)
                             }
-                            .contextMenu {
-                                Button("Restore to Inbox", systemImage: "tray") { store.move(conversation.id, to: .inbox) }
-                                Button("Snooze", systemImage: "clock") { snoozing = conversation }
-                                Button(conversation.pinned ? "Unpin" : "Pin", systemImage: "pin") { store.togglePin(conversation.id) }
-                                Button(conversation.unread ? "Mark read" : "Mark unread", systemImage: "envelope") { store.markRead(conversation.id, unread: !conversation.unread) }
-                            }
+                            .simultaneousGesture(
+                                LongPressGesture().onEnded { _ in
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                    peeking = conversation
+                                }
+                            )
+                            .accessibilityAction(named: "Peek") { peeking = conversation }
                     }
                 } header: {
                     Text(

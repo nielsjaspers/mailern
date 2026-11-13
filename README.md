@@ -9,7 +9,7 @@ Open `Mailern.xcodeproj`, select the Mailern scheme and your device, then choose
 - Inbox’s Filter button toggles between All and Unread first. Read conversations stay visible in Unread first; pinned conversations remain first, followed by unread then read, newest first within each group. Other sections keep their existing order.
 - Opening a conversation marks it read and keeps it in its current section.
 - Swipe left for Settle or Snooze. In Settled, swipe left to restore.
-- Swipe right for Read/Unread and Pin. A full right swipe toggles read status. Long press for more actions.
+- Swipe right for Read/Unread and Pin. A full right swipe toggles read status. Hold a conversation for a scrollable peek with Mark read/unread, Settle or Restore, Snooze, and Pin actions. Peeking leaves read status unchanged; Open enters the full conversation for replying.
 - Use the thread's Reply menu for Reply, Reply All, and Forward. Sending a reply adds a message and settles that conversation. New messages and forwards appear in Settled.
 - Use More → Demo at the top left to receive new mail, receive a reply to any conversation, or reset all demo data.
 - Snooze for one or three hours, this evening, tomorrow, next week, or a custom date. Options are sorted by return time; past evening times are hidden. Next week defaults to Monday at 09:00. Use Snooze settings in More or the snooze picker to change the presets. Settings persist across launches and only affect future snoozes. Expired snoozes return while the app is active, or when it next opens. The prototype does not run a background mail service or send notifications.
