@@ -2,19 +2,28 @@ import SwiftUI
 
 struct ConversationPeekView: View {
     @Environment(MailStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     let conversation: Conversation
     let onDismiss: () -> Void
     let onOpen: () -> Void
     let onCompose: (ComposeMode) -> Void
     let onSnooze: () -> Void
-    @State private var toolsHeight: CGFloat = 280
+    @State private var toolsHeight: CGFloat = 300
+    @State private var menuPosition: CGFloat = 0
+    @State private var dragOrigin: CGFloat?
     @AccessibilityFocusState private var previewFocused: Bool
 
     var body: some View {
         GeometryReader { geometry in
             let width = min(geometry.size.width - 32, 440)
-            let visibleToolsHeight = min(toolsHeight, geometry.size.height * 0.48)
-            let previewHeight = min(380, max(80, geometry.size.height - visibleToolsHeight - 48))
+            let menuHeight = min(toolsHeight, geometry.size.height * 0.5)
+            let compactHeight = max(80, geometry.size.height - menuHeight - 48)
+            // Leave the grip and reply row visible beneath the tall preview.
+            let largeHeight = max(compactHeight, geometry.size.height - 92)
+            let travel = largeHeight - compactHeight
+            let maximum = travel + max(0, toolsHeight - menuHeight)
+            let previewHeight = largeHeight - min(menuPosition, travel)
 
             ZStack(alignment: .top) {
                 Button(action: onDismiss) {
@@ -42,102 +51,73 @@ struct ConversationPeekView: View {
                         .accessibilityValue(conversation.unread ? "Unread" : "Read")
                         .accessibilityHint("Opens the conversation")
                         .accessibilityAction { onOpen() }
+                        .accessibilityAction(named: "Show tools") { animate { menuPosition = travel } }
                         .accessibilityFocused($previewFocused)
 
-                    ScrollView {
-                        tools
-                            .background {
-                                GeometryReader { content in
-                                    Color.clear.preference(key: PeekToolsHeight.self, value: content.size.height)
-                                }
+                    PeekToolsView(
+                        conversation: conversation,
+                        offset: max(0, menuPosition - travel),
+                        expanded: menuPosition >= travel,
+                        onToggle: { animate { menuPosition = menuPosition < travel ? travel : 0 } },
+                        onResize: { translation in
+                            if dragOrigin == nil { dragOrigin = menuPosition }
+                            menuPosition = min(maximum, max(0, (dragOrigin ?? 0) - translation))
+                        },
+                        onResizeEnd: { prediction in
+                            let destination = min(maximum, max(0, (dragOrigin ?? menuPosition) - prediction))
+                            dragOrigin = nil
+                            animate {
+                                menuPosition = destination < travel ? (destination > travel / 2 ? travel : 0) : destination
                             }
-                    }
-                    .scrollBounceBehavior(.basedOnSize)
-                    .frame(width: min(300, width * 0.78), height: visibleToolsHeight)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 28)
-                            .strokeBorder(.primary.opacity(0.12), lineWidth: 0.5)
-                            .allowsHitTesting(false)
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 28))
+                        },
+                        onHeight: { toolsHeight = $0 },
+                        onAction: perform
+                    )
+                    .frame(width: min(300, width * 0.78), height: menuHeight)
                     .shadow(color: .black.opacity(0.22), radius: 20, y: 8)
-                    .accessibilityIdentifier("peek-tools")
+                    .accessibilityScrollAction { edge in
+                        animate { menuPosition = min(maximum, max(0, menuPosition + (edge == .bottom ? 100 : -100))) }
+                    }
                 }
                 .frame(width: width)
                 .padding(.top, 16)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onPreferenceChange(PeekToolsHeight.self) { toolsHeight = $0 }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .onAppear {
+                if voiceOver { menuPosition = travel }
+                previewFocused = true
+            }
+            .onChange(of: maximum) { _, value in menuPosition = min(menuPosition, value) }
+            .onChange(of: geometry.size) { _, _ in
+                dragOrigin = nil
+                menuPosition = 0
+            }
         }
         .accessibilityAction(.escape, onDismiss)
-        .onAppear { previewFocused = true }
     }
 
-    private var tools: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                reply("Reply", symbol: "arrowshape.turn.up.left", mode: .reply(conversation.id))
-                reply("Reply All", symbol: "arrowshape.turn.up.left.2", mode: .replyAll(conversation.id))
-                reply("Forward", symbol: "arrowshape.turn.up.right", mode: .forward(conversation.id))
-            }
-            .padding(.horizontal, 10)
-            Divider().padding(.horizontal, 18)
-            action(conversation.unread ? "Mark read" : "Mark unread", symbol: conversation.unread ? "envelope.open" : "envelope.badge") {
-                onDismiss()
-                store.markRead(conversation.id, unread: !conversation.unread)
-            }
-            Divider().padding(.leading, 18)
-            action(conversation.workflow == .settled ? "Restore to Inbox" : "Settle", symbol: conversation.workflow == .settled ? "tray" : "checkmark") {
-                onDismiss()
-                store.move(conversation.id, to: conversation.workflow == .settled ? .inbox : .settled)
-            }
-            Divider().padding(.leading, 18)
-            action("Snooze", symbol: "clock", perform: onSnooze)
-            Divider().padding(.leading, 18)
-            action(conversation.pinned ? "Unpin" : "Pin", symbol: conversation.pinned ? "pin.slash" : "pin") {
-                onDismiss()
-                store.togglePin(conversation.id)
-            }
-            if conversation.workflow == .snoozed {
-                Divider().padding(.leading, 18)
-                action("Restore to Inbox", symbol: "tray") {
-                    onDismiss()
-                    store.move(conversation.id, to: .inbox)
-                }
-            }
+    private func animate(_ changes: () -> Void) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86), changes)
+    }
+
+    private func perform(_ tool: PeekTool) {
+        switch tool {
+        case .reply: onCompose(.reply(conversation.id))
+        case .replyAll: onCompose(.replyAll(conversation.id))
+        case .forward: onCompose(.forward(conversation.id))
+        case .snooze: onSnooze()
+        case .read:
+            onDismiss()
+            store.markRead(conversation.id, unread: !conversation.unread)
+        case .settle:
+            onDismiss()
+            store.move(conversation.id, to: conversation.workflow == .settled ? .inbox : .settled)
+        case .pin:
+            onDismiss()
+            store.togglePin(conversation.id)
+        case .restore:
+            onDismiss()
+            store.move(conversation.id, to: .inbox)
         }
-        .foregroundStyle(.primary)
     }
-
-    private func reply(_ title: String, symbol: String, mode: ComposeMode) -> some View {
-        Button { onCompose(mode) } label: {
-            Label(title, systemImage: symbol)
-                .labelStyle(.iconOnly)
-                .font(.system(size: 22))
-                .frame(maxWidth: .infinity, minHeight: 60)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func action(_ title: String, symbol: String, perform: @escaping () -> Void) -> some View {
-        Button(action: perform) {
-            HStack(spacing: 12) {
-                Image(systemName: symbol).frame(width: 24)
-                Text(title).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .font(.body)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 12)
-            .frame(minHeight: 48)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct PeekToolsHeight: PreferenceKey {
-    static var defaultValue: CGFloat = 280
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

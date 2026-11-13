@@ -173,6 +173,65 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
+    func testPeekMenuResizeAndHoldSelection() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        let subject = "Course project feedback"
+        peek(subject, in: app, expandTools: false)
+        let card = preview(in: app)
+        let largeHeight = card.frame.height
+        XCTAssertGreaterThan(largeHeight, app.frame.height * 0.7)
+        capture("Tall peek", in: app)
+
+        let handle = app.buttons["peek-menu-handle"]
+        let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -280)), withVelocity: .fast, thenHoldForDuration: 0.1)
+        XCTAssertLessThan(card.frame.height, largeHeight - 100)
+        expectUnread(subject, in: app)
+        capture("Revealed glass menu", in: app)
+        let compactHeight = card.frame.height
+        card.swipeUp()
+        XCTAssertEqual(card.frame.height, compactHeight, accuracy: 2)
+        expectUnread(subject, in: app)
+
+        let down = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        down.press(forDuration: 0.05, thenDragTo: down.withOffset(CGVector(dx: 0, dy: 280)), withVelocity: .fast, thenHoldForDuration: 0.1)
+        XCTAssertGreaterThan(card.frame.height, compactHeight + 100)
+        handle.tap()
+        XCTAssertEqual(card.frame.height, compactHeight, accuracy: 2)
+
+        let read = app.buttons["Mark read"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let unpin = app.buttons["Unpin"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        read.press(forDuration: 0.6, thenDragTo: unpin, withVelocity: .slow, thenHoldForDuration: 0.5)
+        waitForAbsence(card)
+        expectUnread(subject, in: app)
+        peek(subject, in: app)
+        XCTAssertTrue(app.buttons["Pin"].exists)
+
+        let cancel = app.buttons["Mark read"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        cancel.press(forDuration: 0.6, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.5)), withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertTrue(card.exists)
+        expectUnread(subject, in: app)
+        let reply = app.buttons["Reply"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let forward = app.buttons["Forward"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        reply.press(forDuration: 0.6, thenDragTo: forward, withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertTrue(app.navigationBars["Forward"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        waitForAbsence(app.navigationBars["Forward"])
+        expectUnread(subject, in: app)
+    }
+
+    @MainActor
+    private func capture(_ name: String, in app: XCUIApplication) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
     private func fullSwipe(_ element: XCUIElement, right: Bool) {
         let start = element.coordinate(withNormalizedOffset: CGVector(dx: right ? 0.02 : 0.98, dy: 0.5))
         let end = element.coordinate(withNormalizedOffset: CGVector(dx: right ? 0.98 : 0.02, dy: 0.5))
@@ -203,11 +262,12 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
-    private func peek(_ subject: String, in app: XCUIApplication) {
+    private func peek(_ subject: String, in app: XCUIApplication, expandTools: Bool = true) {
         let conversation = row(subject, in: app)
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
         conversation.press(forDuration: 0.8)
         XCTAssertTrue(preview(in: app).waitForExistence(timeout: 5))
+        if expandTools { app.buttons["peek-menu-handle"].tap() }
     }
 
     @MainActor
