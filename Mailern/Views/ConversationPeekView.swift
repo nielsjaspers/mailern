@@ -50,7 +50,7 @@ struct ConversationPeekView: View {
             }
         }
         .frame(width: 320)
-        .sheet(isPresented: $snooze) { SnoozeView(id: id, onSnooze: { presentedID = nil }) }
+        .sheet(isPresented: $snooze) { SnoozeView(id: id, beforeSnooze: { presentedID = nil }) }
     }
 
     private func action(_ title: String, symbol: String, perform: @escaping () -> Void) -> some View {
