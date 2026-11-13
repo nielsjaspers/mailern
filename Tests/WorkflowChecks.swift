@@ -3,6 +3,7 @@ import Foundation
 @main struct WorkflowChecks {
     @MainActor static func main() throws {
         try checkInboxOrder()
+        try checkSnoozeSettings()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = JSONPersistence(url: directory.appending(path: "demo.json"))
         let store = MailStore(persistence: disk)
@@ -82,6 +83,50 @@ import Foundation
         assert(store.conversation(newer.id)!.workflow == .inbox)
         assert(store.list(.settled, unreadFirst: true).map(\.subject) == ["Settled read", "Settled unread"])
         print("PASS: pinned precedence, unread-first ordering, arrival order, search, mark-read reorder, other sections unchanged")
+    }
+
+    @MainActor static func checkSnoozeSettings() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Amsterdam")!
+        func date(_ value: String) -> Date { ISO8601DateFormatter().date(from: value)! }
+        for minutes in [0, 90, 150, 540, 1080, 1439] {
+            assert(SnoozeSettings.clockMinutes(date: SnoozeSettings.clockDate(minutes: minutes)) == minutes)
+        }
+        let settings = SnoozeSettings()
+        let now = date("2026-11-13T15:18:00+01:00")
+        let options = settings.options(now: now, calendar: calendar)
+        assert(options.map(\.id) == [.shortDelay, .evening, .longDelay, .tomorrow, .nextWeek])
+        assert(options.first { $0.id == .evening }!.date == date("2026-11-13T18:00:00+01:00"))
+        assert(options.first { $0.id == .nextWeek }!.date == date("2026-11-16T09:00:00+01:00"))
+        assert(settings.options(now: date("2026-11-13T18:00:00+01:00"), calendar: calendar).allSatisfy { $0.id != .evening })
+        let monday = settings.options(now: date("2026-11-16T08:00:00+01:00"), calendar: calendar)
+        assert(monday.first { $0.id == .nextWeek }!.date == date("2026-11-23T09:00:00+01:00"))
+        let sunday = settings.options(now: date("2026-11-15T23:30:00+01:00"), calendar: calendar)
+        assert(sunday.first { $0.id == .nextWeek }!.date == date("2026-11-16T09:00:00+01:00"))
+        let spring = settings.options(now: date("2026-03-28T15:00:00+01:00"), calendar: calendar)
+        assert(spring.first { $0.id == .tomorrow }!.date == date("2026-03-29T09:00:00+02:00"))
+        let fall = settings.options(now: date("2026-10-24T15:00:00+02:00"), calendar: calendar)
+        assert(fall.first { $0.id == .tomorrow }!.date == date("2026-10-25T09:00:00+01:00"))
+        var custom = settings
+        custom.shortDelayMinutes = 240; custom.longDelayMinutes = 30
+        custom.eveningMinutes = 17 * 60; custom.tomorrowMinutes = 8 * 60 + 30
+        custom.nextWeekday = 4; custom.nextWeekMinutes = 10 * 60
+        let changed = custom.options(now: now, calendar: calendar)
+        assert(changed.map(\.id) == [.longDelay, .evening, .shortDelay, .tomorrow, .nextWeek])
+        assert(changed.first { $0.id == .tomorrow }!.date == date("2026-11-14T08:30:00+01:00"))
+        assert(changed.first { $0.id == .nextWeek }!.date == date("2026-11-18T10:00:00+01:00"))
+        assert(custom.options(now: now.addingTimeInterval(120), calendar: calendar).first { $0.id == .shortDelay }!.date == now.addingTimeInterval(120 + 240 * 60))
+        let suite = "mailern-snooze-check-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = SnoozePreferences(defaults: defaults)
+        preferences.settings = custom
+        assert(SnoozePreferences(defaults: defaults).settings == custom)
+        preferences.settings.shortDelayMinutes = 90
+        assert(SnoozePreferences(defaults: defaults).settings.shortDelayMinutes == 90)
+        preferences.settings = SnoozeSettings()
+        assert(SnoozePreferences(defaults: defaults).settings == settings)
+        print("PASS: chronological snoozes, expired evening, Monday/Sunday boundaries, DST, custom settings and persistence")
     }
 
 }

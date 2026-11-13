@@ -5,6 +5,7 @@ struct MailboxView: View {
     @State private var selection: Workflow = .inbox
     @State private var search = ""
     @AppStorage("inboxUnreadFirst") private var unreadFirst = false
+    @State private var snoozeSettings = false
     @State private var compose = false
     @State private var demo = false
     @State private var snoozing: Conversation?
@@ -19,7 +20,10 @@ struct MailboxView: View {
                         .searchable(text: $search, prompt: "Search this section")
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
-                                Button("Demo", systemImage: "ellipsis.circle") { demo = true }
+                                Menu {
+                                    Button("Demo", systemImage: "play.circle") { demo = true }
+                                    Button("Snooze settings", systemImage: "slider.horizontal.3") { snoozeSettings = true }
+                                } label: { Label("More", systemImage: "ellipsis.circle") }
                             }
                             ToolbarItem(placement: .topBarTrailing) {
                                 if status == .inbox {
@@ -46,6 +50,7 @@ struct MailboxView: View {
             }
         }
         .sheet(isPresented: $compose) { ComposerView(mode: .new) }
+        .sheet(isPresented: $snoozeSettings) { NavigationStack { SnoozeSettingsView() } }
         .sheet(isPresented: $demo) { DemoView() }
         .sheet(item: $snoozing) { SnoozeView(id: $0.id) }
         .alert("Demo storage", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {

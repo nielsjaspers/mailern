@@ -24,5 +24,5 @@ install = 'itms-services://?action=download-manifest&url='+quote(base+'/manifest
 <h1>Mailern</h1><p>Native iOS email workflow prototype. Fictional mail, local state.</p><a href="{html.escape(install)}">Install on iPhone</a>
 <p>Open in Safari with Tailscale connected. This development build requires an iPhone registered in the signing profile and Developer Mode enabled in Settings → Privacy &amp; Security.</p>
 <p>If iOS asks you to trust the developer, open Settings → General → VPN &amp; Device Management. Return to the Home Screen after accepting the install prompt.</p>
-<p>In the app, use Demo to simulate replies. Try the 10-second snooze to test automatic return.</p></html>''')
+<p>In the app, use Demo to simulate replies. Use Snooze settings to adjust return times.</p></html>''')
 print(base+'/')
