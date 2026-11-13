@@ -186,6 +186,7 @@ final class MailernUITests: XCTestCase {
         capture("Tall peek", in: app)
 
         let handle = app.buttons["peek-menu-handle"]
+        XCTAssertGreaterThanOrEqual(handle.frame.height, 44)
         let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -280)), withVelocity: .fast, thenHoldForDuration: 0.1)
         XCTAssertLessThan(card.frame.height, largeHeight - 100)

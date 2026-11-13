@@ -76,7 +76,7 @@ final class PeekToolsSurface: UIView {
         ])
         handle.accessibilityIdentifier = "peek-menu-handle"
         handle.addTarget(self, action: #selector(toggle), for: .touchUpInside)
-        handle.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        handle.heightAnchor.constraint(equalToConstant: 44).isActive = true
         let grip = UIView()
         grip.backgroundColor = .secondaryLabel
         grip.layer.cornerRadius = 2
