@@ -114,6 +114,72 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
+    func testPeekReadPinAndMailboxGestures() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        let subject = "Course project feedback"
+
+        peek(subject, in: app)
+        app.buttons["Mark read"].tap()
+        waitForAbsence(preview(in: app))
+        XCTAssertEqual(row(subject, in: app).value as? String, "Read")
+        peek(subject, in: app)
+        app.buttons["Mark unread"].tap()
+        waitForAbsence(preview(in: app))
+        expectUnread(subject, in: app)
+
+        peek(subject, in: app)
+        app.buttons["Unpin"].tap()
+        waitForAbsence(preview(in: app))
+        expectUnread(subject, in: app)
+        peek(subject, in: app)
+        app.buttons["Pin"].tap()
+        waitForAbsence(preview(in: app))
+        expectUnread(subject, in: app)
+        peek(subject, in: app)
+        XCTAssertTrue(app.buttons["Unpin"].exists)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.5)).tap()
+        waitForAbsence(preview(in: app))
+
+        row(subject, in: app).tap()
+        XCTAssertTrue(app.buttons["Reply"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertEqual(row(subject, in: app).value as? String, "Read")
+        fullSwipe(row(subject, in: app), right: true)
+        expectUnread(subject, in: app)
+        fullSwipe(row(subject, in: app), right: false)
+        waitForAbsence(row(subject, in: app))
+        select("Settled", in: app)
+        expectUnread(subject, in: app)
+
+        select("Inbox", in: app)
+        let thread = "Dinner on Saturday?"
+        for _ in 0..<3 where !row(thread, in: app).isHittable { app.swipeUp() }
+        peek(thread, in: app)
+        XCTAssertEqual(preview(in: app).value as? String, "Read")
+        XCTAssertTrue(app.staticTexts["· 3 messages"].exists)
+        let latest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Around 7?")).firstMatch
+        XCTAssertTrue(latest.exists)
+        for _ in 0..<4 where !preview(in: app).frame.contains(latest.frame) { preview(in: app).swipeUp() }
+        XCTAssertGreaterThan(latest.frame.width, 0)
+        XCTAssertTrue(preview(in: app).frame.contains(latest.frame))
+        XCTAssertEqual(preview(in: app).value as? String, "Read")
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Multi-message peek"
+        capture.lifetime = .keepAlways
+        add(capture)
+    }
+
+    @MainActor
+    private func fullSwipe(_ element: XCUIElement, right: Bool) {
+        let start = element.coordinate(withNormalizedOffset: CGVector(dx: right ? 0.02 : 0.98, dy: 0.5))
+        let end = element.coordinate(withNormalizedOffset: CGVector(dx: right ? 0.98 : 0.02, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0.1)
+    }
+
+    @MainActor
     private func preview(in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: "peek-preview").firstMatch
     }
