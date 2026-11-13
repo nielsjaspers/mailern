@@ -76,8 +76,13 @@ final class MailernUITests: XCTestCase {
         capture.lifetime = .keepAlways
         add(capture)
 
+        let body = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Hi Morgan,")).firstMatch
+        XCTAssertTrue(body.exists)
+        let bodyTop = body.frame.minY
         card.swipeUp()
         XCTAssertTrue(card.exists)
+        XCTAssertTrue(body.exists)
+        XCTAssertLessThan(body.frame.minY, bodyTop - 30)
         expectUnread(subject, in: app)
         let scrolled = XCTAttachment(screenshot: app.screenshot())
         scrolled.name = "Scrolled peek"

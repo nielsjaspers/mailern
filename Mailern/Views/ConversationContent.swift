@@ -11,7 +11,10 @@ struct ConversationContent: View {
                     Text(conversation.subject).font(.title2.bold()).textSelection(.enabled)
                     HStack {
                         Label(conversation.workflow.title, systemImage: conversation.workflow.symbol)
-                        Text("· \(conversation.account.name) · \(conversation.messages.count) messages")
+                        Text("· \(conversation.account.name)")
+                        if conversation.messages.count > 1 {
+                            Text("· \(conversation.messages.count) messages")
+                        }
                     }.font(.caption).foregroundStyle(.secondary)
                     if let date = conversation.snoozedUntil {
                         Label(
