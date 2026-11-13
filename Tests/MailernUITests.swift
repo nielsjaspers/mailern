@@ -11,48 +11,106 @@ final class MailernUITests: XCTestCase {
 
         peek(subject, in: app)
         app.buttons["Settle"].tap()
-        waitForAbsence(app.buttons["Open conversation"])
+        waitForAbsence(preview(in: app))
         XCTAssertFalse(row(subject, in: app).exists)
 
         select("Settled", in: app)
         expectUnread(subject, in: app)
         peek(subject, in: app)
         XCTAssertFalse(app.buttons["Settle"].exists)
-        app.buttons["Restore"].tap()
-        waitForAbsence(app.buttons["Open conversation"])
+        app.buttons["Restore to Inbox"].tap()
+        waitForAbsence(preview(in: app))
 
         select("Inbox", in: app)
         expectUnread(subject, in: app)
-        XCTAssertFalse(app.buttons["Open conversation"].exists)
+        XCTAssertFalse(preview(in: app).exists)
         peek(subject, in: app)
         app.buttons["Snooze"].tap()
         XCTAssertTrue(app.navigationBars["Snooze"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
-        XCTAssertTrue(app.buttons["Open conversation"].waitForExistence(timeout: 5))
+        XCTAssertTrue(preview(in: app).waitForExistence(timeout: 5))
         expectUnread(subject, in: app)
 
         confirmSnooze(in: app)
         XCTAssertFalse(row(subject, in: app).exists)
         select("Snoozed", in: app)
         expectUnread(subject, in: app)
-        XCTAssertFalse(app.buttons["Open conversation"].exists)
+        XCTAssertFalse(preview(in: app).exists)
 
         peek(subject, in: app)
         XCTAssertTrue(app.buttons["Restore to Inbox"].exists)
         confirmSnooze(in: app)
         expectUnread(subject, in: app)
-        XCTAssertFalse(app.buttons["Open conversation"].exists)
+        XCTAssertFalse(preview(in: app).exists)
 
         peek(subject, in: app)
         app.buttons["Settle"].tap()
-        waitForAbsence(app.buttons["Open conversation"])
+        waitForAbsence(preview(in: app))
         select("Settled", in: app)
         expectUnread(subject, in: app)
         peek(subject, in: app)
         confirmSnooze(in: app)
         select("Snoozed", in: app)
         expectUnread(subject, in: app)
-        XCTAssertFalse(app.buttons["Open conversation"].exists)
+        XCTAssertFalse(preview(in: app).exists)
+    }
+
+    @MainActor
+    func testPeekScrollTapAndReplyTools() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        let subject = "Course project feedback"
+        peek(subject, in: app)
+
+        let card = preview(in: app)
+        let replies = [app.buttons["Reply"], app.buttons["Reply All"], app.buttons["Forward"]]
+        XCTAssertLessThan(abs(replies[0].frame.midY - replies[1].frame.midY), 2)
+        XCTAssertLessThan(abs(replies[1].frame.midY - replies[2].frame.midY), 2)
+        XCTAssertLessThan(replies[0].frame.midX, replies[1].frame.midX)
+        XCTAssertLessThan(replies[1].frame.midX, replies[2].frame.midX)
+        XCTAssertLessThan(card.frame.height, app.frame.height * 0.7)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Custom peek and separate tools"
+        capture.lifetime = .keepAlways
+        add(capture)
+
+        card.swipeUp()
+        XCTAssertTrue(card.exists)
+        expectUnread(subject, in: app)
+        let scrolled = XCTAttachment(screenshot: app.screenshot())
+        scrolled.name = "Scrolled peek"
+        scrolled.lifetime = .keepAlways
+        add(scrolled)
+        card.tap()
+        waitForAbsence(card)
+        XCTAssertTrue(app.buttons["Reply"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertEqual(row(subject, in: app).value as? String, "Read")
+
+        for (action, title, prefix) in [("Reply", "Reply", "Re:"), ("Reply All", "Reply All", "Re:"), ("Forward", "Forward", "Fwd:")] {
+            peek(subject, in: app)
+            app.buttons[action].tap()
+            XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.textFields.matching(NSPredicate(format: "value == %@", "\(prefix) \(subject)")).firstMatch.exists)
+            if action == "Reply All" {
+                XCTAssertTrue(app.textFields.matching(NSPredicate(format: "value == %@", "coordinator@college.example.com")).firstMatch.exists)
+            }
+            app.buttons["Cancel"].tap()
+            waitForAbsence(app.navigationBars[title])
+            XCTAssertFalse(preview(in: app).exists)
+        }
+
+        peek(subject, in: app)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.5)).tap()
+        waitForAbsence(preview(in: app))
+        XCTAssertEqual(row(subject, in: app).value as? String, "Read")
+    }
+
+    @MainActor
+    private func preview(in app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: "peek-preview").firstMatch
     }
 
     @MainActor
@@ -78,12 +136,12 @@ final class MailernUITests: XCTestCase {
         let conversation = row(subject, in: app)
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
         conversation.press(forDuration: 0.8)
-        XCTAssertTrue(app.buttons["Open conversation"].waitForExistence(timeout: 5))
+        XCTAssertTrue(preview(in: app).waitForExistence(timeout: 5))
     }
 
     @MainActor
     private func expectUnread(_ subject: String, in app: XCUIApplication) {
-        let conversation = row(subject, in: app)
+        let conversation = preview(in: app).exists ? preview(in: app) : row(subject, in: app)
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
         XCTAssertEqual(conversation.value as? String, "Unread")
     }
@@ -101,7 +159,7 @@ final class MailernUITests: XCTestCase {
         XCTAssertTrue(option.waitForExistence(timeout: 5))
         option.tap()
         waitForAbsence(app.navigationBars["Snooze"])
-        waitForAbsence(app.buttons["Open conversation"])
+        waitForAbsence(preview(in: app))
     }
 
     @MainActor

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ConversationContent: View {
     let conversation: Conversation
+    var isPreview = false
 
     var body: some View {
         ScrollView {
@@ -21,6 +22,7 @@ struct ConversationContent: View {
                 }
                 ForEach(conversation.messages) { message in
                     VStack(alignment: .leading, spacing: 14) {
+                        if isPreview { Divider() }
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(message.sender).font(.subheadline.bold())
@@ -38,14 +40,14 @@ struct ConversationContent: View {
                         Text(.init(message.body)).font(.body).lineSpacing(5).textSelection(.enabled).frame(
                             maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(18)
+                    .padding(isPreview ? 0 : 18)
                     .background(
-                        message.outgoing
+                        isPreview ? Color.clear : message.outgoing
                             ? Color.teal.opacity(0.07) : Color(uiColor: .secondarySystemGroupedBackground),
                         in: RoundedRectangle(cornerRadius: 18))
                 }
             }.padding(18)
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(Color(uiColor: isPreview ? .secondarySystemGroupedBackground : .systemGroupedBackground))
     }
 }

@@ -6,7 +6,8 @@ struct MailboxView: View {
     @State private var search = ""
     @AppStorage("inboxUnreadFirst") private var unreadFirst = false
     @State private var snoozeSettings = false
-    @State private var compose = false
+    @State private var composer: ComposeMode?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var demo = false
     @State private var snoozing: Conversation?
     @State private var peeking: UUID?
@@ -49,7 +50,7 @@ struct MailboxView: View {
                                 }
                             }
                             ToolbarItem(placement: .topBarTrailing) {
-                                Button("Compose", systemImage: "square.and.pencil") { compose = true }
+                                Button("Compose", systemImage: "square.and.pencil") { composer = .new }
                             }
                         }
                         .navigationDestination(for: UUID.self) { ThreadView(id: $0) }
@@ -59,16 +60,38 @@ struct MailboxView: View {
                 .badge(status == .inbox ? store.list(.inbox).filter(\.unread).count : 0)
             }
         }
+        .blur(radius: peeking == nil ? 0 : 6)
+        .allowsHitTesting(peeking == nil)
+        .accessibilityHidden(peeking != nil)
+        .overlay {
+            if let id = peeking, let conversation = store.conversation(id) {
+                ConversationPeekView(
+                    conversation: conversation,
+                    onDismiss: { peeking = nil },
+                    onOpen: {
+                        peeking = nil
+                        paths[selection, default: []].append(id)
+                    },
+                    onCompose: { mode in
+                        peeking = nil
+                        composer = mode
+                    },
+                    onSnooze: { snoozing = conversation }
+                )
+                .transition(.opacity.combined(with: .scale(scale: reduceMotion ? 1 : 0.97)))
+            }
+        }
+        .animation(.easeOut(duration: reduceMotion ? 0 : 0.18), value: peeking)
         .onChange(of: selection) { _, _ in peeking = nil }
         .onChange(of: store.conversations) { _, conversations in
             if let id = peeking, !conversations.contains(where: { $0.id == id && $0.workflow == selection }) {
                 peeking = nil
             }
         }
-        .sheet(isPresented: $compose) { ComposerView(mode: .new) }
+        .sheet(item: $composer) { ComposerView(mode: $0) }
         .sheet(isPresented: $snoozeSettings) { NavigationStack { SnoozeSettingsView() } }
         .sheet(isPresented: $demo) { DemoView() }
-        .sheet(item: $snoozing) { SnoozeView(id: $0.id) }
+        .sheet(item: $snoozing) { SnoozeView(id: $0.id, beforeSnooze: { peeking = nil }) }
         .alert(
             "Demo storage",
             isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })
@@ -136,18 +159,6 @@ struct MailboxView: View {
                                 }
                             )
                             .accessibilityAction(named: "Peek") { peeking = conversation.id }
-                            .popover(
-                                isPresented: Binding(
-                                    get: { peeking == conversation.id && selection == status },
-                                    set: { if !$0 && peeking == conversation.id { peeking = nil } }
-                                ),
-                                attachmentAnchor: .point(.center)
-                            ) {
-                                ConversationPeekView(presentedID: $peeking, id: conversation.id) {
-                                    paths[status, default: []].append(conversation.id)
-                                }
-                                .presentationCompactAdaptation(.popover)
-                            }
                     }
                 } header: {
                     if status == .inbox {
