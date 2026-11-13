@@ -1,0 +1,97 @@
+{
+  "fill": {
+    "solid": "srgb:0.14118,0.12941,0.35686,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "upper-wing.svg",
+          "name": "Rounded upper wing",
+          "fill-specializations": [
+            {
+              "value": "automatic"
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "srgb:0.66275,0.72157,1.00000,1.00000"
+              }
+            }
+          ]
+        }
+      ],
+      "name": "Upper wing",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.3
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.05
+      }
+    },
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "body.svg",
+          "name": "Body and tail",
+          "fill-specializations": [
+            {
+              "value": "automatic"
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "srgb:0.94510,0.92549,0.88235,1.00000"
+              }
+            }
+          ]
+        }
+      ],
+      "name": "Body",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.2
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.05
+      }
+    },
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "rear-wing.svg",
+          "name": "Rear wing",
+          "fill-specializations": [
+            {
+              "value": "automatic"
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "srgb:0.45098,0.52549,0.78824,1.00000"
+              }
+            }
+          ]
+        }
+      ],
+      "name": "Rear wing",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.25
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.1
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

@@ -1,6 +1,6 @@
 # Mailern
 
-A native SwiftUI email workflow prototype for iPhone and iPad, with fictional mail across four accounts. Requires iOS 17 or later and Xcode 15 or later.
+A native SwiftUI email workflow prototype for iPhone and iPad, with fictional mail across four accounts. Requires iOS 17 or later and Xcode 26 or later.
 
 Open `Mailern.xcodeproj`, select the Mailern scheme and your device, then choose your development team under Signing & Capabilities and run. No packages or provider credentials are needed.
 
@@ -25,7 +25,7 @@ Messages and workflow state are saved as atomic JSON in the app's Application Su
 
 Run `scripts/check-workflow.sh` for isolated state and persistence checks. It creates a unique temporary data file, separate from the app's demo data.
 
-The checked-in Xcode project works directly. After adding source files, regenerate it with `python3 scripts/create-project.py`. The icon can be regenerated with `swift scripts/create-icon.swift`.
+The checked-in Xcode project works directly. After adding source files, regenerate it with `python3 scripts/create-project.py`. Edit `Mailern/AppIcon.icon` in Icon Composer. Its three vector groups separate the rounded upper wing, rear wing, and body, with the upper wing in front. Xcode compiles the layered icon and its appearance variants directly from this file. Building the icon requires Xcode 26 or later.
 
 ## Remote development installation
 
