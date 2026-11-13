@@ -25,6 +25,8 @@ Messages and workflow state are saved as atomic JSON in the app's Application Su
 
 Run `scripts/check-workflow.sh` for isolated state and persistence checks. It creates a unique temporary data file, separate from the app's demo data.
 
+Prototype refinements use patch versions. Increment the build number for each distributed build; reserve minor versions for larger milestones.
+
 The checked-in Xcode project works directly. After adding source files, regenerate it with `python3 scripts/create-project.py`. Edit `Mailern/AppIcon.icon` in Icon Composer. Its three vector groups separate the rounded upper wing, rear wing, and body, with the upper wing in front. Xcode compiles the layered icon and its appearance variants directly from this file. Building the icon requires Xcode 26 or later.
 
 ## Remote development installation
