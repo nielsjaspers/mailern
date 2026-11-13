@@ -3,14 +3,13 @@ import SwiftUI
 struct ConversationPeekView: View {
     @Environment(MailStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     let conversation: Conversation
     let onDismiss: () -> Void
     let onOpen: () -> Void
     let onCompose: (ComposeMode) -> Void
     let onSnooze: () -> Void
     @State private var toolsHeight: CGFloat = 300
-    @State private var menuPosition: CGFloat = 0
+    @State private var menuPosition: CGFloat?
     @State private var dragOrigin: CGFloat?
     @AccessibilityFocusState private var previewFocused: Bool
 
@@ -24,7 +23,8 @@ struct ConversationPeekView: View {
             let largeHeight = max(compactHeight, geometry.size.height - 32 - menuTeaser)
             let travel = largeHeight - compactHeight
             let maximum = travel + max(0, toolsHeight - menuHeight)
-            let previewHeight = largeHeight - min(menuPosition, travel)
+            let position = menuPosition ?? travel
+            let previewHeight = largeHeight - min(position, travel)
 
             ZStack(alignment: .top) {
                 Button(action: onDismiss) {
@@ -52,20 +52,20 @@ struct ConversationPeekView: View {
                         .accessibilityValue(conversation.unread ? "Unread" : "Read")
                         .accessibilityHint("Opens the conversation")
                         .accessibilityAction { onOpen() }
-                        .accessibilityAction(named: Text(menuPosition < travel ? "Show tools" : "Expand message preview")) {
-                            animate { menuPosition = menuPosition < travel ? travel : 0 }
+                        .accessibilityAction(named: Text(position < travel ? "Show tools" : "Expand message preview")) {
+                            animate { menuPosition = position < travel ? travel : 0 }
                         }
                         .accessibilityFocused($previewFocused)
 
                     PeekToolsView(
                         conversation: conversation,
-                        offset: max(0, menuPosition - travel),
+                        offset: max(0, position - travel),
                         onResize: { translation in
-                            if dragOrigin == nil { dragOrigin = menuPosition }
+                            if dragOrigin == nil { dragOrigin = position }
                             menuPosition = min(maximum, max(0, (dragOrigin ?? 0) - translation))
                         },
                         onResizeEnd: { prediction in
-                            let destination = min(maximum, max(0, (dragOrigin ?? menuPosition) - prediction))
+                            let destination = min(maximum, max(0, (dragOrigin ?? position) - prediction))
                             dragOrigin = nil
                             animate {
                                 menuPosition = destination < travel ? (destination > travel / 2 ? travel : 0) : destination
@@ -77,7 +77,7 @@ struct ConversationPeekView: View {
                     .frame(width: min(250, width), height: menuHeight)
                     .shadow(color: .black.opacity(0.22), radius: 20, y: 8)
                     .accessibilityScrollAction { edge in
-                        animate { menuPosition = min(maximum, max(0, menuPosition + (edge == .bottom ? 100 : -100))) }
+                        animate { menuPosition = min(maximum, max(0, position + (edge == .bottom ? 100 : -100))) }
                     }
                 }
                 .frame(width: width)
@@ -85,13 +85,14 @@ struct ConversationPeekView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .onAppear {
-                if voiceOver { menuPosition = travel }
                 previewFocused = true
             }
-            .onChange(of: maximum) { _, value in menuPosition = min(menuPosition, value) }
+            .onChange(of: maximum) { _, value in
+                if let menuPosition { self.menuPosition = min(menuPosition, value) }
+            }
             .onChange(of: geometry.size) { _, _ in
                 dragOrigin = nil
-                menuPosition = 0
+                menuPosition = nil
             }
         }
         .accessibilityAction(.escape, onDismiss)

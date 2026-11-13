@@ -198,10 +198,18 @@ final class MailernUITests: XCTestCase {
         app.launch()
         resetDemo(in: app)
         let subject = "Course project feedback"
-        peek(subject, in: app, expandTools: false)
+        peek(subject, in: app)
         let card = preview(in: app)
+        let compactHeight = card.frame.height
+        XCTAssertLessThan(compactHeight, app.frame.height * 0.7)
+        for title in ["Mark read", "Settle", "Snooze", "Unpin"] {
+            XCTAssertTrue(app.frame.contains(app.buttons[title].frame))
+        }
+        capture("Compact peek by default", in: app)
+        dragMenu(280, in: app)
         let largeHeight = card.frame.height
         XCTAssertGreaterThan(largeHeight, app.frame.height * 0.7)
+        XCTAssertGreaterThan(largeHeight, compactHeight + 100)
         capture("Tall peek", in: app)
         for title in ["Reply", "Reply All", "Forward"] {
             XCTAssertLessThanOrEqual(app.buttons[title].frame.maxY, app.frame.maxY)
@@ -214,13 +222,11 @@ final class MailernUITests: XCTestCase {
         app.buttons["Cancel"].tap()
         waitForAbsence(app.navigationBars["Reply"])
         expectUnread(subject, in: app)
-        peek(subject, in: app, expandTools: false)
-        dragMenu(-280, in: app)
-        XCTAssertLessThan(card.frame.height, largeHeight - 100)
+        peek(subject, in: app)
+        XCTAssertEqual(card.frame.height, compactHeight, accuracy: 2)
         XCTAssertFalse(app.navigationBars["Reply"].exists)
         expectUnread(subject, in: app)
         capture("Apple Mail style tools", in: app)
-        let compactHeight = card.frame.height
         card.swipeUp()
         XCTAssertEqual(card.frame.height, compactHeight, accuracy: 2)
         expectUnread(subject, in: app)
@@ -228,6 +234,9 @@ final class MailernUITests: XCTestCase {
         dragMenu(280, in: app)
         XCTAssertGreaterThan(card.frame.height, compactHeight + 100)
         expectUnread(subject, in: app)
+        dragMenu(-280, in: app)
+        XCTAssertEqual(card.frame.height, compactHeight, accuracy: 2)
+        dragMenu(280, in: app)
         // Reply shortcuts remain usable before revealing the other tools.
         app.buttons["Forward"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.navigationBars["Forward"].waitForExistence(timeout: 5))
@@ -286,12 +295,11 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
-    private func peek(_ subject: String, in app: XCUIApplication, expandTools: Bool = true) {
+    private func peek(_ subject: String, in app: XCUIApplication) {
         let conversation = row(subject, in: app)
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
         conversation.press(forDuration: 0.8)
         XCTAssertTrue(preview(in: app).waitForExistence(timeout: 5))
-        if expandTools { dragMenu(-280, in: app) }
     }
 
     @MainActor
