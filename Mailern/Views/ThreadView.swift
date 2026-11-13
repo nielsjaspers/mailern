@@ -51,19 +51,19 @@ struct ThreadView: View {
                         } label: { Label("More actions", systemImage: "ellipsis.circle") }
                     }
                     ToolbarItemGroup(placement: .bottomBar) {
-                        Menu {
-                            Button("Reply") { mode = .reply(id) }
-                            Button("Reply All") { mode = .replyAll(id) }
-                            Button("Forward") { mode = .forward(id) }
-                        } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
-                        Spacer()
-                        Button("Snooze", systemImage: "clock") { snooze = true }
-                        Spacer()
                         Button(c.workflow == .settled ? "Restore" : "Settle", systemImage: c.workflow == .settled ? "tray" : "checkmark") {
                             store.move(id, to: c.workflow == .settled ? .inbox : .settled)
                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                             dismiss()
                         }
+                        Spacer()
+                        Button("Snooze", systemImage: "clock") { snooze = true }
+                        Spacer()
+                        Menu {
+                            Button("Reply") { mode = .reply(id) }
+                            Button("Reply All") { mode = .replyAll(id) }
+                            Button("Forward") { mode = .forward(id) }
+                        } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
                     }
                 }
             } else { ContentUnavailableView("Conversation unavailable", systemImage: "envelope") }

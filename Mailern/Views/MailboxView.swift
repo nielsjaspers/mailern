@@ -4,6 +4,7 @@ struct MailboxView: View {
     @Environment(MailStore.self) private var store
     @State private var selection: Workflow = .inbox
     @State private var search = ""
+    @AppStorage("inboxUnreadFirst") private var unreadFirst = false
     @State private var compose = false
     @State private var demo = false
     @State private var snoozing: Conversation?
@@ -19,6 +20,19 @@ struct MailboxView: View {
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
                                 Button("Demo", systemImage: "ellipsis.circle") { demo = true }
+                            }
+                            ToolbarItem(placement: .topBarTrailing) {
+                                if status == .inbox {
+                                    Menu {
+                                        Picker("Inbox order", selection: $unreadFirst) {
+                                            Text("All").tag(false)
+                                            Text("Unread first").tag(true)
+                                        }
+                                    } label: {
+                                        Label("Filter", systemImage: unreadFirst ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                                    }
+                                    .accessibilityValue(unreadFirst ? "Unread first" : "All")
+                                }
                             }
                             ToolbarItem(placement: .topBarTrailing) {
                                 Button("Compose", systemImage: "square.and.pencil") { compose = true }
@@ -51,7 +65,7 @@ struct MailboxView: View {
             }
         }
     private func mailbox(_ status: Workflow) -> some View {
-        let items = store.list(status, search: search)
+        let items = store.list(status, search: search, unreadFirst: unreadFirst)
         return List {
             if !items.isEmpty {
                 Section {
@@ -66,9 +80,9 @@ struct MailboxView: View {
                                     Button("Restore", systemImage: "tray") { act { store.move(conversation.id, to: .inbox) } }.tint(.blue)
                                 }
                             }
-                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                Button(conversation.unread ? "Read" : "Unread", systemImage: conversation.unread ? "envelope.open" : "envelope.badge") { act { store.markRead(conversation.id, unread: !conversation.unread) } }.tint(.blue)
                                 Button(conversation.pinned ? "Unpin" : "Pin", systemImage: conversation.pinned ? "pin.slash" : "pin") { act { store.togglePin(conversation.id) } }.tint(.orange)
-                                Button(conversation.unread ? "Read" : "Unread", systemImage: conversation.unread ? "envelope.open" : "envelope.badge") { store.markRead(conversation.id, unread: !conversation.unread) }.tint(.blue)
                             }
                             .contextMenu {
                                 Button("Restore to Inbox", systemImage: "tray") { store.move(conversation.id, to: .inbox) }

@@ -2,6 +2,7 @@ import Foundation
 
 @main struct WorkflowChecks {
     @MainActor static func main() throws {
+        try checkInboxOrder()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = JSONPersistence(url: directory.appending(path: "demo.json"))
         let store = MailStore(persistence: disk)
@@ -53,4 +54,34 @@ import Foundation
         assert(store.error == nil)
         print("PASS: read/workflow independence, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
     }
+    @MainActor static func checkInboxOrder() throws {
+        struct FixturePersistence: ConversationPersistence {
+            let items: [Conversation]
+            func load() throws -> [Conversation]? { items }
+            func save(_ conversations: [Conversation]) throws {}
+        }
+        let now = Date.now
+        func item(_ subject: String, minutes: Double, unread: Bool, pinned: Bool = false, workflow: Workflow = .inbox) -> Conversation {
+            Conversation(accountID: "icloud", subject: subject, workflow: workflow, unread: unread, pinned: pinned,
+                         messages: [MailMessage(sender: "Sender", address: "sender@example.com", to: ["reader@example.com"], date: now.addingTimeInterval(-minutes * 60), body: "Example message")])
+        }
+        let store = MailStore(persistence: FixturePersistence(items: [
+            item("Read newest", minutes: 1, unread: false),
+            item("Unread older", minutes: 20, unread: true),
+            item("Read pinned", minutes: 30, unread: false, pinned: true),
+            item("Unread newer", minutes: 10, unread: true),
+            item("Settled read", minutes: 1, unread: false, workflow: .settled),
+            item("Settled unread", minutes: 20, unread: true, workflow: .settled)
+        ]))
+        assert(store.list(.inbox).map(\.subject) == ["Read pinned", "Read newest", "Unread newer", "Unread older"])
+        assert(store.list(.inbox, unreadFirst: true).map(\.subject) == ["Read pinned", "Unread newer", "Unread older", "Read newest"])
+        assert(store.list(.inbox, search: "older", unreadFirst: true).map(\.subject) == ["Unread older"])
+        let newer = store.list(.inbox).first { $0.subject == "Unread newer" }!
+        store.markRead(newer.id)
+        assert(store.list(.inbox, unreadFirst: true).map(\.subject) == ["Read pinned", "Unread older", "Read newest", "Unread newer"])
+        assert(store.conversation(newer.id)!.workflow == .inbox)
+        assert(store.list(.settled, unreadFirst: true).map(\.subject) == ["Settled read", "Settled unread"])
+        print("PASS: pinned precedence, unread-first ordering, arrival order, search, mark-read reorder, other sections unchanged")
+    }
+
 }
