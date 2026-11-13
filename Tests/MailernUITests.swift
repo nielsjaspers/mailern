@@ -2,6 +2,25 @@ import XCTest
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testPeekMenuTouchCancellation() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        let subject = "Course project feedback"
+        peek(subject, in: app)
+        let read = app.buttons["Mark read"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let outside = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: app.frame.maxX - 5, dy: app.buttons["Mark read"].frame.midY))
+        read.press(forDuration: 0.8, thenDragTo: outside, withVelocity: .fast, thenHoldForDuration: 0.2)
+        XCTAssertTrue(preview(in: app).exists)
+        expectUnread(subject, in: app)
+        capture("Menu after cancelled touch", in: app)
+        app.buttons["Mark read"].tap()
+        waitForAbsence(preview(in: app))
+        XCTAssertEqual(row(subject, in: app).value as? String, "Read")
+    }
+
+    @MainActor
     func testPeekWorkflowPresentation() {
         continueAfterFailure = false
         let app = XCUIApplication()
