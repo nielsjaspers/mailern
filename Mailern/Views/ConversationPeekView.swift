@@ -2,70 +2,65 @@ import SwiftUI
 
 struct ConversationPeekView: View {
     @Environment(MailStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
+    @Binding var presentedID: UUID?
     let id: UUID
     let onOpen: () -> Void
     @State private var snooze = false
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let conversation = store.conversation(id) {
+        Group {
+            if let conversation = store.conversation(id) {
+                VStack(spacing: 0) {
                     ConversationContent(conversation: conversation)
-                        .toolbar {
-                            ToolbarItemGroup(placement: .bottomBar) {
-                                Button(
-                                    conversation.unread ? "Mark read" : "Mark unread",
-                                    systemImage: conversation.unread ? "envelope.open" : "envelope.badge"
-                                ) {
-                                    store.markRead(id, unread: !conversation.unread)
-                                    dismiss()
-                                }
-                                Spacer()
-                                if conversation.workflow != .settled {
-                                    Button("Settle", systemImage: "checkmark") {
-                                        store.move(id, to: .settled)
-                                        dismiss()
-                                    }
-                                    Spacer()
-                                }
-                                if conversation.workflow != .inbox {
-                                    Button("Restore to Inbox", systemImage: "tray") {
-                                        store.move(id, to: .inbox)
-                                        dismiss()
-                                    }
-                                    Spacer()
-                                }
-                                Button("Snooze", systemImage: "clock") { snooze = true }
-                                Spacer()
-                                Button(
-                                    conversation.pinned ? "Unpin" : "Pin",
-                                    systemImage: conversation.pinned ? "pin.slash" : "pin"
-                                ) {
-                                    store.togglePin(id)
-                                    dismiss()
-                                }
+                        .frame(minHeight: 100, idealHeight: 220, maxHeight: 220)
+                    Divider()
+                    VStack(spacing: 0) {
+                        action("Open conversation", symbol: "envelope.open") {
+                            presentedID = nil
+                            onOpen()
+                        }
+                        Divider()
+                        HStack(spacing: 0) {
+                            action(conversation.unread ? "Mark read" : "Mark unread", symbol: conversation.unread ? "envelope.open" : "envelope.badge") {
+                                presentedID = nil
+                                store.markRead(id, unread: !conversation.unread)
+                            }
+                            action(conversation.workflow == .settled ? "Restore" : "Settle", symbol: conversation.workflow == .settled ? "tray" : "checkmark") {
+                                presentedID = nil
+                                store.move(id, to: conversation.workflow == .settled ? .inbox : .settled)
                             }
                         }
-                } else {
-                    ContentUnavailableView("Conversation unavailable", systemImage: "envelope")
-                }
-            }
-            .navigationTitle("Peek")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Open") {
-                        dismiss()
-                        onOpen()
+                        HStack(spacing: 0) {
+                            action("Snooze", symbol: "clock") { snooze = true }
+                            action(conversation.pinned ? "Unpin" : "Pin", symbol: conversation.pinned ? "pin.slash" : "pin") {
+                                presentedID = nil
+                                store.togglePin(id)
+                            }
+                        }
+                        if conversation.workflow == .snoozed {
+                            action("Restore to Inbox", symbol: "tray") {
+                                presentedID = nil
+                                store.move(id, to: .inbox)
+                            }
+                        }
                     }
-                    .disabled(store.conversation(id) == nil)
                 }
+            } else {
+                ContentUnavailableView("Conversation unavailable", systemImage: "envelope")
             }
         }
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
-        .sheet(isPresented: $snooze) { SnoozeView(id: id, onSnooze: { dismiss() }) }
+        .frame(width: 320)
+        .sheet(isPresented: $snooze) { SnoozeView(id: id, onSnooze: { presentedID = nil }) }
+    }
+
+    private func action(_ title: String, symbol: String, perform: @escaping () -> Void) -> some View {
+        Button(action: perform) {
+            Label(title, systemImage: symbol)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
     }
 }

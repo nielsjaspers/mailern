@@ -9,7 +9,7 @@ struct MailboxView: View {
     @State private var compose = false
     @State private var demo = false
     @State private var snoozing: Conversation?
-    @State private var peeking: Conversation?
+    @State private var peeking: UUID?
     @State private var paths: [Workflow: [UUID]] = [:]
     var body: some View {
         @Bindable var store = store
@@ -59,15 +59,16 @@ struct MailboxView: View {
                 .badge(status == .inbox ? store.list(.inbox).filter(\.unread).count : 0)
             }
         }
+        .onChange(of: selection) { _, _ in peeking = nil }
+        .onChange(of: store.conversations) { _, conversations in
+            if let id = peeking, !conversations.contains(where: { $0.id == id && $0.workflow == selection }) {
+                peeking = nil
+            }
+        }
         .sheet(isPresented: $compose) { ComposerView(mode: .new) }
         .sheet(isPresented: $snoozeSettings) { NavigationStack { SnoozeSettingsView() } }
         .sheet(isPresented: $demo) { DemoView() }
         .sheet(item: $snoozing) { SnoozeView(id: $0.id) }
-        .sheet(item: $peeking) { conversation in
-            ConversationPeekView(id: conversation.id) {
-                paths[selection, default: []].append(conversation.id)
-            }
-        }
         .alert(
             "Demo storage",
             isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })
@@ -131,17 +132,30 @@ struct MailboxView: View {
                             .simultaneousGesture(
                                 LongPressGesture().onEnded { _ in
                                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                    peeking = conversation
+                                    peeking = conversation.id
                                 }
                             )
-                            .accessibilityAction(named: "Peek") { peeking = conversation }
+                            .accessibilityAction(named: "Peek") { peeking = conversation.id }
+                            .popover(
+                                isPresented: Binding(
+                                    get: { peeking == conversation.id && selection == status },
+                                    set: { if !$0 && peeking == conversation.id { peeking = nil } }
+                                ),
+                                attachmentAnchor: .point(.center)
+                            ) {
+                                ConversationPeekView(presentedID: $peeking, id: conversation.id) {
+                                    paths[status, default: []].append(conversation.id)
+                                }
+                                .presentationCompactAdaptation(.popover)
+                            }
                     }
                 } header: {
-                    Text(
-                        status == .inbox
-                            ? "\(items.filter(\.unread).count) unread" : "\(items.count) conversations"
-                    )
-                    .textCase(nil)
+                    if status == .inbox {
+                        let unreadCount = items.filter(\.unread).count
+                        if unreadCount > 0 { Text("\(unreadCount) unread").textCase(nil) }
+                    } else {
+                        Text("\(items.count) conversations").textCase(nil)
+                    }
                 }
             }
             .listStyle(.plain)
