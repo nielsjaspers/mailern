@@ -19,8 +19,8 @@ struct ConversationPeekView: View {
             let width = min(geometry.size.width - 32, 440)
             let menuHeight = min(toolsHeight, geometry.size.height * 0.5)
             let compactHeight = max(80, geometry.size.height - menuHeight - 48)
-            // Keep the grip and reply shortcuts visible, including above a home button.
-            let menuTeaser = max(60, 104 - geometry.safeAreaInsets.bottom)
+            // Keep the reply shortcuts visible while the remaining actions sit below the screen.
+            let menuTeaser = max(44, 84 - geometry.safeAreaInsets.bottom)
             let largeHeight = max(compactHeight, geometry.size.height - 32 - menuTeaser)
             let travel = largeHeight - compactHeight
             let maximum = travel + max(0, toolsHeight - menuHeight)
@@ -52,14 +52,14 @@ struct ConversationPeekView: View {
                         .accessibilityValue(conversation.unread ? "Unread" : "Read")
                         .accessibilityHint("Opens the conversation")
                         .accessibilityAction { onOpen() }
-                        .accessibilityAction(named: "Show tools") { animate { menuPosition = travel } }
+                        .accessibilityAction(named: Text(menuPosition < travel ? "Show tools" : "Expand message preview")) {
+                            animate { menuPosition = menuPosition < travel ? travel : 0 }
+                        }
                         .accessibilityFocused($previewFocused)
 
                     PeekToolsView(
                         conversation: conversation,
                         offset: max(0, menuPosition - travel),
-                        expanded: menuPosition >= travel,
-                        onToggle: { animate { menuPosition = menuPosition < travel ? travel : 0 } },
                         onResize: { translation in
                             if dragOrigin == nil { dragOrigin = menuPosition }
                             menuPosition = min(maximum, max(0, (dragOrigin ?? 0) - translation))
@@ -74,7 +74,7 @@ struct ConversationPeekView: View {
                         onHeight: { toolsHeight = $0 },
                         onAction: perform
                     )
-                    .frame(width: min(300, width * 0.78), height: menuHeight)
+                    .frame(width: min(250, width), height: menuHeight)
                     .shadow(color: .black.opacity(0.22), radius: 20, y: 8)
                     .accessibilityScrollAction { edge in
                         animate { menuPosition = min(maximum, max(0, menuPosition + (edge == .bottom ? 100 : -100))) }

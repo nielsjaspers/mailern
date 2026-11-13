@@ -1,16 +1,12 @@
 import SwiftUI
 
-// The preview needs its own scroll view, so its menu uses public glass rendering
-// and native control/gesture cancellation rather than UIKit's modal context-menu presenter.
-enum PeekTool: Hashable {
+enum PeekTool {
     case reply, replyAll, forward, read, settle, snooze, pin, restore
 }
 
 struct PeekToolsView: UIViewRepresentable {
     let conversation: Conversation
     let offset: CGFloat
-    let expanded: Bool
-    let onToggle: () -> Void
     let onResize: (CGFloat) -> Void
     let onResizeEnd: (CGFloat) -> Void
     let onHeight: (CGFloat) -> Void
@@ -19,35 +15,32 @@ struct PeekToolsView: UIViewRepresentable {
     func makeUIView(context: Context) -> PeekToolsSurface { PeekToolsSurface() }
 
     func updateUIView(_ view: PeekToolsSurface, context: Context) {
-        view.onToggle = onToggle
         view.onResize = onResize
         view.onResizeEnd = onResizeEnd
         view.onHeight = onHeight
         view.onAction = onAction
-        view.update(conversation: conversation, expanded: expanded, offset: offset)
+        view.update(conversation: conversation, offset: offset)
     }
 }
 
+// UIKit's context-menu preview is noninteractive. Keep the scrollable preview
+// separate, while using native controls and glass for its companion actions.
 final class PeekToolsSurface: UIView {
-    var onToggle: () -> Void = {}
     var onResize: (CGFloat) -> Void = { _ in }
     var onResizeEnd: (CGFloat) -> Void = { _ in }
     var onHeight: (CGFloat) -> Void = { _ in }
     var onAction: (PeekTool) -> Void = { _ in }
     private let stack = UIStackView()
-    private let handle = UIButton(type: .system)
     private var top: NSLayoutConstraint!
-    private var buttons: [PeekTool: UIButton] = [:]
-    private var selected: PeekTool?
     private var previous: Conversation?
     private var measuredHeight: CGFloat = 0
-    private let feedback = UISelectionFeedbackGenerator()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         accessibilityIdentifier = "peek-tools"
         shouldGroupAccessibilityChildren = true
-        layer.cornerRadius = 28
+        layer.cornerRadius = 32
+        layer.cornerCurve = .continuous
         clipsToBounds = true
         let effect: UIVisualEffect
         if #available(iOS 26, *) {
@@ -71,35 +64,15 @@ final class PeekToolsSurface: UIView {
         background.contentView.addSubview(stack)
         top = stack.topAnchor.constraint(equalTo: background.contentView.topAnchor)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: background.contentView.leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(equalTo: background.contentView.trailingAnchor, constant: -8), top
+            stack.leadingAnchor.constraint(equalTo: background.contentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: background.contentView.trailingAnchor), top
         ])
-        handle.accessibilityIdentifier = "peek-menu-handle"
-        handle.addTarget(self, action: #selector(toggle), for: .touchUpInside)
-        handle.heightAnchor.constraint(equalToConstant: 44).isActive = true
-        let grip = UIView()
-        grip.backgroundColor = .secondaryLabel
-        grip.layer.cornerRadius = 2
-        grip.isUserInteractionEnabled = false
-        grip.translatesAutoresizingMaskIntoConstraints = false
-        handle.addSubview(grip)
-        NSLayoutConstraint.activate([
-            grip.widthAnchor.constraint(equalToConstant: 32), grip.heightAnchor.constraint(equalToConstant: 4),
-            grip.centerXAnchor.constraint(equalTo: handle.centerXAnchor), grip.centerYAnchor.constraint(equalTo: handle.centerYAnchor)
-        ])
-        let hold = UILongPressGestureRecognizer(target: self, action: #selector(track(_:)))
-        hold.minimumPressDuration = 0.3
-        hold.allowableMovement = 12
-        addGestureRecognizer(hold)
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(resize(_:)))
-        pan.require(toFail: hold)
-        addGestureRecognizer(pan)
+        addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(resize(_:))))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(conversation: Conversation, expanded: Bool, offset: CGFloat) {
-        handle.accessibilityLabel = expanded ? "Expand message preview" : "Show tools"
+    func update(conversation: Conversation, offset: CGFloat) {
         top.constant = -offset
         if previous?.unread != conversation.unread || previous?.pinned != conversation.pinned || previous?.workflow != conversation.workflow {
             rebuild(conversation)
@@ -111,9 +84,9 @@ final class PeekToolsSurface: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let height = stack.systemLayoutSizeFitting(
-            CGSize(width: max(0, bounds.width - 16), height: UIView.layoutFittingCompressedSize.height),
+            CGSize(width: bounds.width, height: UIView.layoutFittingCompressedSize.height),
             withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel
-        ).height + 10
+        ).height
         if abs(height - measuredHeight) > 0.5 {
             measuredHeight = height
             DispatchQueue.main.async { [weak self] in self?.onHeight(height) }
@@ -121,58 +94,97 @@ final class PeekToolsSurface: UIView {
     }
 
     private func rebuild(_ conversation: Conversation) {
-        select(nil)
         for view in stack.arrangedSubviews { stack.removeArrangedSubview(view); view.removeFromSuperview() }
-        buttons = [:]
-        stack.addArrangedSubview(handle)
         let replies = UIStackView(arrangedSubviews: [
-            button(.reply, "Reply", "arrowshape.turn.up.left", iconOnly: true),
-            button(.replyAll, "Reply All", "arrowshape.turn.up.left.2", iconOnly: true),
-            button(.forward, "Forward", "arrowshape.turn.up.right", iconOnly: true)
+            reply(.reply, "Reply", "arrowshape.turn.up.left"),
+            reply(.replyAll, "Reply All", "arrowshape.turn.up.left.2"),
+            reply(.forward, "Forward", "arrowshape.turn.up.right")
         ])
         replies.distribution = .fillEqually
-        stack.addArrangedSubview(replies)
-        let divider = UIView()
-        divider.backgroundColor = .separator
-        divider.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
-        stack.addArrangedSubview(divider)
-        stack.addArrangedSubview(button(.read, conversation.unread ? "Mark read" : "Mark unread", conversation.unread ? "envelope.open" : "envelope.badge"))
-        stack.addArrangedSubview(button(.settle, conversation.workflow == .settled ? "Restore to Inbox" : "Settle", conversation.workflow == .settled ? "tray" : "checkmark"))
-        stack.addArrangedSubview(button(.snooze, "Snooze", "clock"))
-        stack.addArrangedSubview(button(.pin, conversation.pinned ? "Unpin" : "Pin", conversation.pinned ? "pin.slash" : "pin"))
-        if conversation.workflow == .snoozed { stack.addArrangedSubview(button(.restore, "Restore to Inbox", "tray")) }
+        let header = UIView()
+        replies.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(replies)
+        NSLayoutConstraint.activate([
+            replies.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 8),
+            replies.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -8),
+            replies.topAnchor.constraint(equalTo: header.topAnchor, constant: 17),
+            replies.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -16)
+        ])
+        stack.addArrangedSubview(header)
+        let separator = UIView()
+        let line = UIView()
+        line.backgroundColor = .separator
+        line.translatesAutoresizingMaskIntoConstraints = false
+        separator.addSubview(line)
+        NSLayoutConstraint.activate([
+            line.leadingAnchor.constraint(equalTo: separator.leadingAnchor, constant: 24),
+            line.trailingAnchor.constraint(equalTo: separator.trailingAnchor, constant: -24),
+            line.topAnchor.constraint(equalTo: separator.topAnchor),
+            line.heightAnchor.constraint(equalToConstant: 0.5),
+            line.bottomAnchor.constraint(equalTo: separator.bottomAnchor, constant: -10)
+        ])
+        stack.addArrangedSubview(separator)
+        stack.addArrangedSubview(row(.read, conversation.unread ? "Mark read" : "Mark unread", conversation.unread ? "envelope.open" : "envelope.badge"))
+        stack.addArrangedSubview(row(.settle, conversation.workflow == .settled ? "Restore to Inbox" : "Settle", conversation.workflow == .settled ? "tray" : "checkmark"))
+        stack.addArrangedSubview(row(.snooze, "Snooze", "clock"))
+        stack.addArrangedSubview(row(.pin, conversation.pinned ? "Unpin" : "Pin", conversation.pinned ? "pin.slash" : "pin"))
+        if conversation.workflow == .snoozed { stack.addArrangedSubview(row(.restore, "Restore to Inbox", "tray")) }
+        let bottom = UIView()
+        bottom.heightAnchor.constraint(equalToConstant: 14).isActive = true
+        stack.addArrangedSubview(bottom)
     }
 
-    private func button(_ tool: PeekTool, _ title: String, _ symbol: String, iconOnly: Bool = false) -> UIButton {
+    private func button(_ tool: PeekTool, _ title: String) -> UIButton {
         let button = UIButton(type: .system)
         var config = UIButton.Configuration.plain()
-        config.image = UIImage(systemName: symbol)
-        config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: iconOnly ? 20 : 18)
-        config.title = iconOnly ? nil : title
-        config.imagePadding = 12
-        config.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
-        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
-            var attributes = attributes
-            attributes.font = UIFont.preferredFont(forTextStyle: .body)
-            return attributes
-        }
-        config.background.cornerRadius = 18
+        config.background.cornerRadius = 22
+        config.background.backgroundInsets = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
         button.configuration = config
         button.tintColor = .label
-        button.contentHorizontalAlignment = iconOnly ? .center : .leading
-        button.titleLabel?.numberOfLines = 0
-        button.titleLabel?.adjustsFontForContentSizeCategory = true
         button.accessibilityLabel = title
-        button.heightAnchor.constraint(greaterThanOrEqualToConstant: iconOnly ? 52 : 48).isActive = true
         button.configurationUpdateHandler = { button in
-            button.configuration?.background.backgroundColor = button.isHighlighted || button.isSelected ? UIColor.label.withAlphaComponent(0.12) : .clear
+            button.configuration?.background.backgroundColor = button.isHighlighted ? UIColor.label.withAlphaComponent(0.12) : .clear
         }
         button.addAction(UIAction { [weak self] _ in self?.onAction(tool) }, for: .touchUpInside)
-        buttons[tool] = button
         return button
     }
 
-    @objc private func toggle() { onToggle() }
+    private func reply(_ tool: PeekTool, _ title: String, _ symbol: String) -> UIButton {
+        let button = button(tool, title)
+        button.configuration?.image = UIImage(systemName: symbol)
+        button.configuration?.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 21, weight: .regular, scale: .small)
+        button.configuration?.contentInsets = .zero
+        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        return button
+    }
+
+    private func row(_ tool: PeekTool, _ title: String, _ symbol: String) -> UIButton {
+        let button = button(tool, title)
+        let image = UIImageView(image: UIImage(systemName: symbol))
+        image.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 17)
+        image.contentMode = .center
+        image.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        image.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        let label = UILabel()
+        label.text = title
+        label.font = .preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
+        label.numberOfLines = 0
+        let content = UIStackView(arrangedSubviews: [image, label])
+        content.spacing = 16
+        content.alignment = .center
+        content.isUserInteractionEnabled = false
+        content.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 24),
+            content.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -24),
+            content.topAnchor.constraint(equalTo: button.topAnchor, constant: 10),
+            content.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -10),
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+        ])
+        return button
+    }
 
     @objc private func resize(_ gesture: UIPanGestureRecognizer) {
         let translation = gesture.translation(in: window).y
@@ -181,30 +193,6 @@ final class PeekToolsSurface: UIView {
         case .ended: onResizeEnd(translation + gesture.velocity(in: window).y * 0.12)
         case .cancelled: onResizeEnd(translation)
         default: break
-        }
-    }
-
-    @objc private func track(_ gesture: UILongPressGestureRecognizer) {
-        let point = gesture.location(in: self)
-        let tool = bounds.contains(point) ? buttons.first(where: { $0.value.convert($0.value.bounds, to: self).contains(point) })?.key : nil
-        switch gesture.state {
-        case .began, .changed: select(tool)
-        case .ended:
-            select(nil)
-            if let tool { onAction(tool) }
-        case .cancelled, .failed: select(nil)
-        default: break
-        }
-    }
-
-    private func select(_ tool: PeekTool?) {
-        guard selected != tool else { return }
-        // A recognized hold cancels the button's normal touch highlight.
-        if let selected { buttons[selected]?.isSelected = false }
-        selected = tool
-        if let tool {
-            buttons[tool]?.isSelected = true
-            feedback.selectionChanged()
         }
     }
 }

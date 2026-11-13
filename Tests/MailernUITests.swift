@@ -173,7 +173,7 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
-    func testPeekMenuResizeAndHoldSelection() {
+    func testPeekMenuResizeAndTaps() {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launch()
@@ -184,48 +184,48 @@ final class MailernUITests: XCTestCase {
         let largeHeight = card.frame.height
         XCTAssertGreaterThan(largeHeight, app.frame.height * 0.7)
         capture("Tall peek", in: app)
-
-        let handle = app.buttons["peek-menu-handle"]
-        XCTAssertGreaterThanOrEqual(handle.frame.height, 44)
         for title in ["Reply", "Reply All", "Forward"] {
-            let shortcut = app.buttons[title]
-            XCTAssertLessThanOrEqual(shortcut.frame.maxY, app.frame.maxY)
+            XCTAssertLessThanOrEqual(app.buttons[title].frame.maxY, app.frame.maxY)
         }
-        let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -280)), withVelocity: .fast, thenHoldForDuration: 0.1)
-        XCTAssertLessThan(card.frame.height, largeHeight - 100)
+
+        // isHittable is false for this partial panel even though its shortcuts accept
+        // touches. Exercise the actual visible controls rather than that proxy.
+        app.buttons["Reply"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(app.navigationBars["Reply"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        waitForAbsence(app.navigationBars["Reply"])
         expectUnread(subject, in: app)
-        capture("Revealed glass menu", in: app)
+        peek(subject, in: app, expandTools: false)
+        dragMenu(-280, in: app)
+        XCTAssertLessThan(card.frame.height, largeHeight - 100)
+        XCTAssertFalse(app.navigationBars["Reply"].exists)
+        expectUnread(subject, in: app)
+        capture("Apple Mail style tools", in: app)
         let compactHeight = card.frame.height
         card.swipeUp()
         XCTAssertEqual(card.frame.height, compactHeight, accuracy: 2)
         expectUnread(subject, in: app)
 
-        let down = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        down.press(forDuration: 0.05, thenDragTo: down.withOffset(CGVector(dx: 0, dy: 280)), withVelocity: .fast, thenHoldForDuration: 0.1)
+        dragMenu(280, in: app)
         XCTAssertGreaterThan(card.frame.height, compactHeight + 100)
-        handle.tap()
-        XCTAssertEqual(card.frame.height, compactHeight, accuracy: 2)
-
-        let read = app.buttons["Mark read"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        let unpin = app.buttons["Unpin"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        read.press(forDuration: 0.6, thenDragTo: unpin, withVelocity: .slow, thenHoldForDuration: 0.5)
-        waitForAbsence(card)
         expectUnread(subject, in: app)
-        peek(subject, in: app)
-        XCTAssertTrue(app.buttons["Pin"].exists)
-
-        let cancel = app.buttons["Mark read"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        cancel.press(forDuration: 0.6, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.5)), withVelocity: .slow, thenHoldForDuration: 0.2)
-        XCTAssertTrue(card.exists)
-        expectUnread(subject, in: app)
-        let reply = app.buttons["Reply"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        let forward = app.buttons["Forward"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        reply.press(forDuration: 0.6, thenDragTo: forward, withVelocity: .slow, thenHoldForDuration: 0.2)
+        // Reply shortcuts remain usable before revealing the other tools.
+        app.buttons["Forward"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.navigationBars["Forward"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
         waitForAbsence(app.navigationBars["Forward"])
         expectUnread(subject, in: app)
+
+        peek(subject, in: app)
+        app.buttons["Mark read"].tap()
+        waitForAbsence(preview(in: app))
+        XCTAssertEqual(row(subject, in: app).value as? String, "Read")
+    }
+
+    @MainActor
+    private func dragMenu(_ distance: CGFloat, in app: XCUIApplication) {
+        let start = app.buttons["Reply"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: distance)), withVelocity: .fast, thenHoldForDuration: 0.1)
     }
 
     @MainActor
@@ -272,7 +272,7 @@ final class MailernUITests: XCTestCase {
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
         conversation.press(forDuration: 0.8)
         XCTAssertTrue(preview(in: app).waitForExistence(timeout: 5))
-        if expandTools { app.buttons["peek-menu-handle"].tap() }
+        if expandTools { dragMenu(-280, in: app) }
     }
 
     @MainActor
