@@ -1,0 +1,56 @@
+import Foundation
+
+@main struct WorkflowChecks {
+    @MainActor static func main() throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
+        let disk = JSONPersistence(url: directory.appending(path: "demo.json"))
+        let store = MailStore(persistence: disk)
+        let c = store.list(.inbox)[0]
+        let id = c.id
+        store.markRead(id)
+        assert(store.conversation(id)!.workflow == .inbox && !store.conversation(id)!.unread)
+        store.togglePin(id)
+        let pin = store.conversation(id)!.pinned
+        store.move(id, to: .settled)
+        assert(store.list(.settled).contains { $0.id == id })
+        store.undo()
+        assert(store.conversation(id)!.workflow == .inbox)
+        store.markRead(id, unread: true)
+        store.move(id, to: .settled)
+        assert(store.conversation(id)!.unread)
+        store.receiveReply(id)
+        assert(store.conversation(id)!.workflow == .inbox && store.conversation(id)!.unread)
+        assert(store.conversation(id)!.pinned == pin)
+        store.undo()
+        assert(store.conversation(id)!.workflow == .inbox)
+        store.move(id, to: .snoozed, until: .now.addingTimeInterval(100))
+        store.receiveReply(id)
+        assert(store.conversation(id)!.workflow == .inbox && store.conversation(id)!.snoozedUntil == nil)
+        store.markRead(id)
+        store.move(id, to: .snoozed, until: .now.addingTimeInterval(100))
+        store.wakeDue(now: .now.addingTimeInterval(101))
+        assert(store.conversation(id)!.workflow == .inbox && !store.conversation(id)!.unread)
+        store.move(id, to: .snoozed, until: .now.addingTimeInterval(100))
+        let reloaded = MailStore(persistence: disk)
+        reloaded.wakeDue(now: .now.addingTimeInterval(101))
+        assert(reloaded.conversation(id)!.workflow == .inbox)
+        let beforeSend = store.conversation(id)!.messages.count
+        store.send(threadID: id, account: c.account, to: [c.correspondent.address], cc: [], subject: c.subject, body: "Thanks, here's the plan.")
+        assert(store.conversation(id)!.workflow == .settled && store.conversation(id)!.messages.count == beforeSend + 1)
+        assert(store.conversation(id)!.latest.outgoing)
+        store.move(id, to: .inbox)
+        assert(store.conversation(id)!.workflow == .inbox)
+        store.send(threadID: nil, account: c.account, to: ["test@example.com"], cc: [], subject: "New outgoing", body: "Hello")
+        assert(store.list(.settled).contains { $0.subject == "New outgoing" && !$0.unread })
+        store.receiveNew()
+        assert(store.list(.inbox).contains { $0.subject == "Coffee this week?" && $0.unread })
+        let saved = MailStore(persistence: disk)
+        assert(saved.conversations == store.conversations)
+        assert(saved.list(.settled, search: "New outgoing").count == 1)
+        store.reset()
+        assert(store.conversations.count == 9)
+        assert(store.list(.inbox)[0].pinned)
+        assert(store.error == nil)
+        print("PASS: read/workflow independence, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
+    }
+}
