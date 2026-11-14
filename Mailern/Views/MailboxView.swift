@@ -5,7 +5,10 @@ struct MailboxView: View {
     @State private var selection: Workflow = .inbox
     @State private var search = ""
     @AppStorage("inboxUnreadFirst") private var unreadFirst = false
-    @State private var snoozeSettings = false
+    @State private var settings = false
+    @State private var searching = false
+    @AppStorage("inboxPullAction") private var pullAction: InboxPullAction = .off
+    @AppStorage("bottomCompose") private var bottomCompose = false
     @State private var composer: ComposeMode?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var demo = false
@@ -22,13 +25,16 @@ struct MailboxView: View {
                     mailbox(status)
                         .safeAreaInset(edge: .bottom, spacing: 0) { undoBanner }
                         .navigationTitle(status.title)
-                        .searchable(text: $search, prompt: "Search this section")
+                        .searchable(text: $search, isPresented: Binding(
+                            get: { searching && selection == status },
+                            set: { if selection == status { searching = $0 } }
+                        ), prompt: "Search this section")
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
                                 Menu {
                                     Button("Demo", systemImage: "play.circle") { demo = true }
-                                    Button("Snooze settings", systemImage: "slider.horizontal.3") {
-                                        snoozeSettings = true
+                                    Button("Settings", systemImage: "gearshape") {
+                                        settings = true
                                     }
                                 } label: {
                                     Label("More", systemImage: "ellipsis.circle")
@@ -50,7 +56,9 @@ struct MailboxView: View {
                                 }
                             }
                             ToolbarItem(placement: .topBarTrailing) {
-                                Button("Compose", systemImage: "square.and.pencil") { composer = .new }
+                                if !bottomCompose {
+                                    Button("Compose", systemImage: "square.and.pencil") { composer = .new }
+                                }
                             }
                         }
                         .navigationDestination(for: UUID.self) { ThreadView(id: $0) }
@@ -58,6 +66,14 @@ struct MailboxView: View {
                 .tabItem { Label(status.title, systemImage: status.symbol) }
                 .tag(status)
                 .badge(status == .inbox ? store.list(.inbox).filter(\.unread).count : 0)
+                .toolbar(bottomCompose ? .hidden : .visible, for: .tabBar)
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if bottomCompose {
+                LabsBottomBar(selection: $selection, unreadCount: store.list(.inbox).filter(\.unread).count) {
+                    composer = .new
+                }
             }
         }
         .blur(radius: peeking == nil ? 0 : 6)
@@ -82,14 +98,16 @@ struct MailboxView: View {
             }
         }
         .animation(.easeOut(duration: reduceMotion ? 0 : 0.18), value: peeking)
-        .onChange(of: selection) { _, _ in peeking = nil }
+        .onChange(of: selection) { _, _ in peeking = nil; searching = false }
         .onChange(of: store.conversations) { _, conversations in
             if let id = peeking, !conversations.contains(where: { $0.id == id && $0.workflow == selection }) {
                 peeking = nil
             }
         }
         .sheet(item: $composer) { ComposerView(mode: $0) }
-        .sheet(isPresented: $snoozeSettings) { NavigationStack { SnoozeSettingsView() } }
+        .sheet(isPresented: $settings) {
+            NavigationStack { SettingsView(pullAction: $pullAction, bottomCompose: $bottomCompose) }
+        }
         .sheet(isPresented: $demo) { DemoView() }
         .sheet(item: $snoozing) { SnoozeView(id: $0.id, beforeSnooze: { peeking = nil }) }
         .alert(
@@ -116,13 +134,22 @@ struct MailboxView: View {
     @ViewBuilder private func mailbox(_ status: Workflow) -> some View {
         let items = store.list(status, search: search, unreadFirst: unreadFirst)
         if items.isEmpty {
-            ContentUnavailableView(
-                search.isEmpty
-                    ? (status == .inbox ? "You're all caught up" : "No \(status.rawValue) conversations")
-                    : "No results", systemImage: search.isEmpty ? status.symbol : "magnifyingglass",
-                description: Text(search.isEmpty ? "" : "Try another search in this section.")
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if status == .inbox && pullAction != .off && search.isEmpty {
+                ScrollView {
+                    ContentUnavailableView("You're all caught up", systemImage: status.symbol)
+                        .frame(maxWidth: .infinity).padding(.top, 80)
+                }
+                .scrollBounceBehavior(.always)
+                .modifier(InboxPullModifier(mode: pullAction, action: performPull))
+            } else {
+                ContentUnavailableView(
+                    search.isEmpty
+                        ? (status == .inbox ? "You're all caught up" : "No \(status.rawValue) conversations")
+                        : "No results", systemImage: search.isEmpty ? status.symbol : "magnifyingglass",
+                    description: Text(search.isEmpty ? "" : "Try another search in this section.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         } else {
             List {
                 Section {
@@ -170,7 +197,14 @@ struct MailboxView: View {
                 }
             }
             .listStyle(.plain)
+            .modifier(InboxPullModifier(mode: status == .inbox ? pullAction : .off, action: performPull))
         }
+    }
+    private func performPull() {
+        guard pullAction != .off else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if pullAction == .search { searching = true }
+        if pullAction == .compose { composer = .new }
     }
     private func act(_ action: () -> Void) {
         withAnimation { action() }

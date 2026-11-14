@@ -37,3 +37,5 @@ The checked-in Xcode project works directly. After adding source files, regenera
 `scripts/package-demo.sh TEAM_ID` archives and exports a development-signed IPA using an existing Xcode signing account/profile. The iPhone must be registered in that profile and have Developer Mode enabled. A development-signed app expires with its provisioning profile.
 
 `scripts/serve-demo.py HTTPS_BASE_URL` creates an OTA manifest and install page in `build/install`. Serve only that directory over trusted HTTPS, such as a dedicated Tailscale Serve path. Open its page in Safari on the registered iPhone with Tailscale connected. The computer serving the files must remain awake and connected.
+
+Settings in the More menu includes snooze preferences and Labs. Labs can assign the Inbox pull-down gesture to Search or New email, and move Compose beside a compact tab group at the bottom. Both experiments are off by default and persist locally.

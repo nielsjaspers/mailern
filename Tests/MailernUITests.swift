@@ -2,6 +2,68 @@ import XCTest
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testLabsInboxActionsAndBottomCompose() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        func settings() {
+            app.buttons["More"].tap()
+            app.buttons["Settings"].tap()
+            XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        }
+        func choosePull(_ title: String) {
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Inbox pull-down")).firstMatch.tap()
+            app.buttons[title].tap()
+        }
+        func pull() {
+            app.collectionViews.firstMatch.swipeDown(velocity: .slow)
+        }
+        settings()
+        app.buttons["Snooze settings"].tap()
+        XCTAssertTrue(app.navigationBars["Snooze settings"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons["Settings"].tap()
+        choosePull("Search")
+        app.buttons["Done"].tap()
+        pull()
+        XCTAssertTrue(app.buttons["Close"].waitForExistence(timeout: 5))
+        capture("Pull to search", in: app)
+        app.searchFields.firstMatch.tap()
+        app.searchFields.firstMatch.typeText("Course project")
+        waitForAbsence(row("Dinner on Saturday?", in: app))
+        app.buttons["Close"].tap()
+
+        settings()
+        choosePull("New email")
+        if app.switches["Compose at bottom right"].value as? String != "1" {
+            app.switches["Compose at bottom right"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        }
+        XCTAssertEqual(app.switches["Compose at bottom right"].value as? String, "1")
+        capture("Labs settings", in: app)
+        app.buttons["Done"].tap()
+        XCTAssertGreaterThan(app.buttons["Compose"].frame.midY, app.frame.height * 0.7)
+        capture("Bottom compose", in: app)
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New message"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        app.buttons["Settled"].tap()
+        XCTAssertTrue(app.navigationBars["Settled"].waitForExistence(timeout: 5))
+        app.buttons["Inbox"].tap()
+        pull()
+        XCTAssertTrue(app.navigationBars["New message"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        app.terminate()
+        app.launch()
+        XCTAssertGreaterThan(app.buttons["Compose"].frame.midY, app.frame.height * 0.7)
+        settings()
+        XCTAssertEqual(app.switches["Compose at bottom right"].value as? String, "1")
+        choosePull("Off")
+        app.switches["Compose at bottom right"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.tabBars.firstMatch.exists)
+    }
+
+    @MainActor
     func testPeekMenuTouchCancellation() {
         continueAfterFailure = false
         let app = XCUIApplication()
