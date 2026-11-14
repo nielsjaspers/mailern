@@ -2,6 +2,7 @@ import Foundation
 
 @main struct WorkflowChecks {
     @MainActor static func main() throws {
+        checkDeliberatePull()
         try checkInboxOrder()
         try checkSnoozeSettings()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
@@ -129,4 +130,26 @@ import Foundation
         print("PASS: chronological snoozes, expired evening, Monday/Sunday boundaries, DST, custom settings and persistence")
     }
 
+    static func checkDeliberatePull() {
+        var pull = DeliberatePull()
+        pull.begin(offset: 500, stationary: true)
+        pull.move(distance: 300)
+        assert(!pull.armed && pull.distance == 0 && !pull.end(distance: 300))
+        pull.begin(offset: 0, stationary: false)
+        assert(!pull.end(distance: 300))
+        pull.begin(offset: -20, stationary: true)
+        assert(!pull.end(distance: 300))
+        pull.begin(offset: 0, stationary: true)
+        for distance in [121.0, 50, 140, 20, 160] {
+            pull.move(distance: distance)
+            assert(pull.armed == (distance >= DeliberatePull.threshold))
+            assert(pull.distance == distance)
+        }
+        assert(pull.end(distance: 160))
+        assert(!pull.eligible && !pull.armed && pull.distance == 0)
+        pull.begin(offset: 0, stationary: true)
+        pull.move(distance: 160)
+        assert(!pull.end(distance: 40))
+        print("PASS: stationary-at-top gating, momentum rejection, rewind/rearm in one gesture, release cancellation")
+    }
 }

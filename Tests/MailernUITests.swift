@@ -2,6 +2,32 @@ import XCTest
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testFastReturnDoesNotCompose() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Inbox pull-down")).firstMatch.tap()
+        app.buttons["New email"].tap()
+        if app.switches["Compose at bottom right"].value as? String == "1" {
+            app.switches["Compose at bottom right"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        }
+        app.buttons["Done"].tap()
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New message"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        let list = app.collectionViews.firstMatch
+        let initialTop = row("Course project feedback", in: app).frame.minY
+        let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+        start.press(forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -180)), withVelocity: .slow, thenHoldForDuration: 0.5)
+        XCTAssertLessThan(row("Course project feedback", in: app).frame.minY, initialTop - 50)
+        list.swipeDown(velocity: .fast)
+        XCTAssertFalse(app.navigationBars["New message"].exists, "Returning to the top must not compose")
+    }
+
+    @MainActor
     func testPullProgressAndReturn() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -50,7 +76,8 @@ final class MailernUITests: XCTestCase {
             app.buttons[title].tap()
         }
         func pull() {
-            app.collectionViews.firstMatch.swipeDown(velocity: .slow)
+            let start = app.collectionViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+            start.press(forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 420)), withVelocity: .slow, thenHoldForDuration: 0.5)
         }
         settings()
         app.buttons["Snooze settings"].tap()

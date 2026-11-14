@@ -7,8 +7,7 @@ struct MailboxView: View {
     @AppStorage("inboxUnreadFirst") private var unreadFirst = false
     @State private var settings = false
     @State private var searching = false
-    @State private var pullDistance: CGFloat = 0
-    @State private var pullArmed = false
+    @State private var pull = InboxPullInteraction()
     @State private var toolbarBottom: CGFloat = 0
     @State private var overlayTop: CGFloat?
     @AppStorage("inboxPullAction") private var pullAction: InboxPullAction = .off
@@ -24,11 +23,11 @@ struct MailboxView: View {
         .overlay {
             GeometryReader { geometry in
                 if let overlayTop, selection == .inbox, paths[.inbox, default: []].isEmpty,
-                   pullAction != .off, pullDistance > 40, toolbarBottom > 0,
+                   pullAction != .off, pull.distance > 40, toolbarBottom > 0,
                    !searching, composer == nil, !settings, !demo {
-                    PullActionIndicator(mode: pullAction, progress: pullArmed ? 1 : min(1, max(0, (pullDistance - 40) / 40)))
+                    PullActionIndicator(mode: pullAction, progress: min(1, max(0, (pull.distance - 40) / (DeliberatePull.threshold - 40))), armCount: pull.armCount)
                         .position(x: geometry.size.width / 2, y: toolbarBottom - overlayTop + 32)
-                        .opacity(min(1, (pullDistance - 40) / 16))
+                        .opacity(min(1, (pull.distance - 40) / 16))
                 }
             }
             .background(PullPlacementReader { frame, controlsBottom in
@@ -52,7 +51,7 @@ struct MailboxView: View {
                     },
                     onCompose: { mode in
                         peeking = nil
-                        composer = mode
+                        openComposer(mode)
                     },
                     onSnooze: { snoozing = conversation }
                 )
@@ -90,7 +89,7 @@ struct MailboxView: View {
             TabView(selection: Binding<MailboxTab>(get: { .workflow(selection) }, set: { tab in
                 switch tab {
                 case .workflow(let status): selection = status
-                case .compose: composer = .new
+                case .compose: openComposer(.new)
                 }
             })) {
                 ForEach(Workflow.allCases) { status in
@@ -157,14 +156,14 @@ struct MailboxView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         if !bottomCompose {
-                            Button("Compose", systemImage: "square.and.pencil") { composer = .new }
+                            Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
                         }
                     }
                 }
                 .toolbar {
                     if legacyBottomCompose {
                             ToolbarItem(placement: .bottomBar) {
-                                Button("Compose", systemImage: "square.and.pencil") { composer = .new }
+                                Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
                             }
                     }
                 }
@@ -194,10 +193,11 @@ struct MailboxView: View {
             if status == .inbox && pullAction != .off && search.isEmpty {
                 ScrollView {
                     ContentUnavailableView("You're all caught up", systemImage: status.symbol)
+                        .background(PullScrollObserver(interaction: pull, action: performPull))
                         .frame(maxWidth: .infinity).padding(.top, 80)
                 }
                 .scrollBounceBehavior(.always)
-                .modifier(InboxPullModifier(mode: pullAction, distance: $pullDistance, action: performPull, pending: $pullArmed))
+                .modifier(InboxPullModifier(mode: pullAction, interaction: pull))
             } else {
                 ContentUnavailableView(
                     search.isEmpty
@@ -245,23 +245,39 @@ struct MailboxView: View {
                             .accessibilityAction(named: "Peek") { peeking = conversation.id }
                     }
                 } header: {
-                    if status == .inbox {
-                        let unreadCount = items.filter(\.unread).count
-                        if unreadCount > 0 { Text("\(unreadCount) unread").textCase(nil) }
-                    } else {
-                        Text("\(items.count) conversations").textCase(nil)
+                    VStack(alignment: .leading, spacing: 0) {
+                        if status == .inbox {
+                            let unreadCount = items.filter(\.unread).count
+                            if unreadCount > 0 { Text("\(unreadCount) unread").textCase(nil) }
+                        } else {
+                            Text("\(items.count) conversations").textCase(nil)
+                        }
+                        Color.clear.frame(height: 0)
+                    }
+                    .background {
+                        if status == .inbox && pullAction != .off {
+                            PullScrollObserver(interaction: pull, action: performPull)
+                        }
                     }
                 }
             }
             .listStyle(.plain)
-            .modifier(InboxPullModifier(mode: status == .inbox ? pullAction : .off, distance: $pullDistance, action: performPull, pending: $pullArmed))
+            .modifier(InboxPullModifier(mode: status == .inbox ? pullAction : .off, interaction: pull))
         }
     }
     private func performPull() {
         guard pullAction != .off else { return }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        if pullAction == .search { searching = true }
-        if pullAction == .compose { composer = .new }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            if pullAction == .search { searching = true }
+            if pullAction == .compose { openComposer(.new) }
+        }
+    }
+    private func openComposer(_ mode: ComposeMode) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { composer = mode }
     }
     private func act(_ action: () -> Void) {
         withAnimation { action() }
