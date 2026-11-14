@@ -39,9 +39,10 @@ struct SettingsView: View {
 
 struct InboxPullModifier: ViewModifier {
     let mode: InboxPullAction
+    @Binding var distance: CGFloat
     let action: @MainActor () -> Void
-    @State private var distance: CGFloat = 0
-    @State private var pending = false
+    @Binding var pending: Bool
+    private let threshold: CGFloat = 80
 
     func body(content: Content) -> some View {
         if mode == .off {
@@ -52,7 +53,7 @@ struct InboxPullModifier: ViewModifier {
                     max(0, -geometry.contentOffset.y - geometry.contentInsets.top)
                 } action: { _, value in
                     distance = value
-                    if value >= 80 { pending = true }
+                    if value >= threshold { pending = true }
                 }
                 .onScrollPhaseChange { _, new in
                     if new == .tracking { pending = false }
@@ -61,73 +62,73 @@ struct InboxPullModifier: ViewModifier {
                         action()
                     }
                 }
-                .overlay(alignment: .top) {
-                    if distance > 15 {
-                        Label(mode == .search ? "Search" : "New email", systemImage: mode == .search ? "magnifyingglass" : "square.and.pencil")
-                            .font(.subheadline).padding(10)
-                            .foregroundStyle(distance >= 80 ? .teal : .secondary)
-                            .background(.regularMaterial, in: Capsule())
-                            .padding(.top, 8).allowsHitTesting(false)
-                    }
-                }
+                .onDisappear { distance = 0 }
         } else {
             content.refreshable { action() }
         }
     }
 }
 
-struct LabsBottomBar: View {
-    @Binding var selection: Workflow
-    let unreadCount: Int
-    let compose: () -> Void
-
+struct PullActionIndicator: View {
+    let mode: InboxPullAction
+    let progress: CGFloat
     var body: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 0) {
-                ForEach(Workflow.allCases) { status in
-                    Button { selection = status } label: {
-                        VStack(spacing: 3) {
-                            Image(systemName: status.symbol).font(.title3)
-                                .overlay(alignment: .topTrailing) {
-                                    if status == .inbox && unreadCount > 0 {
-                                        Text("\(unreadCount)").font(.caption2).bold()
-                                            .padding(.horizontal, 4).background(.red, in: Capsule())
-                                            .foregroundStyle(.white).offset(x: 12, y: -7)
-                                    }
-                                }
-                            Text(status.title).font(.caption2)
-                        }
-                        .foregroundStyle(selection == status ? Color.teal : Color.primary)
-                        .frame(maxWidth: .infinity, minHeight: 52)
-                        .background(selection == status ? Color.primary.opacity(0.08) : .clear, in: Capsule())
-                        .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(status.title)
-                    .accessibilityAddTraits(selection == status ? .isSelected : [])
-                }
+        ZStack {
+            if progress >= 1 {
+                Circle().fill(.teal)
+                Image(systemName: mode == .search ? "magnifyingglass" : "square.and.pencil")
+                    .font(.system(size: 20, weight: .medium)).foregroundStyle(.white)
+            } else {
+                Circle().stroke(.teal.opacity(0.15), lineWidth: 3)
+                Circle().trim(from: 0, to: progress)
+                    .stroke(.teal, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
             }
-            .padding(4)
-            .modifier(LabsGlass())
-            Button(action: compose) {
-                Image(systemName: "square.and.pencil").font(.title2)
-                    .frame(width: 60, height: 60)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.teal)
-            .modifier(LabsGlass())
-            .accessibilityLabel("Compose")
         }
-        .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 4)
+        .frame(width: 44, height: 44)
     }
 }
 
-private struct LabsGlass: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26, *) {
-            content.glassEffect(.regular.interactive(), in: Capsule())
-        } else {
-            content.background(.regularMaterial, in: Capsule())
+struct PullPlacementReader: UIViewRepresentable {
+    let onPlacement: (CGRect, CGFloat) -> Void
+    func makeUIView(context: Context) -> PlacementView { PlacementView() }
+    func updateUIView(_ view: PlacementView, context: Context) {
+        view.onPlacement = onPlacement
+        view.report()
+    }
+
+    final class PlacementView: UIView {
+        var onPlacement: (CGRect, CGFloat) -> Void = { _, _ in }
+        private var lastFrame: CGRect?
+        private var lastBottom: CGFloat?
+        override func layoutSubviews() { super.layoutSubviews(); report() }
+        override func didMoveToWindow() { super.didMoveToWindow(); report() }
+        func report() {
+            // Navigation bars and tab content have separate SwiftUI coordinate spaces.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window else { return }
+                let frame = convert(bounds, to: window)
+                let bottom: CGFloat
+                if let bar = navigationBar(in: window) {
+                    let barFrame = bar.convert(bar.bounds, to: window)
+                    // Expanded large titles scroll below the standard 44-point control row.
+                    bottom = bar.bounds.height > 100 ? barFrame.minY + 44 : barFrame.maxY
+                } else {
+                    bottom = window.safeAreaInsets.top + 44
+                }
+                guard frame != lastFrame || bottom != lastBottom else { return }
+                lastFrame = frame
+                lastBottom = bottom
+                onPlacement(frame, bottom)
+            }
+        }
+        private func navigationBar(in view: UIView) -> UINavigationBar? {
+            guard !view.isHidden, view.alpha > 0 else { return nil }
+            if let bar = view as? UINavigationBar { return bar }
+            for child in view.subviews.reversed() {
+                if let bar = navigationBar(in: child) { return bar }
+            }
+            return nil
         }
     }
 }

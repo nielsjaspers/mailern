@@ -7,6 +7,10 @@ struct MailboxView: View {
     @AppStorage("inboxUnreadFirst") private var unreadFirst = false
     @State private var settings = false
     @State private var searching = false
+    @State private var pullDistance: CGFloat = 0
+    @State private var pullArmed = false
+    @State private var toolbarBottom: CGFloat = 0
+    @State private var overlayTop: CGFloat?
     @AppStorage("inboxPullAction") private var pullAction: InboxPullAction = .off
     @AppStorage("bottomCompose") private var bottomCompose = false
     @State private var composer: ComposeMode?
@@ -16,65 +20,23 @@ struct MailboxView: View {
     @State private var peeking: UUID?
     @State private var paths: [Workflow: [UUID]] = [:]
     var body: some View {
-        @Bindable var store = store
-        TabView(selection: $selection) {
-            ForEach(Workflow.allCases) { status in
-                NavigationStack(
-                    path: Binding(get: { paths[status, default: []] }, set: { paths[status] = $0 })
-                ) {
-                    mailbox(status)
-                        .safeAreaInset(edge: .bottom, spacing: 0) { undoBanner }
-                        .navigationTitle(status.title)
-                        .searchable(text: $search, isPresented: Binding(
-                            get: { searching && selection == status },
-                            set: { if selection == status { searching = $0 } }
-                        ), prompt: "Search this section")
-                        .toolbar {
-                            ToolbarItem(placement: .topBarLeading) {
-                                Menu {
-                                    Button("Demo", systemImage: "play.circle") { demo = true }
-                                    Button("Settings", systemImage: "gearshape") {
-                                        settings = true
-                                    }
-                                } label: {
-                                    Label("More", systemImage: "ellipsis.circle")
-                                }
-                            }
-                            ToolbarItem(placement: .topBarTrailing) {
-                                if status == .inbox {
-                                    Button {
-                                        withAnimation { unreadFirst.toggle() }
-                                    } label: {
-                                        Label(
-                                            "Filter",
-                                            systemImage: unreadFirst
-                                                ? "line.3.horizontal.decrease.circle.fill"
-                                                : "line.3.horizontal.decrease.circle")
-                                    }
-                                    .accessibilityValue(unreadFirst ? "Unread first" : "All")
-                                    .accessibilityAddTraits(unreadFirst ? .isSelected : [])
-                                }
-                            }
-                            ToolbarItem(placement: .topBarTrailing) {
-                                if !bottomCompose {
-                                    Button("Compose", systemImage: "square.and.pencil") { composer = .new }
-                                }
-                            }
-                        }
-                        .navigationDestination(for: UUID.self) { ThreadView(id: $0) }
-                }
-                .tabItem { Label(status.title, systemImage: status.symbol) }
-                .tag(status)
-                .badge(status == .inbox ? store.list(.inbox).filter(\.unread).count : 0)
-                .toolbar(bottomCompose ? .hidden : .visible, for: .tabBar)
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if bottomCompose {
-                LabsBottomBar(selection: $selection, unreadCount: store.list(.inbox).filter(\.unread).count) {
-                    composer = .new
+        tabs
+        .overlay {
+            GeometryReader { geometry in
+                if let overlayTop, selection == .inbox, paths[.inbox, default: []].isEmpty,
+                   pullAction != .off, pullDistance > 40, toolbarBottom > 0,
+                   !searching, composer == nil, !settings, !demo {
+                    PullActionIndicator(mode: pullAction, progress: pullArmed ? 1 : min(1, max(0, (pullDistance - 40) / 40)))
+                        .position(x: geometry.size.width / 2, y: toolbarBottom - overlayTop + 32)
+                        .opacity(min(1, (pullDistance - 40) / 16))
                 }
             }
+            .background(PullPlacementReader { frame, controlsBottom in
+                overlayTop = frame.minY
+                toolbarBottom = controlsBottom
+            })
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
         .blur(radius: peeking == nil ? 0 : 6)
         .allowsHitTesting(peeking == nil)
@@ -119,6 +81,101 @@ struct MailboxView: View {
             Text(store.error ?? "")
         }
     }
+    private enum MailboxTab: Hashable {
+        case workflow(Workflow), compose
+    }
+
+    @ViewBuilder private var tabs: some View {
+        if #available(iOS 27, *) {
+            TabView(selection: Binding<MailboxTab>(get: { .workflow(selection) }, set: { tab in
+                switch tab {
+                case .workflow(let status): selection = status
+                case .compose: composer = .new
+                }
+            })) {
+                ForEach(Workflow.allCases) { status in
+                    Tab(status.title, systemImage: status.symbol, value: MailboxTab.workflow(status)) {
+                        section(status)
+                    }
+                    .badge(status == .inbox ? store.list(.inbox).filter(\.unread).count : 0)
+                }
+                if bottomCompose {
+                    Tab("Compose", systemImage: "square.and.pencil", value: MailboxTab.compose, role: .prominent) {
+                        Color.clear
+                    }
+                }
+            }
+        } else {
+            TabView(selection: $selection) {
+                ForEach(Workflow.allCases) { status in
+                    section(status)
+                        .tabItem { Label(status.title, systemImage: status.symbol) }
+                        .tag(status)
+                        .badge(status == .inbox ? store.list(.inbox).filter(\.unread).count : 0)
+                }
+            }
+        }
+    }
+
+    private func section(_ status: Workflow) -> some View {
+        NavigationStack(
+            path: Binding(get: { paths[status, default: []] }, set: { paths[status] = $0 })
+        ) {
+            mailbox(status)
+                .safeAreaInset(edge: .bottom, spacing: 0) { undoBanner }
+                .navigationTitle(status.title)
+                .searchable(text: $search, isPresented: Binding(
+                    get: { searching && selection == status },
+                    set: { if selection == status { searching = $0 } }
+                ), prompt: "Search this section")
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Menu {
+                            Button("Demo", systemImage: "play.circle") { demo = true }
+                            Button("Settings", systemImage: "gearshape") {
+                                settings = true
+                            }
+                        } label: {
+                            Label("More", systemImage: "ellipsis.circle")
+
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        if status == .inbox {
+                            Button {
+                                withAnimation { unreadFirst.toggle() }
+                            } label: {
+                                Label(
+                                    "Filter",
+                                    systemImage: unreadFirst
+                                        ? "line.3.horizontal.decrease.circle.fill"
+                                        : "line.3.horizontal.decrease.circle")
+                            }
+                            .accessibilityValue(unreadFirst ? "Unread first" : "All")
+                            .accessibilityAddTraits(unreadFirst ? .isSelected : [])
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        if !bottomCompose {
+                            Button("Compose", systemImage: "square.and.pencil") { composer = .new }
+                        }
+                    }
+                }
+                .toolbar {
+                    if legacyBottomCompose {
+                            ToolbarItem(placement: .bottomBar) {
+                                Button("Compose", systemImage: "square.and.pencil") { composer = .new }
+                            }
+                    }
+                }
+                .navigationDestination(for: UUID.self) { ThreadView(id: $0) }
+        }
+    }
+    private var legacyBottomCompose: Bool {
+        if #available(iOS 27, *) { return false }
+        return bottomCompose
+    }
+
     @ViewBuilder private var undoBanner: some View {
         if let notice = store.notice {
             HStack {
@@ -140,7 +197,7 @@ struct MailboxView: View {
                         .frame(maxWidth: .infinity).padding(.top, 80)
                 }
                 .scrollBounceBehavior(.always)
-                .modifier(InboxPullModifier(mode: pullAction, action: performPull))
+                .modifier(InboxPullModifier(mode: pullAction, distance: $pullDistance, action: performPull, pending: $pullArmed))
             } else {
                 ContentUnavailableView(
                     search.isEmpty
@@ -197,7 +254,7 @@ struct MailboxView: View {
                 }
             }
             .listStyle(.plain)
-            .modifier(InboxPullModifier(mode: status == .inbox ? pullAction : .off, action: performPull))
+            .modifier(InboxPullModifier(mode: status == .inbox ? pullAction : .off, distance: $pullDistance, action: performPull, pending: $pullArmed))
         }
     }
     private func performPull() {

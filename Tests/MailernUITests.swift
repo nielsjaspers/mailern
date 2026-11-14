@@ -2,6 +2,39 @@ import XCTest
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testPullProgressAndReturn() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        func setPull(_ title: String) {
+            app.buttons["More"].tap()
+            app.buttons["Settings"].tap()
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Inbox pull-down")).firstMatch.tap()
+            app.buttons[title].tap()
+            app.buttons["Done"].tap()
+        }
+        for mode in ["Search", "New email"] {
+            setPull(mode)
+            let list = app.collectionViews.firstMatch
+            let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            start.press(forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 65)), withVelocity: .slow, thenHoldForDuration: 0.7)
+            XCTAssertFalse(app.buttons["Close"].exists)
+            XCTAssertFalse(app.navigationBars["New message"].exists)
+            capture("\(mode) after short pull", in: app)
+            start.press(forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 360)), withVelocity: .slow, thenHoldForDuration: 1)
+            if mode == "Search" {
+                XCTAssertTrue(app.buttons["Close"].waitForExistence(timeout: 5))
+                app.buttons["Close"].tap()
+            } else {
+                XCTAssertTrue(app.navigationBars["New message"].waitForExistence(timeout: 5))
+                app.buttons["Cancel"].tap()
+            }
+        }
+        setPull("Off")
+    }
+
+    @MainActor
     func testLabsInboxActionsAndBottomCompose() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -42,10 +75,16 @@ final class MailernUITests: XCTestCase {
         capture("Labs settings", in: app)
         app.buttons["Done"].tap()
         XCTAssertGreaterThan(app.buttons["Compose"].frame.midY, app.frame.height * 0.7)
+        XCTAssertTrue(app.tabBars.buttons["Inbox"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Snoozed"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Settled"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Compose"].exists)
         capture("Bottom compose", in: app)
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New message"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.tabBars.buttons["Inbox"].isSelected)
         app.buttons["Settled"].tap()
         XCTAssertTrue(app.navigationBars["Settled"].waitForExistence(timeout: 5))
         app.buttons["Inbox"].tap()

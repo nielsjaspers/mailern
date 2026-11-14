@@ -38,4 +38,4 @@ The checked-in Xcode project works directly. After adding source files, regenera
 
 `scripts/serve-demo.py HTTPS_BASE_URL` creates an OTA manifest and install page in `build/install`. Serve only that directory over trusted HTTPS, such as a dedicated Tailscale Serve path. Open its page in Safari on the registered iPhone with Tailscale connected. The computer serving the files must remain awake and connected.
 
-Settings in the More menu includes snooze preferences and Labs. Labs can assign the Inbox pull-down gesture to Search or New email, and move Compose beside a compact tab group at the bottom. Both experiments are off by default and persist locally.
+Settings in the More menu includes snooze preferences and Labs. Labs can assign the Inbox pull-down gesture to Search or New email, and move Compose to the bottom while preserving native tabs. iOS 27 uses the system's prominent trailing tab; earlier versions use a native bottom toolbar. Both experiments are off by default and persist locally.
