@@ -19,15 +19,17 @@ struct MailboxView: View {
     @State private var peeking: UUID?
     @State private var paths: [Workflow: [UUID]] = [:]
     var body: some View {
-        tabs
+        let pullDistance = pull.distance
+        let armCount = pull.armCount
+        return tabs
         .overlay {
             GeometryReader { geometry in
                 if let overlayTop, selection == .inbox, paths[.inbox, default: []].isEmpty,
-                   pullAction != .off, pull.distance > 40, toolbarBottom > 0,
+                   pullAction != .off, pullDistance > 40, toolbarBottom > 0,
                    !searching, composer == nil, !settings, !demo {
-                    PullActionIndicator(mode: pullAction, progress: min(1, max(0, (pull.distance - 40) / (DeliberatePull.threshold - 40))), armCount: pull.armCount)
+                    PullActionIndicator(mode: pullAction, progress: min(1, max(0, (pullDistance - 40) / (DeliberatePull.threshold - 40))), armCount: armCount)
                         .position(x: geometry.size.width / 2, y: toolbarBottom - overlayTop + 32)
-                        .opacity(min(1, (pull.distance - 40) / 16))
+                        .opacity(min(1, (pullDistance - 40) / 16))
                 }
             }
             .background(PullPlacementReader { frame, controlsBottom in
