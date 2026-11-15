@@ -43,6 +43,6 @@ struct ThreadView: View {
         .toolbar(.hidden, for: .tabBar)
         .onAppear { store.markRead(id) }
         .sheet(item: $mode) { ComposerView(mode: $0) }
-        .sheet(isPresented: $snooze) { SnoozeView(id: id, onSnooze: { dismiss() }) }
+        .sheet(isPresented: $snooze) { SnoozeView(ids: [id], onSnooze: { dismiss() }) }
     }
 }

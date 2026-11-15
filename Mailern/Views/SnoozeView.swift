@@ -4,7 +4,7 @@ struct SnoozeView: View {
     @Environment(MailStore.self) private var store
     @Environment(SnoozePreferences.self) private var preferences
     @Environment(\.dismiss) private var dismiss
-    let id: UUID
+    let ids: Set<UUID>
     var beforeSnooze: () -> Void = {}
     var onSnooze: () -> Void = {}
     @State private var date = Date.now.addingTimeInterval(3600)
@@ -47,7 +47,7 @@ struct SnoozeView: View {
     private func snooze(_ date: Date) {
         guard date > .now else { return }
         beforeSnooze()
-        store.move(id, to: .snoozed, until: date)
+        store.apply(ids: ids, action: .move(.snoozed, until: date))
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         dismiss(); onSnooze()
     }

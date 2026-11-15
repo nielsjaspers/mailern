@@ -2,6 +2,80 @@ import XCTest
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testBulkSelection() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        let first = "Course project feedback"
+        let second = "Dinner on Saturday?"
+        app.buttons["Select"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", first)).firstMatch.tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", second)).firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["2 selected"].exists)
+        capture("Bulk selection and native action bar", in: app)
+        app.buttons["Settle"].tap()
+        XCTAssertFalse(row(first, in: app).exists)
+        XCTAssertFalse(row(second, in: app).exists)
+        app.buttons["Undo"].tap()
+        expectUnread(first, in: app)
+        XCTAssertEqual(row(second, in: app).value as? String, "Read")
+        app.buttons["Select"].tap()
+        app.buttons["Select All"].tap()
+        XCTAssertTrue(app.staticTexts["6 selected"].exists)
+        app.buttons["Mark"].tap()
+        app.buttons["Mark read"].tap()
+        XCTAssertEqual(row(first, in: app).value as? String, "Read")
+        app.buttons["Undo"].tap()
+        expectUnread(first, in: app)
+        app.buttons["Select"].tap()
+        row(first, in: app).tap()
+        app.buttons["Snooze"].tap()
+        app.navigationBars["Snooze"].buttons["Cancel"].tap()
+        XCTAssertTrue(app.staticTexts["1 selected"].exists)
+        app.buttons["Snooze"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "In ")).firstMatch.tap()
+        XCTAssertFalse(row(first, in: app).exists)
+        select("Snoozed", in: app)
+        expectUnread(first, in: app)
+        app.buttons["Select"].tap()
+        app.buttons["Select All"].tap()
+        app.buttons["Mark"].tap()
+        app.buttons["Restore to Inbox"].tap()
+        XCTAssertFalse(row(first, in: app).exists)
+        select("Inbox", in: app)
+        expectUnread(first, in: app)
+        app.buttons["Select"].tap()
+        app.buttons["Cancel"].tap()
+        row(first, in: app).tap()
+        XCTAssertTrue(app.navigationBars.buttons["Inbox"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testFilteredBulkSelection() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        app.searchFields.firstMatch.tap()
+        app.searchFields.firstMatch.typeText("Course project\n")
+        app.buttons["Select"].tap()
+        app.buttons["Select All"].tap()
+        XCTAssertTrue(app.staticTexts["1 selected"].exists)
+        capture("Filtered selection", in: app)
+        app.buttons["Settle"].tap()
+        app.buttons["Close"].tap()
+        XCTAssertFalse(row("Course project feedback", in: app).exists)
+        XCTAssertTrue(row("Dinner on Saturday?", in: app).exists)
+        select("Settled", in: app)
+        app.buttons["Select"].tap()
+        row("Course project feedback", in: app).tap()
+        app.buttons["Restore"].tap()
+        select("Inbox", in: app)
+        expectUnread("Course project feedback", in: app)
+    }
+
+    @MainActor
     func testCustomSwipeActions() {
         continueAfterFailure = false
         let app = XCUIApplication()

@@ -5,6 +5,9 @@ struct MailboxView: View {
     @State private var selection: Workflow = .inbox
     @State private var search = ""
     @AppStorage("inboxUnreadFirst") private var unreadFirst = false
+    @State private var selecting = false
+    @State private var selectedIDs: Set<UUID> = []
+    @State private var bulkSnooze = false
     @State private var settings = false
     @State private var searching = false
     @State private var pull = InboxPullInteraction()
@@ -29,7 +32,7 @@ struct MailboxView: View {
         .overlay {
             GeometryReader { geometry in
                 if let overlayTop, selection == .inbox, paths[.inbox, default: []].isEmpty,
-                   pullAction != .off, pullDistance > 40, toolbarBottom > 0,
+                   !selecting, pullAction != .off, pullDistance > 40, toolbarBottom > 0,
                    !searching, composer == nil, !settings, !demo {
                     PullActionIndicator(mode: pullAction, progress: min(1, max(0, (pullDistance - 40) / (DeliberatePull.threshold - 40))), armCount: armCount)
                         .position(x: geometry.size.width / 2, y: toolbarBottom - overlayTop + 32)
@@ -65,8 +68,10 @@ struct MailboxView: View {
             }
         }
         .animation(.easeOut(duration: reduceMotion ? 0 : 0.18), value: peeking)
-        .onChange(of: selection) { _, _ in peeking = nil; searching = false }
+        .onChange(of: selection) { _, _ in peeking = nil; searching = false; endSelection() }
+        .onChange(of: search) { _, _ in pruneSelection() }
         .onChange(of: store.conversations) { _, conversations in
+            pruneSelection()
             if let id = peeking, !conversations.contains(where: { $0.id == id && $0.workflow == selection }) {
                 peeking = nil
             }
@@ -76,7 +81,10 @@ struct MailboxView: View {
             NavigationStack { SettingsView(pullAction: $pullAction, bottomCompose: $bottomCompose) }
         }
         .sheet(isPresented: $demo) { DemoView() }
-        .sheet(item: $snoozing) { SnoozeView(id: $0.id, beforeSnooze: { peeking = nil }) }
+        .sheet(isPresented: $bulkSnooze) {
+            SnoozeView(ids: selectedIDs, beforeSnooze: endSelection)
+        }
+        .sheet(item: $snoozing) { SnoozeView(ids: [$0.id], beforeSnooze: { peeking = nil }) }
         .alert(
             "Demo storage",
             isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })
@@ -133,47 +141,54 @@ struct MailboxView: View {
                     get: { searching && selection == status },
                     set: { if selection == status { searching = $0 } }
                 ), prompt: "Search this section")
+                .modifier(MailboxSearchToolbar())
+                .toolbar { mailboxToolbar(status) }
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Menu {
-                            Button("Demo", systemImage: "play.circle") { demo = true }
-                            Button("Settings", systemImage: "gearshape") {
-                                settings = true
-                            }
-                        } label: {
-                            Label("More", systemImage: "ellipsis.circle")
-
-                        }
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        if status == .inbox {
-                            Button {
-                                withAnimation { unreadFirst.toggle() }
-                            } label: {
-                                Label(
-                                    "Filter",
-                                    systemImage: unreadFirst
-                                        ? "line.3.horizontal.decrease.circle.fill"
-                                        : "line.3.horizontal.decrease.circle")
-                            }
-                            .accessibilityValue(unreadFirst ? "Unread first" : "All")
-                            .accessibilityAddTraits(unreadFirst ? .isSelected : [])
-                        }
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        if !bottomCompose {
-                            Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
-                        }
-                    }
-                }
-                .toolbar {
-                    if legacyBottomCompose {
+                    if legacyBottomCompose && !selecting {
                             ToolbarItem(placement: .bottomBar) {
                                 Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
                             }
                     }
                 }
+                .toolbar {
+                    BulkSelectionToolbar(active: selecting, status: status, count: selectedIDs.count,
+                                         apply: applySelection, snooze: { bulkSnooze = true })
+                }
+                .toolbar(selecting ? .hidden : .visible, for: .tabBar)
                 .navigationDestination(for: UUID.self) { ThreadView(id: $0) }
+        }
+    }
+    @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            if selecting {
+                Button("Select All") { selectedIDs = Set(store.list(status, search: search).map(\.id)) }
+            } else {
+                Menu {
+                    Button("Demo", systemImage: "play.circle") { demo = true }
+                    Button("Settings", systemImage: "gearshape") { settings = true }
+                } label: { Label("More", systemImage: "ellipsis.circle") }
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button(selecting ? "Cancel" : "Select") {
+                if selecting { endSelection() }
+                else { peeking = nil; pull.cancel(); selecting = true }
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            if status == .inbox && !selecting {
+                Button { withAnimation { unreadFirst.toggle() } } label: {
+                    Label("Filter", systemImage: unreadFirst
+                          ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                }
+                .accessibilityValue(unreadFirst ? "Unread first" : "All")
+                .accessibilityAddTraits(unreadFirst ? .isSelected : [])
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            if !bottomCompose && !selecting {
+                Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
+            }
         }
     }
     private var legacyBottomCompose: Bool {
@@ -196,7 +211,7 @@ struct MailboxView: View {
     @ViewBuilder private func mailbox(_ status: Workflow) -> some View {
         let items = store.list(status, search: search, unreadFirst: unreadFirst)
         if items.isEmpty {
-            if status == .inbox && pullAction != .off && search.isEmpty {
+            if status == .inbox && pullAction != .off && search.isEmpty && !selecting {
                 ScrollView {
                     ContentUnavailableView("You're all caught up", systemImage: status.symbol)
                         .background(PullScrollObserver(interaction: pull, action: performPull))
@@ -214,10 +229,11 @@ struct MailboxView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         } else {
-            List {
+            List(selection: selecting ? $selectedIDs : nil) {
                 Section {
                     ForEach(items) { conversation in
                         NavigationLink(value: conversation.id) { ConversationRow(conversation: conversation) }
+                            .tag(conversation.id)
                             .listRowInsets(EdgeInsets(top: 15, leading: 18, bottom: 15, trailing: 16))
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 swipeButtons(primary: leftPrimary, secondary: leftSecondary, conversation: conversation)
@@ -232,15 +248,18 @@ struct MailboxView: View {
                             )
                             .simultaneousGesture(
                                 LongPressGesture().onEnded { _ in
+                                    guard !selecting else { return }
                                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                     peeking = conversation.id
                                 }
                             )
-                            .accessibilityAction(named: "Peek") { peeking = conversation.id }
+                            .accessibilityAction(named: "Peek") { if !selecting { peeking = conversation.id } }
                     }
                 } header: {
                     VStack(alignment: .leading, spacing: 0) {
-                        if status == .inbox {
+                        if selecting {
+                            Text("\(selectedIDs.count) selected").textCase(nil)
+                        } else if status == .inbox {
                             let unreadCount = items.filter(\.unread).count
                             if unreadCount > 0 { Text("\(unreadCount) unread").textCase(nil) }
                         } else {
@@ -249,20 +268,21 @@ struct MailboxView: View {
                         Color.clear.frame(height: 0)
                     }
                     .background {
-                        if status == .inbox && pullAction != .off {
+                        if status == .inbox && pullAction != .off && !selecting {
                             PullScrollObserver(interaction: pull, action: performPull)
                         }
                     }
                 }
             }
             .listStyle(.plain)
-            .modifier(InboxPullModifier(mode: status == .inbox ? pullAction : .off, interaction: pull))
+            .environment(\.editMode, .constant(selecting ? .active : .inactive))
+            .modifier(InboxPullModifier(mode: status == .inbox && !selecting ? pullAction : .off, interaction: pull))
         }
     }
     @ViewBuilder private func swipeButtons(
         primary: MailboxSwipeAction, secondary: MailboxSwipeAction, conversation: Conversation
     ) -> some View {
-        if primary != .none {
+        if primary != .none && !selecting {
             swipeButton(primary, conversation: conversation)
             if secondary != .none && secondary != primary {
                 swipeButton(secondary, conversation: conversation)
@@ -294,8 +314,17 @@ struct MailboxView: View {
         }
     }
 
+    private func endSelection() { selecting = false; selectedIDs = [] }
+    private func pruneSelection() {
+        selectedIDs.formIntersection(store.list(selection, search: search).map(\.id))
+    }
+    private func applySelection(_ action: ConversationAction) {
+        let ids = selectedIDs
+        endSelection()
+        act { store.apply(ids: ids, action: action) }
+    }
     private func performPull() {
-        guard pullAction != .off else { return }
+        guard pullAction != .off && !selecting else { return }
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -311,6 +340,45 @@ struct MailboxView: View {
     private func act(_ action: () -> Void) {
         withAnimation { action() }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+}
+
+private struct MailboxSearchToolbar: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 17.1, *) {
+            content.searchPresentationToolbarBehavior(.avoidHidingContent)
+        } else { content }
+    }
+}
+
+struct BulkSelectionToolbar: ToolbarContent {
+    let active: Bool
+    let status: Workflow
+    let count: Int
+    let apply: (ConversationAction) -> Void
+    let snooze: () -> Void
+
+    var body: some ToolbarContent {
+        if active {
+            ToolbarItemGroup(placement: .bottomBar) {
+                Button(status == .settled ? "Restore" : "Settle", systemImage: status == .settled ? "tray" : "checkmark") {
+                    apply(.move(status == .settled ? .inbox : .settled))
+                }.disabled(count == 0)
+                Spacer()
+                Button("Snooze", systemImage: "clock", action: snooze).disabled(count == 0)
+                Spacer()
+                Menu {
+                    Button("Mark read", systemImage: "envelope.open") { apply(.read(unread: false)) }
+                    Button("Mark unread", systemImage: "envelope.badge") { apply(.read(unread: true)) }
+                    if status == .snoozed {
+                        Button("Restore to Inbox", systemImage: "tray") { apply(.move(.inbox)) }
+                    }
+                    Button("Pin", systemImage: "pin") { apply(.pin(true)) }
+                    Button("Unpin", systemImage: "pin.slash") { apply(.pin(false)) }
+                } label: { Label("Mark", systemImage: "ellipsis.circle") }
+                .disabled(count == 0)
+            }
+        }
     }
 }
 
