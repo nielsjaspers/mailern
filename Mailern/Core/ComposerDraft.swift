@@ -73,15 +73,24 @@ final class DraftStore {
     var error: String?
     private let url: URL
     private let write: (Data, URL) throws -> Void
+    private var loadFailure: String?
     init(url: URL = URL.applicationSupportDirectory.appending(path: "Mailern/drafts-v1.json"),
          write: @escaping (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }) {
         self.url = url
         self.write = write
+        reload()
+    }
+    func reload() {
         do {
-            if FileManager.default.fileExists(atPath: url.path) {
-                drafts = try JSONDecoder().decode([ComposerDraft].self, from: Data(contentsOf: url))
-            }
-        } catch { self.error = "Could not load drafts. \(error.localizedDescription)" }
+            let loaded = FileManager.default.fileExists(atPath: url.path)
+                ? try JSONDecoder().decode([ComposerDraft].self, from: Data(contentsOf: url)) : []
+            drafts = loaded
+            loadFailure = nil
+            error = nil
+        } catch {
+            loadFailure = "Could not load drafts. Existing storage has not been changed. \(error.localizedDescription)"
+            self.error = loadFailure
+        }
     }
     @discardableResult func save(_ draft: ComposerDraft) -> Bool {
         var updated = drafts.filter { $0.id != draft.id }
@@ -90,6 +99,7 @@ final class DraftStore {
     }
     @discardableResult func delete(_ id: UUID) -> Bool { persist(drafts.filter { $0.id != id }) }
     private func persist(_ updated: [ComposerDraft]) -> Bool {
+        guard loadFailure == nil else { error = loadFailure; return false }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try write(JSONEncoder().encode(updated), url)

@@ -93,6 +93,19 @@ import Foundation
         assert(forward.mode.replyID == nil && forward.attachments == draft.attachments && forward.to.isEmpty)
         assert(MailStore(persistence: disk).conversation(source.id) == sent)
         assert(drafts.delete(draft.id) && DraftStore(url: dir.appending(path: "drafts.json")).drafts.isEmpty)
+        let damagedURL = dir.appending(path: "damaged-drafts.json")
+        let damaged = Data("[{trailing damage".utf8)
+        try damaged.write(to: damagedURL)
+        let protected = DraftStore(url: damagedURL)
+        assert(protected.error != nil)
+        protected.error = nil
+        assert(!protected.save(draft) && !protected.delete(draft.id))
+        let retained = try Data(contentsOf: damagedURL)
+        assert(retained == damaged)
+        try JSONEncoder().encode([draft]).write(to: damagedURL)
+        protected.reload()
+        assert(protected.error == nil && protected.drafts == [draft])
+        assert(protected.delete(draft.id))
         enum Failure: Error { case disk }
         struct FailingDisk: ConversationPersistence {
             func load() throws -> [Conversation]? { DemoData.conversations() }
@@ -103,7 +116,7 @@ import Foundation
         assert(!failing.send(threadID: nil, account: source.account, to: ["test@example.com"], cc: [], subject: "Failure", body: "Retain draft"))
         assert(failing.conversations == before)
         assert(!store.send(threadID: UUID(), account: source.account, to: ["test@example.com"], cc: [], subject: "Missing source", body: "Retain draft"))
-        print("PASS: reply-all recipient deduplication, editable quotes, draft reload/delete, Bcc/rich text/attachments, forward payload and send-failure rollback")
+        print("PASS: reply-all recipient deduplication, editable quotes, draft reload/delete, Bcc/rich text/attachments, forward payload, unreadable draft protection, and send-failure rollback")
     }
 
     @MainActor static func checkBulkActions() throws {

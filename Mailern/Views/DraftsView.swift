@@ -26,7 +26,8 @@ struct DraftsView: View {
         }
         .sheet(item: $composer) { ComposerView(mode: $0) }
         .alert("Draft storage", isPresented: Binding(get: { composer == nil && drafts.error != nil }, set: { if !$0 && composer == nil { drafts.error = nil } })) {
-            Button("OK") { drafts.error = nil }
+            Button("Retry") { drafts.reload() }
+            Button("OK", role: .cancel) { drafts.error = nil }
         } message: { Text(drafts.error ?? "") }
     }
 }
