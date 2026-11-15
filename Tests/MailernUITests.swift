@@ -2,6 +2,37 @@ import XCTest
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testComposerCleanupFailureClosesAfterAcknowledgement() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["MAILERN_TEST_DRAFT_DELETE_FAILURE"] = "1"
+        app.launch()
+        let subject = "Sent cleanup \(UUID().uuidString.prefix(6))"
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
+        to.tap(); to.typeText("recipient@example.com")
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(subject)
+        app.textViews["Message body"].tap(); app.textViews["Message body"].typeText("Sent once")
+        app.buttons["Send"].tap()
+        XCTAssertTrue(app.alerts["Composer"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Send"].isEnabled)
+        XCTAssertFalse(app.textFields["Subject"].isEnabled)
+        capture("Sent message with draft cleanup error", in: app)
+        app.alerts["Composer"].buttons["OK"].tap()
+        waitForAbsence(app.navigationBars[subject])
+        select("Settled", in: app)
+        XCTAssertTrue(row(subject, in: app).exists)
+        app.terminate()
+        app.launchEnvironment = [:]
+        app.launch()
+        app.buttons["More"].tap(); app.buttons["Drafts"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", subject)).firstMatch.tap()
+        XCTAssertTrue(app.navigationBars[subject].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+    }
+
+    @MainActor
     func testComposerDraftSaveFailureKeepsEditor() {
         continueAfterFailure = false
         let app = XCUIApplication()

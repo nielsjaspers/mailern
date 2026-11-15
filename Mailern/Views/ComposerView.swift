@@ -77,6 +77,7 @@ struct ComposerView: View {
                     }
                 }.padding(.horizontal, 16).padding(.top, 10)
             }
+            .disabled(completed)
             .scrollDismissesKeyboard(.interactively)
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(title).navigationBarTitleDisplayMode(.large)
@@ -120,7 +121,7 @@ struct ComposerView: View {
         }
         .sheet(isPresented: $contacts) { recipientPicker }
         .alert("Composer", isPresented: Binding(get: { error != nil || drafts.error != nil }, set: { if !$0 { error = nil; drafts.error = nil } })) {
-            Button("OK") { error = nil; drafts.error = nil }
+            Button("OK") { error = nil; drafts.error = nil; if completed { dismiss() } }
         } message: { Text(error ?? drafts.error ?? "") }
     }
 
@@ -245,7 +246,10 @@ struct ComposerView: View {
                 return
             }
             completed = true
+            focus = nil
+            editor.view?.resignFirstResponder()
             if saved && !drafts.delete(draft.id) {
+                drafts.error = nil
                 error = "Message saved, but the draft could not be removed. You can retry deleting it from Drafts."
                 return
             }

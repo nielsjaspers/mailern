@@ -8,6 +8,11 @@ struct MailernApp: App {
         if ProcessInfo.processInfo.environment["MAILERN_TEST_DRAFT_WRITE_FAILURE"] == "1" {
             throw CocoaError(.fileWriteOutOfSpace)
         }
+        if ProcessInfo.processInfo.environment["MAILERN_TEST_DRAFT_DELETE_FAILURE"] == "1",
+           let previous = try? JSONDecoder().decode([ComposerDraft].self, from: Data(contentsOf: url)),
+           let next = try? JSONDecoder().decode([ComposerDraft].self, from: data), next.count < previous.count {
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
         #endif
         try data.write(to: url, options: .atomic)
     })
