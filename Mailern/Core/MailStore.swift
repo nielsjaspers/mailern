@@ -45,7 +45,7 @@ final class MailStore {
     func conversation(_ id: UUID) -> Conversation? { conversations.first { $0.id == id } }
     func list(_ status: Workflow, search: String = "", unreadFirst: Bool = false) -> [Conversation] {
         conversations.filter { c in
-            c.workflow == status && (search.isEmpty || ([c.subject, c.account.name] + c.messages.flatMap { [$0.sender, $0.address, $0.body] }).contains { $0.localizedCaseInsensitiveContains(search) })
+            c.workflow == status && (search.isEmpty || ([c.subject, c.account.name] + c.messages.flatMap { [$0.sender, $0.address, $0.body, $0.subject ?? ""] }).contains { $0.localizedCaseInsensitiveContains(search) })
         }.sorted {
             if status == .inbox && $0.pinned != $1.pinned { return $0.pinned }
             if status == .inbox && unreadFirst && $0.unread != $1.unread { return $0.unread }
@@ -144,7 +144,7 @@ final class MailStore {
         clearNotice()
         let before = conversations
         let message = MailMessage(sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body,
-                                  outgoing: true, bcc: bcc.isEmpty ? nil : bcc, richText: richText, attachments: attachments.isEmpty ? nil : attachments)
+                                  outgoing: true, bcc: bcc.isEmpty ? nil : bcc, richText: richText, attachments: attachments.isEmpty ? nil : attachments, subject: subject)
         if let threadID, let i = conversations.firstIndex(where: { $0.id == threadID }) {
             conversations[i].messages.append(message)
             conversations[i].move(to: .settled)

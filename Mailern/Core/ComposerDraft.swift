@@ -47,19 +47,20 @@ struct ComposerDraft: Codable, Equatable, Identifiable {
         var draft = Self(mode: mode)
         guard let c = conversation else { return draft }
         draft.accountID = c.accountID
+        let subject = c.latest.subject ?? c.subject
         switch mode {
         case .reply, .replyAll:
             let target = c.correspondent
             draft.to = target.outgoing ? target.to.joined(separator: ", ") : target.address
-            draft.subject = c.subject.lowercased().hasPrefix("re:") ? c.subject : "Re: \(c.subject)"
+            draft.subject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
             if case .replyAll = mode {
                 var seen = Set(MailAccount.demo.map { $0.address.lowercased() } + addresses(draft.to).map { $0.lowercased() })
                 draft.cc = (target.to + target.cc).filter { seen.insert($0.lowercased()).inserted }.joined(separator: ", ")
             }
             draft.text = "\n\nOn \(c.latest.date.formatted()), \(c.latest.sender) <\(c.latest.address)> wrote:\n\(c.latest.body)"
         case .forward:
-            draft.subject = c.subject.lowercased().hasPrefix("fwd:") ? c.subject : "Fwd: \(c.subject)"
-            draft.text = "\n\nBegin forwarded message:\n\nFrom: \(c.latest.sender) <\(c.latest.address)>\nDate: \(c.latest.date.formatted())\nSubject: \(c.subject)\nTo: \(c.latest.to.joined(separator: ", "))\n\n\(c.latest.body)"
+            draft.subject = subject.lowercased().hasPrefix("fwd:") ? subject : "Fwd: \(subject)"
+            draft.text = "\n\nBegin forwarded message:\n\nFrom: \(c.latest.sender) <\(c.latest.address)>\nDate: \(c.latest.date.formatted())\nSubject: \(subject)\nTo: \(c.latest.to.joined(separator: ", "))\n\n\(c.latest.body)"
             draft.attachments = c.latest.attachments ?? []
         default: break
         }

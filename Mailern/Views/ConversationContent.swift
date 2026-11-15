@@ -40,6 +40,10 @@ struct ConversationContent: View {
                             "To: \(message.to.joined(separator: ", "))"
                                 + (message.cc.isEmpty ? "" : "\nCc: \(message.cc.joined(separator: ", "))")
                         ).font(.caption).foregroundStyle(.secondary)
+                        if let subject = message.subject,
+                           subject != conversation.subject, subject.caseInsensitiveCompare("Re: \(conversation.subject)") != .orderedSame {
+                            Text("Subject: \(subject)").font(.subheadline).fontWeight(.semibold)
+                        }
                         Group {
                             if let richText = message.richText {
                                 RichMessageText(text: RichText.decode(richText, fallback: message.body))

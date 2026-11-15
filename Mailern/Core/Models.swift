@@ -33,6 +33,7 @@ struct MailMessage: Codable, Identifiable, Equatable {
     var bcc: [String]?
     var richText: Data?
     var attachments: [MailAttachment]?
+    var subject: String?
 }
 
 struct Conversation: Codable, Identifiable, Equatable {

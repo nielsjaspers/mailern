@@ -85,9 +85,11 @@ import Foundation
         let reloaded = DraftStore(url: dir.appending(path: "drafts.json"))
         assert(reloaded.drafts == [draft])
         assert(store.send(threadID: source.id, account: source.account, to: [reply.to], cc: ComposerDraft.addresses(reply.cc),
-                          subject: reply.subject, body: draft.text, bcc: ComposerDraft.addresses(draft.bcc), richText: draft.richText, attachments: draft.attachments))
+                          subject: "Updated project scope", body: draft.text, bcc: ComposerDraft.addresses(draft.bcc), richText: draft.richText, attachments: draft.attachments))
         let sent = store.conversation(source.id)!
         assert(sent.workflow == .settled && sent.latest.outgoing)
+        assert(sent.subject == source.subject && sent.latest.subject == "Updated project scope")
+        assert(store.list(.settled, search: "Updated project scope").contains { $0.id == source.id })
         assert(sent.latest.bcc == ["hidden@example.com"] && sent.latest.richText == draft.richText && sent.latest.attachments == draft.attachments)
         let forward = ComposerDraft.make(mode: .forward(source.id), conversation: sent)
         assert(forward.mode.replyID == nil && forward.attachments == draft.attachments && forward.to.isEmpty)
