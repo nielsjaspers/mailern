@@ -2,6 +2,56 @@ import XCTest
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testComposerDraftSaveFailureKeepsEditor() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let subject = "Draft recovery \(UUID().uuidString.prefix(6))"
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(subject)
+        app.textViews["Message body"].tap(); app.textViews["Message body"].typeText("Original text")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        app.terminate()
+        app.launchEnvironment["MAILERN_TEST_DRAFT_WRITE_FAILURE"] = "1"
+        app.launch()
+        func acknowledgeFailedSave() {
+            XCTAssertTrue(app.alerts["Composer"].waitForExistence(timeout: 5))
+            app.alerts["Composer"].buttons["OK"].tap()
+        }
+        func blockedSwipe(title: String) {
+            acknowledgeFailedSave()
+            let before = app.textViews["Message body"].value as? String
+            app.buttons["Sheet Grabber"].firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)), withVelocity: .slow, thenHoldForDuration: 0.1)
+            XCTAssertTrue(app.navigationBars[title].exists)
+            XCTAssertEqual(app.textViews["Message body"].value as? String, before)
+            capture("Failed save keeps the editor and its contents", in: app)
+        }
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText("Unsaved failure proof")
+        acknowledgeFailedSave()
+        app.textViews["Message body"].tap(); app.textViews["Message body"].typeText("Keep these new edits")
+        blockedSwipe(title: "Unsaved failure proof")
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+        app.buttons["More"].tap(); app.buttons["Drafts"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", subject)).firstMatch.tap()
+        XCTAssertTrue(app.navigationBars[subject].waitForExistence(timeout: 5))
+        app.textViews["Message body"].tap()
+        app.textViews["Message body"].typeText("Changed ")
+        blockedSwipe(title: subject)
+        app.terminate()
+        app.launchEnvironment = [:]
+        app.launch()
+        app.buttons["More"].tap(); app.buttons["Drafts"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", subject)).firstMatch.tap()
+        XCTAssertTrue(app.navigationBars[subject].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.textViews["Message body"].value as? String, "Original text")
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+    }
+
+    @MainActor
     func testComposerFileAttachment() {
         continueAfterFailure = false
         let app = XCUIApplication()

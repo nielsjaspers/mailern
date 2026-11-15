@@ -20,6 +20,13 @@ struct ComposerView: View {
     @State private var contacts = false
     @State private var importingPhotos = false
     @State private var error: String?
+    @State private var savedInput: DraftInput?
+    private struct DraftInput: Equatable {
+        var draft: ComposerDraft
+        var text: NSAttributedString
+        var edited: Bool
+    }
+    private var input: DraftInput { DraftInput(draft: draft, text: editor.text, edited: editor.edited) }
     @FocusState private var focus: Field?
     private enum Field { case to, cc, bcc, subject }
     private var dirty: Bool { loaded && (draft != initial || editor.edited) }
@@ -85,10 +92,15 @@ struct ComposerView: View {
         .tint(.blue)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .interactiveDismissDisabled(importingPhotos)
+        .interactiveDismissDisabled(importingPhotos || (!completed && dirty && savedInput != input))
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear(perform: load)
-        .onDisappear { if !completed && dirty { saveDraft(dismissAfter: false) } }
+        .task(id: input) {
+            guard loaded, dirty, !completed else { return }
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            guard !completed, !Task.isCancelled else { return }
+            saveDraft(dismissAfter: false)
+        }
         .onChange(of: scenePhase) { _, phase in if phase == .background && !completed && dirty { saveDraft(dismissAfter: false) } }
         .fileImporter(isPresented: $filePicker, allowedContentTypes: [.item], allowsMultipleSelection: true, onCompletion: importFiles)
         .photosPicker(isPresented: $photoPicker, selection: $photos, maxSelectionCount: 10, matching: .images)
@@ -217,6 +229,7 @@ struct ComposerView: View {
     private func saveDraft(dismissAfter: Bool) {
         do {
             guard drafts.save(try snapshot()) else { return }
+            savedInput = input
             if dismissAfter { completed = true; dismiss() }
         } catch { self.error = error.localizedDescription }
     }

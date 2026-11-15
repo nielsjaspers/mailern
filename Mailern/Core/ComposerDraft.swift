@@ -72,8 +72,11 @@ final class DraftStore {
     private(set) var drafts: [ComposerDraft] = []
     var error: String?
     private let url: URL
-    init(url: URL = URL.applicationSupportDirectory.appending(path: "Mailern/drafts-v1.json")) {
+    private let write: (Data, URL) throws -> Void
+    init(url: URL = URL.applicationSupportDirectory.appending(path: "Mailern/drafts-v1.json"),
+         write: @escaping (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }) {
         self.url = url
+        self.write = write
         do {
             if FileManager.default.fileExists(atPath: url.path) {
                 drafts = try JSONDecoder().decode([ComposerDraft].self, from: Data(contentsOf: url))
@@ -89,7 +92,7 @@ final class DraftStore {
     private func persist(_ updated: [ComposerDraft]) -> Bool {
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(updated).write(to: url, options: .atomic)
+            try write(JSONEncoder().encode(updated), url)
             drafts = updated
             error = nil
             return true

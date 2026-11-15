@@ -9,6 +9,8 @@ app_data=$(xcrun simctl get_app_container "$simulator_id" com.example.mailern da
 mkdir -p "$app_data/Documents"
 cp 'Tests/Fixtures/Sample attachment.txt' "$app_data/Documents/Sample attachment.txt"
 xcodebuild -project Mailern.xcodeproj -scheme Mailern -destination "id=$simulator_id" -derivedDataPath "$derived_data" test-without-building \
+  -only-testing:MailernTests \
+  -only-testing:MailernUITests/MailernUITests/testComposerDraftSaveFailureKeepsEditor \
   -only-testing:MailernUITests/MailernUITests/testComposerFileAttachment \
   -only-testing:MailernUITests/MailernUITests/testComposerFormattingDraftAndSend \
   -only-testing:MailernUITests/MailernUITests/testComposerReplyAndForwardSend \
