@@ -114,10 +114,15 @@ final class RichTextState {
         guard let view else { return }
         edited = true
         let range = (view.text as NSString).paragraphRange(for: view.selectedRange)
-        let style = ((attributes[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-        change(style)
-        if range.length > 0 { view.textStorage.addAttribute(.paragraphStyle, value: style, range: range) }
+        let before = NSAttributedString(attributedString: view.attributedText)
         var typing = view.typingAttributes
+        before.enumerateAttribute(.paragraphStyle, in: range) { value, span, _ in
+            let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            change(style)
+            view.textStorage.addAttribute(.paragraphStyle, value: style, range: span)
+        }
+        let style = ((typing[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+        change(style)
         typing[.paragraphStyle] = style
         view.typingAttributes = typing
         sync()
@@ -143,6 +148,7 @@ struct RichTextEditor: UIViewRepresentable {
         view.textContainerInset = UIEdgeInsets(top: 12, left: 0, bottom: 20, right: 0)
         view.textContainer.lineFragmentPadding = 0
         view.allowsEditingTextAttributes = true
+        if #available(iOS 18, *) { view.writingToolsBehavior = .none }
         view.accessibilityLabel = "Message body"
         view.delegate = context.coordinator
         state.view = view
