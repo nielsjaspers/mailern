@@ -152,6 +152,8 @@ struct MailboxView: View {
                 }
                 .toolbar {
                     BulkSelectionToolbar(active: selecting, status: status, count: selectedIDs.count,
+                                         hasUnread: selectedConversations.contains { $0.unread },
+                                         allPinned: !selectedIDs.isEmpty && selectedConversations.allSatisfy { $0.pinned },
                                          apply: applySelection, snooze: { bulkSnooze = true })
                 }
                 .toolbar(selecting ? .hidden : .visible, for: .tabBar)
@@ -161,7 +163,12 @@ struct MailboxView: View {
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             if selecting {
-                Button("Select All") { selectedIDs = Set(store.list(status, search: search).map(\.id)) }
+                let visibleIDs = Set(store.list(status, search: search).map(\.id))
+                let allSelected = !visibleIDs.isEmpty && visibleIDs.isSubset(of: selectedIDs)
+                Button(allSelected ? "Deselect All" : "Select All") {
+                    selectedIDs = allSelected ? [] : visibleIDs
+                }
+                .disabled(visibleIDs.isEmpty)
             } else {
                 Menu {
                     Button("Demo", systemImage: "play.circle") { demo = true }
@@ -174,6 +181,9 @@ struct MailboxView: View {
                 if selecting { endSelection() }
                 else { peeking = nil; pull.cancel(); selecting = true }
             }
+        }
+        if #available(iOS 26, *), !selecting, status == .inbox || !bottomCompose {
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
         }
         ToolbarItem(placement: .topBarTrailing) {
             if status == .inbox && !selecting {
@@ -314,6 +324,9 @@ struct MailboxView: View {
         }
     }
 
+    private var selectedConversations: [Conversation] {
+        store.conversations.filter { selectedIDs.contains($0.id) }
+    }
     private func endSelection() { selecting = false; selectedIDs = [] }
     private func pruneSelection() {
         selectedIDs.formIntersection(store.list(selection, search: search).map(\.id))
@@ -355,6 +368,8 @@ struct BulkSelectionToolbar: ToolbarContent {
     let active: Bool
     let status: Workflow
     let count: Int
+    let hasUnread: Bool
+    let allPinned: Bool
     let apply: (ConversationAction) -> Void
     let snooze: () -> Void
 
@@ -368,13 +383,16 @@ struct BulkSelectionToolbar: ToolbarContent {
                 Button("Snooze", systemImage: "clock", action: snooze).disabled(count == 0)
                 Spacer()
                 Menu {
-                    Button("Mark read", systemImage: "envelope.open") { apply(.read(unread: false)) }
-                    Button("Mark unread", systemImage: "envelope.badge") { apply(.read(unread: true)) }
+                    Button(hasUnread ? "Mark read" : "Mark unread",
+                           systemImage: hasUnread ? "envelope.open" : "envelope.badge") {
+                        apply(.read(unread: !hasUnread))
+                    }
                     if status == .snoozed {
                         Button("Restore to Inbox", systemImage: "tray") { apply(.move(.inbox)) }
                     }
-                    Button("Pin", systemImage: "pin") { apply(.pin(true)) }
-                    Button("Unpin", systemImage: "pin.slash") { apply(.pin(false)) }
+                    Button(allPinned ? "Unpin" : "Pin", systemImage: allPinned ? "pin.slash" : "pin") {
+                        apply(.pin(!allPinned))
+                    }
                 } label: { Label("Mark", systemImage: "ellipsis.circle") }
                 .disabled(count == 0)
             }
