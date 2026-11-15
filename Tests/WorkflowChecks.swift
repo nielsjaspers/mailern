@@ -67,6 +67,17 @@ import Foundation
         assert(reply.to == source.correspondent.address)
         assert(ComposerDraft.addresses(reply.cc) == ["coordinator@college.example.com"])
         assert(reply.subject == "Re: \(source.subject)" && reply.text.contains(source.latest.body))
+        let revised = MailStore(persistence: JSONPersistence(url: dir.appending(path: "revised-recipients.json")))
+        let revisedID = revised.list(.inbox).first { $0.subject == source.subject }!.id
+        assert(revised.send(threadID: revisedID, account: source.account, to: ["revised@example.com"],
+                            cc: ["team@example.com", source.account.address, "REVISED@example.com"],
+                            subject: source.subject, body: "Revised recipient group"))
+        let revisedSource = revised.conversation(revisedID)!
+        let revisedReply = ComposerDraft.make(mode: .replyAll(revisedID), conversation: revisedSource)
+        assert(revisedReply.to == "revised@example.com" && revisedReply.cc == "team@example.com")
+        assert(revisedReply.text.contains("Revised recipient group") && !revisedReply.text.contains(source.latest.body))
+        let singleReply = ComposerDraft.make(mode: .reply(revisedID), conversation: revisedSource)
+        assert(singleReply.to == "revised@example.com" && singleReply.cc.isEmpty)
         var draft = ComposerDraft.make(mode: .new, conversation: nil)
         assert(!draft.canSend)
         draft.to = "recipient@example.com"
