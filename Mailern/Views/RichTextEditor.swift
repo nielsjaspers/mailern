@@ -61,32 +61,68 @@ final class RichTextState {
         view?.becomeFirstResponder()
         reloadKeyboard()
     }
-    func attribute(_ key: NSAttributedString.Key, _ value: Any) {
-        guard let view else { return }
-        edited = true
-        let range = view.selectedRange
-        if range.length > 0 {
-            view.textStorage.addAttribute(key, value: value, range: range)
+    @MainActor private struct EditSnapshot {
+        let text: NSAttributedString
+        let selection: NSRange
+        let typing: [NSAttributedString.Key: Any]
+        init(_ view: UITextView) {
+            text = NSAttributedString(attributedString: view.attributedText)
+            selection = view.selectedRange
+            typing = view.typingAttributes
         }
-        var typing = view.typingAttributes
-        typing[key] = value
-        view.typingAttributes = typing
+    }
+    // Direct text storage edits bypass UITextView's native undo tracking.
+    private func recordEdit(_ mutation: (UITextView) -> Void) {
+        guard let view else { return }
+        let before = EditSnapshot(view)
+        let undo = view.undoManager
+        undo?.beginUndoGrouping()
+        undo?.registerUndo(withTarget: self) { $0.restore(before) }
+        mutation(view)
+        undo?.setActionName("Format")
+        undo?.endUndoGrouping()
+        edited = true
         sync()
     }
-    private func transformFonts(_ transform: (UIFont) -> UIFont) {
+    private func restore(_ snapshot: EditSnapshot) {
         guard let view else { return }
-        edited = true
-        let range = view.selectedRange
-        let before = NSAttributedString(attributedString: view.attributedText)
+        let inverse = EditSnapshot(view)
+        view.undoManager?.registerUndo(withTarget: self) { $0.restore(inverse) }
+        view.undoManager?.setActionName("Format")
         view.textStorage.beginEditing()
-        before.enumerateAttribute(.font, in: range) { value, span, _ in
-            view.textStorage.addAttribute(.font, value: transform(value as? UIFont ?? .preferredFont(forTextStyle: .body)), range: span)
-        }
+        if view.text == snapshot.text.string {
+            snapshot.text.enumerateAttributes(in: NSRange(location: 0, length: snapshot.text.length)) { attributes, range, _ in
+                view.textStorage.setAttributes(attributes, range: range)
+            }
+        } else { view.textStorage.setAttributedString(snapshot.text) }
         view.textStorage.endEditing()
-        var typing = view.typingAttributes
-        typing[.font] = transform(typing[.font] as? UIFont ?? .preferredFont(forTextStyle: .body))
-        view.typingAttributes = typing
+        view.selectedRange = snapshot.selection
+        view.typingAttributes = snapshot.typing
+        edited = true
         sync()
+    }
+    func attribute(_ key: NSAttributedString.Key, _ value: Any) {
+        recordEdit { view in
+            let range = view.selectedRange
+            if range.length > 0 { view.textStorage.addAttribute(key, value: value, range: range) }
+            var typing = view.typingAttributes
+            typing[key] = value
+            view.typingAttributes = typing
+        }
+    }
+    private func transformFonts(_ transform: (UIFont) -> UIFont) {
+        recordEdit { view in
+            let range = view.selectedRange
+            let before = NSAttributedString(attributedString: view.attributedText)
+            var typing = view.typingAttributes
+            view.textStorage.beginEditing()
+            before.enumerateAttribute(.font, in: range) { value, span, _ in
+                view.textStorage.addAttribute(.font, value: transform(value as? UIFont ?? .preferredFont(forTextStyle: .body)), range: span)
+            }
+            view.textStorage.endEditing()
+            typing[.font] = transform(typing[.font] as? UIFont ?? .preferredFont(forTextStyle: .body))
+            view.typingAttributes = typing
+        }
     }
     func setTrait(_ trait: UIFontDescriptor.SymbolicTraits, enabled: Bool) {
         transformFonts { font in
@@ -111,21 +147,20 @@ final class RichTextState {
         attribute(.font, chosen)
     }
     func paragraph(_ change: (NSMutableParagraphStyle) -> Void) {
-        guard let view else { return }
-        edited = true
-        let range = (view.text as NSString).paragraphRange(for: view.selectedRange)
-        let before = NSAttributedString(attributedString: view.attributedText)
-        var typing = view.typingAttributes
-        before.enumerateAttribute(.paragraphStyle, in: range) { value, span, _ in
-            let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+        recordEdit { view in
+            let range = (view.text as NSString).paragraphRange(for: view.selectedRange)
+            let before = NSAttributedString(attributedString: view.attributedText)
+            var typing = view.typingAttributes
+            before.enumerateAttribute(.paragraphStyle, in: range) { value, span, _ in
+                let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+                change(style)
+                view.textStorage.addAttribute(.paragraphStyle, value: style, range: span)
+            }
+            let style = ((typing[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
             change(style)
-            view.textStorage.addAttribute(.paragraphStyle, value: style, range: span)
+            typing[.paragraphStyle] = style
+            view.typingAttributes = typing
         }
-        let style = ((typing[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-        change(style)
-        typing[.paragraphStyle] = style
-        view.typingAttributes = typing
-        sync()
     }
     func list(numbered: Bool) {
         paragraph { style in style.textLists = [NSTextList(markerFormat: numbered ? .decimal : .disc, options: 0)] }
@@ -133,6 +168,7 @@ final class RichTextState {
 }
 
 struct RichTextEditor: UIViewRepresentable {
+    @Environment(\.isEnabled) private var isEnabled
     let state: RichTextState
     let attach: () -> Void
     let photos: () -> Void
@@ -156,6 +192,7 @@ struct RichTextEditor: UIViewRepresentable {
         return view
     }
     func updateUIView(_ view: QuotedTextView, context: Context) {
+        view.isEditable = isEnabled
         if !view.attributedText.isEqual(to: state.text) {
             // UITextView changes selection while assigning content. Do not feed that temporary range back into the draft.
             let range = state.selection
