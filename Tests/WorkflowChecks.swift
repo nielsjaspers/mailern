@@ -2,6 +2,7 @@ import Foundation
 
 @main struct WorkflowChecks {
     @MainActor static func main() throws {
+        try checkBulkActions()
         checkDeliberatePull()
         try checkInboxOrder()
         try checkSnoozeSettings()
@@ -56,6 +57,44 @@ import Foundation
         assert(store.error == nil)
         print("PASS: read/workflow independence, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
     }
+    @MainActor static func checkBulkActions() throws {
+        let disk = JSONPersistence(url: URL.temporaryDirectory.appending(path: "mailern-bulk-\(UUID())/demo.json"))
+        let store = MailStore(persistence: disk)
+        let ids = Set(store.list(.inbox).prefix(2).map(\.id))
+        let first = ids.first!
+        store.markRead(first)
+        let before = store.conversations.filter { ids.contains($0.id) }
+        store.apply(ids: ids, action: .move(.settled))
+        assert(ids.allSatisfy { store.conversation($0)!.workflow == .settled })
+        store.undo()
+        assert(store.conversations.filter { ids.contains($0.id) } == before)
+        store.apply(ids: ids, action: .read(unread: true))
+        assert(ids.allSatisfy { store.conversation($0)!.unread })
+        store.togglePin(first)
+        let pinned = store.conversation(first)!.pinned
+        store.undo()
+        assert(store.conversation(first)!.pinned == pinned)
+        assert(ids.allSatisfy { id in store.conversation(id)!.unread == before.first { $0.id == id }!.unread })
+        let pins = store.conversations.filter { ids.contains($0.id) }
+        store.apply(ids: ids, action: .pin(true))
+        assert(ids.allSatisfy { store.conversation($0)!.pinned })
+        store.undo()
+        assert(store.conversations.filter { ids.contains($0.id) } == pins)
+        let until = Date.now.addingTimeInterval(500)
+        store.apply(ids: ids, action: .move(.snoozed, until: until))
+        assert(ids.allSatisfy { store.conversation($0)!.snoozedUntil == until })
+        store.apply(ids: ids, action: .move(.inbox))
+        assert(ids.allSatisfy { store.conversation($0)!.snoozedUntil == nil })
+        store.undo()
+        assert(ids.allSatisfy { store.conversation($0)!.workflow == .snoozed })
+        store.apply(ids: ids, action: .move(.settled))
+        store.receiveReply(first)
+        store.undo()
+        assert(store.conversation(first)!.workflow == .inbox && store.conversation(first)!.unread)
+        assert(MailStore(persistence: disk).conversations == store.conversations)
+        print("PASS: batch move/read/pin/snooze/restore, whole-batch field-specific Undo, incoming precedence and persistence")
+    }
+
     @MainActor static func checkInboxOrder() throws {
         struct FixturePersistence: ConversationPersistence {
             let items: [Conversation]

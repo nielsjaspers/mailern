@@ -21,12 +21,19 @@ struct JSONPersistence: ConversationPersistence {
     }
 }
 
+enum ConversationAction {
+    case move(Workflow, until: Date? = nil)
+    case read(unread: Bool)
+    case pin(Bool)
+}
+
 @MainActor @Observable
 final class MailStore {
     private(set) var conversations: [Conversation] = []
     var error: String?
     private(set) var notice: String?
-    private var undoSnapshot: Conversation?
+    private var undoSnapshot: [Conversation] = []
+    private var undoAction: ConversationAction?
     private let persistence: any ConversationPersistence
 
     init(persistence: any ConversationPersistence = JSONPersistence.local) {
@@ -55,22 +62,58 @@ final class MailStore {
         guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
         action(&conversations[index]); save()
     }
-    func markRead(_ id: UUID, unread: Bool = false) { update(id) { $0.unread = unread } }
-    func togglePin(_ id: UUID) { update(id) { $0.pinned.toggle() } }
+    func markRead(_ id: UUID, unread: Bool = false) {
+        if case .read = undoAction { clearNotice() }
+        update(id) { $0.unread = unread }
+    }
+    func togglePin(_ id: UUID) {
+        if case .pin = undoAction { clearNotice() }
+        update(id) { $0.pinned.toggle() }
+    }
     func move(_ id: UUID, to status: Workflow, until: Date? = nil) {
-        guard status != .snoozed || (until ?? .distantPast) > .now else { return }
-        undoSnapshot = conversation(id)
-        update(id) { $0.move(to: status, until: until) }
-        notice = status == .settled ? "Moved to Settled" : status == .snoozed ? "Conversation snoozed" : "Restored to Inbox"
+        apply(ids: [id], action: .move(status, until: until))
+    }
+    func apply(ids: Set<UUID>, action: ConversationAction) {
+        if case .move(.snoozed, let until) = action, (until ?? .distantPast) <= .now { return }
+        let before = conversations.filter { ids.contains($0.id) }
+        guard !before.isEmpty else { return }
+        undoSnapshot = before
+        undoAction = action
+        for i in conversations.indices where ids.contains(conversations[i].id) {
+            switch action {
+            case .move(let status, let until): conversations[i].move(to: status, until: until)
+            case .read(let unread): conversations[i].unread = unread
+            case .pin(let pinned): conversations[i].pinned = pinned
+            }
+        }
+        let message: String
+        switch action {
+        case .move(let status, _):
+            message = status == .settled ? "Moved to Settled" : status == .snoozed ? "Conversation snoozed" : "Restored to Inbox"
+        case .read(let unread): message = unread ? "Marked unread" : "Marked read"
+        case .pin(let pinned): message = pinned ? "Pinned" : "Unpinned"
+        }
+        notice = before.count > 1 ? "\(before.count) conversations: \(message)" : message
+        save()
     }
     func undo() {
-        guard let old = undoSnapshot, let current = conversation(old.id) else { return }
+        guard let action = undoAction, !undoSnapshot.isEmpty else { return }
         // Incoming messages invalidate undo so a stale action cannot hide new mail.
-        guard current.messages == old.messages else { clearNotice(); return }
-        update(old.id) { $0.workflow = old.workflow; $0.snoozedUntil = old.snoozedUntil }
+        guard undoSnapshot.allSatisfy({ conversation($0.id)?.messages == $0.messages }) else { clearNotice(); return }
+        for old in undoSnapshot {
+            guard let i = conversations.firstIndex(where: { $0.id == old.id }) else { continue }
+            switch action {
+            case .move:
+                conversations[i].workflow = old.workflow
+                conversations[i].snoozedUntil = old.snoozedUntil
+            case .read: conversations[i].unread = old.unread
+            case .pin: conversations[i].pinned = old.pinned
+            }
+        }
+        save()
         clearNotice()
     }
-    func clearNotice() { notice = nil; undoSnapshot = nil }
+    func clearNotice() { notice = nil; undoSnapshot = []; undoAction = nil }
     func wakeDue(now: Date = .now) {
         var changed = false
         for i in conversations.indices where conversations[i].workflow == .snoozed {
