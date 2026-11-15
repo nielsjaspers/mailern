@@ -13,10 +13,32 @@ enum ComposeMode: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct MailAttachment: Codable, Equatable, Identifiable, Sendable {
-    var id = UUID()
-    var name: String
-    var data: Data
-    var contentType: String
+    let id: UUID
+    let name: String
+    let data: Data
+    let contentType: String
+
+    init(name: String, data: Data, contentType: String) {
+        id = UUID()
+        self.name = name
+        self.data = data
+        self.contentType = contentType
+    }
+    private enum CodingKeys: String, CodingKey { case id, name, contentType }
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        contentType = try values.decode(String.self, forKey: .contentType)
+        data = try Data(contentsOf: AttachmentJSON.payloadURL(id, context: decoder.userInfo), options: .mappedIfSafe)
+    }
+    func encode(to encoder: any Encoder) throws {
+        try AttachmentJSON.writePayload(data, id: id, context: encoder.userInfo)
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(name, forKey: .name)
+        try values.encode(contentType, forKey: .contentType)
+    }
 }
 
 struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
@@ -85,8 +107,7 @@ final class DraftStore {
         catch { failedToLoad(error) }
     }
     private nonisolated static func read(_ url: URL) throws -> [ComposerDraft] {
-        try FileManager.default.fileExists(atPath: url.path)
-            ? JSONDecoder().decode([ComposerDraft].self, from: Data(contentsOf: url)) : []
+        try AttachmentJSON.load([ComposerDraft].self, from: url) ?? []
     }
     func reload() async {
         let url = url
@@ -108,7 +129,13 @@ final class DraftStore {
     }
     @discardableResult func delete(_ id: UUID) async -> Bool {
         await enqueue {
-            guard self.drafts.contains(where: { $0.id == id }) else { return true }
+            guard self.drafts.contains(where: { $0.id == id }) else {
+                if self.loadFailure == nil {
+                    let url = self.url
+                    await Task.detached { AttachmentJSON.removeUnusedPayloads(for: url, as: [ComposerDraft].self) }.value
+                }
+                return true
+            }
             return await self.persist(self.drafts.filter { $0.id != id })
         }
     }
@@ -128,8 +155,7 @@ final class DraftStore {
         let write = write
         do {
             try await Task.detached(priority: .utility) {
-                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try write(JSONEncoder().encode(updated), url)
+                try AttachmentJSON.save(updated, to: url, write: write)
             }.value
             drafts = updated
             error = nil

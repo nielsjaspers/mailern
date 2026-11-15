@@ -4,6 +4,7 @@ import Foundation
     @MainActor static func main() async throws {
         try await checkComposerData()
         try await checkDraftWriteOrdering()
+        try await checkAttachmentStorage()
         try checkBulkActions()
         checkDeliberatePull()
         try checkInboxOrder()
@@ -125,7 +126,7 @@ import Foundation
         assert(!protectedSave && protectedDelete)
         let retained = try Data(contentsOf: damagedURL)
         assert(retained == damaged)
-        try JSONEncoder().encode([draft]).write(to: damagedURL)
+        try AttachmentJSON.save([draft], to: damagedURL)
         await protected.reload()
         assert(protected.error == nil && protected.drafts == [draft])
         let recoveredDelete = await protected.delete(draft.id)
@@ -210,6 +211,63 @@ import Foundation
         assert(store.drafts.map(\.id) == [second.id])
         assert(DraftStore(url: url).drafts.map(\.id) == [second.id])
         print("PASS: background writes, cancelled-save completion, cross-draft ordering, and ordered deletion")
+    }
+
+    @MainActor static func checkAttachmentStorage() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-attachment-files-\(UUID())")
+        let draftURL = directory.appending(path: "drafts.json")
+        let mailURL = directory.appending(path: "mail.json")
+        let payload = Data(repeating: 42, count: 1024 * 1024)
+        let file = MailAttachment(name: "Sample.bin", data: payload, contentType: "public.data")
+        let draft = ComposerDraft(subject: "File storage", attachments: [file])
+        let drafts = DraftStore(url: draftURL)
+        let saved = await drafts.save(draft)
+        assert(saved)
+        let metadata = try Data(contentsOf: draftURL)
+        assert(metadata.count < 4096)
+        let loaded = DraftStore(url: draftURL).drafts[0].attachments[0]
+        assert(loaded.data == payload)
+        let mail = MailStore(persistence: JSONPersistence(url: mailURL))
+        assert(mail.send(threadID: nil, account: MailAccount.demo[1], to: ["recipient@example.com"], cc: [],
+                         subject: draft.subject, body: "Attached", attachments: [loaded]))
+        let draftFile = AttachmentJSON.directory(for: draftURL).appending(path: file.id.uuidString)
+        let mailFile = AttachmentJSON.directory(for: mailURL).appending(path: file.id.uuidString)
+        let originalDate = try mailFile.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let deleted = await drafts.delete(draft.id)
+        assert(deleted && !FileManager.default.fileExists(atPath: draftFile.path))
+        let sent = mail.conversations.first { $0.subject == draft.subject }!.id
+        assert(mail.conversation(sent)!.latest.attachments![0].data == payload)
+        mail.markRead(sent)
+        mail.togglePin(sent)
+        mail.move(sent, to: .inbox)
+        mail.undo()
+        let mailMetadata = try Data(contentsOf: mailURL)
+        let savedDate = try mailFile.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        assert(mailMetadata.count < 32 * 1024 && savedDate == originalDate)
+        assert(MailStore(persistence: JSONPersistence(url: mailURL)).conversation(sent)!.latest.attachments![0].data == payload)
+
+        let healthy = await drafts.save(draft)
+        assert(healthy)
+        let durableMetadata = try Data(contentsOf: draftURL)
+        let failing = DraftStore(url: draftURL, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let unsavedFile = MailAttachment(name: "Unsaved.bin", data: Data([1, 2, 3]), contentType: "public.data")
+        let unsaved = ComposerDraft(subject: "Failed metadata", attachments: [unsavedFile])
+        let failed = await failing.save(unsaved)
+        let preservedMetadata = try Data(contentsOf: draftURL)
+        assert(!failed && preservedMetadata == durableMetadata)
+        assert(!FileManager.default.fileExists(atPath: AttachmentJSON.directory(for: draftURL).appending(path: unsavedFile.id.uuidString).path))
+        let discarded = await failing.delete(unsaved.id)
+        assert(discarded && !FileManager.default.fileExists(atPath: AttachmentJSON.directory(for: draftURL).appending(path: unsavedFile.id.uuidString).path))
+        assert(FileManager.default.fileExists(atPath: draftFile.path))
+        let damaged = Data("[{}]".utf8)
+        try damaged.write(to: draftURL)
+        let retainedAfterCorruption = await drafts.delete(UUID())
+        assert(retainedAfterCorruption && FileManager.default.fileExists(atPath: draftFile.path))
+        let protected = DraftStore(url: draftURL)
+        let untouched = await protected.delete(UUID())
+        let preservedDamage = try Data(contentsOf: draftURL)
+        assert(untouched && preservedDamage == damaged && FileManager.default.fileExists(atPath: draftFile.path))
+        print("PASS: small metadata, mapped attachment reload, draft-to-mail transfer, unchanged payloads on workflow saves, cleanup, and failed/corrupt metadata protection")
     }
 
     @MainActor static func checkBulkActions() throws {

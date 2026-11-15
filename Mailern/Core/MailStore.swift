@@ -9,12 +9,10 @@ protocol ConversationPersistence {
 struct JSONPersistence: ConversationPersistence {
     var url: URL
     func load() throws -> [Conversation]? {
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try JSONDecoder().decode([Conversation].self, from: Data(contentsOf: url))
+        try AttachmentJSON.load([Conversation].self, from: url)
     }
     func save(_ conversations: [Conversation]) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(conversations).write(to: url, options: .atomic)
+        try AttachmentJSON.save(conversations, to: url)
     }
     static var local: Self {
         Self(url: URL.applicationSupportDirectory.appending(path: "Mailern/demo-v1.json"))
