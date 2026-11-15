@@ -122,6 +122,26 @@ import Foundation
         let before = failing.conversations
         assert(!failing.send(threadID: nil, account: source.account, to: ["test@example.com"], cc: [], subject: "Failure", body: "Retain draft"))
         assert(failing.conversations == before)
+        final class ControlledDisk: ConversationPersistence {
+            var fail = false
+            func load() throws -> [Conversation]? { DemoData.conversations() }
+            func save(_ conversations: [Conversation]) throws { if fail { throw Failure.disk } }
+        }
+        let controlled = ControlledDisk()
+        let recoverable = MailStore(persistence: controlled)
+        let recoveryID = recoverable.list(.inbox)[0].id
+        recoverable.move(recoveryID, to: .settled)
+        let notice = recoverable.notice
+        controlled.fail = true
+        assert(!recoverable.send(threadID: nil, account: source.account, to: ["test@example.com"], cc: [], subject: "Failure", body: "Keep Undo"))
+        assert(recoverable.notice == notice)
+        controlled.fail = false
+        recoverable.undo()
+        assert(recoverable.conversation(recoveryID)!.workflow == .inbox)
+        recoverable.move(recoveryID, to: .settled)
+        assert(recoverable.send(threadID: nil, account: source.account, to: ["test@example.com"], cc: [], subject: "Success", body: "Invalidate Undo"))
+        recoverable.undo()
+        assert(recoverable.notice == nil && recoverable.conversation(recoveryID)!.workflow == .settled)
         assert(!store.send(threadID: UUID(), account: source.account, to: ["test@example.com"], cc: [], subject: "Missing source", body: "Retain draft"))
         print("PASS: reply-all recipient deduplication, editable quotes, draft reload/delete, Bcc/rich text/attachments, forward payload, unreadable draft protection, and send-failure rollback")
     }

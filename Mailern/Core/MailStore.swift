@@ -141,7 +141,6 @@ final class MailStore {
             error = "The original conversation is no longer available. Your draft has not been sent."
             return false
         }
-        clearNotice()
         let before = conversations
         let message = MailMessage(sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body,
                                   outgoing: true, bcc: bcc.isEmpty ? nil : bcc, richText: richText, attachments: attachments.isEmpty ? nil : attachments, subject: subject)
@@ -153,6 +152,7 @@ final class MailStore {
         }
         do {
             try persistence.save(conversations)
+            clearNotice()
             error = nil
             return true
         } catch {
