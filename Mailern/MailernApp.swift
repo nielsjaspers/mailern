@@ -13,6 +13,12 @@ struct MailernApp: App {
            let next = try? JSONDecoder().decode([ComposerDraft].self, from: data), next.count < previous.count {
             throw CocoaError(.fileWriteOutOfSpace)
         }
+        if let subject = ProcessInfo.processInfo.environment["MAILERN_TEST_DRAFT_REVERT_SUBJECT"],
+           let previous = try? JSONDecoder().decode([ComposerDraft].self, from: Data(contentsOf: url)),
+           let next = try? JSONDecoder().decode([ComposerDraft].self, from: data),
+           next.contains(where: { draft in draft.subject == subject && previous.contains { $0.id == draft.id && $0.subject != subject } }) {
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
         #endif
         try data.write(to: url, options: .atomic)
     })

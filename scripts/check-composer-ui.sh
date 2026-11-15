@@ -10,6 +10,7 @@ mkdir -p "$app_data/Documents"
 cp 'Tests/Fixtures/Sample attachment.txt' "$app_data/Documents/Sample attachment.txt"
 xcodebuild -project Mailern.xcodeproj -scheme Mailern -destination "id=$simulator_id" -derivedDataPath "$derived_data" test-without-building \
   -only-testing:MailernTests \
+  -only-testing:MailernUITests/MailernUITests/testComposerRevertedHeadersPersistAndStayProtected \
   -only-testing:MailernUITests/MailernUITests/testComposerCleanupFailureClosesAfterAcknowledgement \
   -only-testing:MailernUITests/MailernUITests/testComposerDraftSaveFailureKeepsEditor \
   -only-testing:MailernUITests/MailernUITests/testComposerFileAttachment \

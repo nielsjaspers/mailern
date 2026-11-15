@@ -29,7 +29,11 @@ struct ComposerView: View {
     private var input: DraftInput { DraftInput(draft: draft, text: editor.text, edited: editor.edited) }
     @FocusState private var focus: Field?
     private enum Field { case to, cc, bcc, subject }
-    private var dirty: Bool { loaded && (draft != initial || editor.edited) }
+    private var dirty: Bool {
+        guard loaded else { return false }
+        if let savedInput { return savedInput != input }
+        return draft != initial || editor.edited
+    }
     private var saved: Bool { drafts.drafts.contains { $0.id == draft.id } }
     private var title: String { draft.subject.isEmpty ? "New Message" : draft.subject }
     private var account: MailAccount { MailAccount.demo.first { $0.id == draft.accountID } ?? MailAccount.demo[1] }

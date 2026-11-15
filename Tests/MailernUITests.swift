@@ -2,6 +2,55 @@ import XCTest
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testComposerRevertedHeadersPersistAndStayProtected() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        for failure in [false, true] {
+            let original = "Header \(UUID().uuidString.prefix(6))"
+            app.launchEnvironment = failure ? ["MAILERN_TEST_DRAFT_REVERT_SUBJECT": original] : [:]
+            app.launch()
+            app.buttons["Compose"].tap()
+            XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+            app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(original)
+            app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+            app.buttons["More"].tap(); app.buttons["Drafts"].tap()
+            app.buttons.matching(NSPredicate(format: "label CONTAINS %@", original)).firstMatch.tap()
+            XCTAssertTrue(app.navigationBars[original].waitForExistence(timeout: 5))
+            let subject = app.textFields["Subject"]
+            subject.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
+            subject.typeText(" changed")
+            XCTAssertEqual(subject.value as? String, original + " changed")
+            Thread.sleep(forTimeInterval: 0.6) // Cross the autosave debounce before reverting.
+            subject.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
+            subject.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 8))
+            XCTAssertEqual(subject.value as? String, original)
+            if failure {
+                XCTAssertTrue(app.alerts["Composer"].waitForExistence(timeout: 5))
+                app.alerts["Composer"].buttons["OK"].tap()
+            }
+            app.buttons["Sheet Grabber"].firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)), withVelocity: .slow, thenHoldForDuration: 0.1)
+            if failure {
+                XCTAssertTrue(app.navigationBars[original].exists)
+                XCTAssertEqual(subject.value as? String, original)
+                app.terminate()
+                app.launchEnvironment = [:]
+                app.launch()
+                app.buttons["More"].tap(); app.buttons["Drafts"].tap()
+                app.buttons.matching(NSPredicate(format: "label CONTAINS %@", original + " changed")).firstMatch.tap()
+                XCTAssertTrue(app.navigationBars[original + " changed"].waitForExistence(timeout: 5))
+            } else {
+                waitForAbsence(app.navigationBars[original])
+                app.buttons.matching(NSPredicate(format: "label CONTAINS %@", original)).firstMatch.tap()
+                XCTAssertTrue(app.navigationBars[original].waitForExistence(timeout: 5))
+                XCTAssertEqual(app.textFields["Subject"].value as? String, original)
+            }
+            app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+            app.terminate()
+        }
+    }
+
+    @MainActor
     func testComposerCleanupFailureClosesAfterAcknowledgement() {
         continueAfterFailure = false
         let app = XCUIApplication()
