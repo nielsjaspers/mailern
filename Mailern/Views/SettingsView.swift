@@ -27,6 +27,7 @@ struct SettingsView: View {
                 NavigationLink("Snooze settings") { SnoozeSettingsView() }
             }
             Section("Labs") {
+                NavigationLink("Swipe actions") { SwipeSettingsView() }
                 Picker("Inbox pull-down", selection: $pullAction) {
                     ForEach(InboxPullAction.allCases) { action in
                         Text(action.title).tag(action)

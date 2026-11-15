@@ -2,6 +2,66 @@ import XCTest
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testCustomSwipeActions() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        func settings() {
+            app.buttons["More"].tap()
+            app.buttons["Settings"].tap()
+            app.buttons["Swipe actions"].tap()
+            XCTAssertTrue(app.navigationBars["Swipe actions"].waitForExistence(timeout: 5))
+        }
+        func choose(_ direction: String, _ action: String) {
+            app.buttons["\(direction)-primary"].tap()
+            app.buttons[action].tap()
+        }
+        func close() {
+            app.navigationBars.buttons["Settings"].tap()
+            app.buttons["Done"].tap()
+        }
+        settings()
+        app.buttons["Reset Swipe Actions"].tap()
+        choose("Swipe left", "Read / Unread")
+        choose("Swipe right", "Settle / Restore")
+        capture("Custom swipe settings", in: app)
+        close()
+        app.terminate()
+        app.launch()
+        let subject = "Course project feedback"
+        fullSwipe(row(subject, in: app), right: false)
+        XCTAssertEqual(row(subject, in: app).value as? String, "Read")
+        fullSwipe(row(subject, in: app), right: true)
+        waitForAbsence(row(subject, in: app))
+        select("Settled", in: app)
+        fullSwipe(row(subject, in: app), right: true)
+        waitForAbsence(row(subject, in: app))
+        select("Inbox", in: app)
+        XCTAssertTrue(row(subject, in: app).waitForExistence(timeout: 5))
+        settings()
+        choose("Swipe left", "Snooze")
+        // Choosing the additional action as primary removes the duplicate.
+        XCTAssertTrue(app.buttons["Swipe left-secondary"].label.contains("None"))
+        close()
+        fullSwipe(row(subject, in: app), right: false)
+        XCTAssertTrue(app.navigationBars["Snooze"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        settings()
+        choose("Swipe left", "None")
+        close()
+        fullSwipe(row(subject, in: app), right: false)
+        XCTAssertTrue(row(subject, in: app).exists)
+        XCTAssertFalse(app.navigationBars["Snooze"].exists)
+        XCTAssertTrue(app.navigationBars["Inbox"].exists)
+        fullSwipe(row(subject, in: app), right: true)
+        waitForAbsence(row(subject, in: app))
+        settings()
+        app.buttons["Reset Swipe Actions"].tap()
+        close()
+    }
+
+    @MainActor
     func testFastReturnDoesNotCompose() {
         continueAfterFailure = false
         let app = XCUIApplication()

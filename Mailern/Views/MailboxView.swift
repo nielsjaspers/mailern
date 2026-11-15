@@ -12,6 +12,10 @@ struct MailboxView: View {
     @State private var overlayTop: CGFloat?
     @AppStorage("inboxPullAction") private var pullAction: InboxPullAction = .off
     @AppStorage("bottomCompose") private var bottomCompose = false
+    @AppStorage("leftSwipePrimary") private var leftPrimary: MailboxSwipeAction = .workflow
+    @AppStorage("leftSwipeSecondary") private var leftSecondary: MailboxSwipeAction = .snooze
+    @AppStorage("rightSwipePrimary") private var rightPrimary: MailboxSwipeAction = .read
+    @AppStorage("rightSwipeSecondary") private var rightSecondary: MailboxSwipeAction = .pin
     @State private var composer: ComposeMode?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var demo = false
@@ -216,28 +220,16 @@ struct MailboxView: View {
                         NavigationLink(value: conversation.id) { ConversationRow(conversation: conversation) }
                             .listRowInsets(EdgeInsets(top: 15, leading: 18, bottom: 15, trailing: 16))
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                if status != .settled {
-                                    Button("Settle", systemImage: "checkmark") {
-                                        act { store.move(conversation.id, to: .settled) }
-                                    }.tint(.teal)
-                                    Button("Snooze", systemImage: "clock") { snoozing = conversation }.tint(.orange)
-                                } else {
-                                    Button("Restore", systemImage: "tray") {
-                                        act { store.move(conversation.id, to: .inbox) }
-                                    }.tint(.blue)
-                                }
+                                swipeButtons(primary: leftPrimary, secondary: leftSecondary, conversation: conversation)
                             }
                             .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                Button(
-                                    conversation.unread ? "Read" : "Unread",
-                                    systemImage: conversation.unread ? "envelope.open" : "envelope.badge"
-                                ) { act { store.markRead(conversation.id, unread: !conversation.unread) } }.tint(
-                                    .blue)
-                                Button(
-                                    conversation.pinned ? "Unpin" : "Pin",
-                                    systemImage: conversation.pinned ? "pin.slash" : "pin"
-                                ) { act { store.togglePin(conversation.id) } }.tint(.orange)
+                                swipeButtons(primary: rightPrimary, secondary: rightSecondary, conversation: conversation)
                             }
+                            // Without a swipe action, NavigationLink can treat a horizontal drag as a tap.
+                            .simultaneousGesture(
+                                DragGesture(minimumDistance: 10).onChanged { _ in },
+                                including: leftPrimary == .none || rightPrimary == .none ? .all : .none
+                            )
                             .simultaneousGesture(
                                 LongPressGesture().onEnded { _ in
                                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -267,6 +259,41 @@ struct MailboxView: View {
             .modifier(InboxPullModifier(mode: status == .inbox ? pullAction : .off, interaction: pull))
         }
     }
+    @ViewBuilder private func swipeButtons(
+        primary: MailboxSwipeAction, secondary: MailboxSwipeAction, conversation: Conversation
+    ) -> some View {
+        if primary != .none {
+            swipeButton(primary, conversation: conversation)
+            if secondary != .none && secondary != primary {
+                swipeButton(secondary, conversation: conversation)
+            }
+        }
+    }
+
+    @ViewBuilder private func swipeButton(_ action: MailboxSwipeAction, conversation: Conversation) -> some View {
+        switch action {
+        case .workflow:
+            Button(conversation.workflow == .settled ? "Restore" : "Settle",
+                   systemImage: conversation.workflow == .settled ? "tray" : "checkmark") {
+                act { store.move(conversation.id, to: conversation.workflow == .settled ? .inbox : .settled) }
+            }.tint(conversation.workflow == .settled ? .blue : .teal)
+        case .read:
+            Button(conversation.unread ? "Read" : "Unread",
+                   systemImage: conversation.unread ? "envelope.open" : "envelope.badge") {
+                act { store.markRead(conversation.id, unread: !conversation.unread) }
+            }.tint(.blue)
+        case .snooze:
+            Button("Snooze", systemImage: "clock") { snoozing = conversation }.tint(.orange)
+        case .pin:
+            Button(conversation.pinned ? "Unpin" : "Pin",
+                   systemImage: conversation.pinned ? "pin.slash" : "pin") {
+                act { store.togglePin(conversation.id) }
+            }.tint(.orange)
+        case .none:
+            EmptyView()
+        }
+    }
+
     private func performPull() {
         guard pullAction != .off else { return }
         var transaction = Transaction()
