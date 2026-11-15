@@ -126,7 +126,7 @@ final class MailStore {
         clearNotice()
         update(id) {
             $0.receive(MailMessage(sender: c.correspondent.sender, address: c.correspondent.address, to: [c.account.address], date: .now,
-                                   body: "Hi Morgan,\n\nA quick follow-up on this. Have you had a chance to take a look? Let me know what you think.\n\nThanks,\n\(c.correspondent.sender)"))
+                                   body: "Hi Morgan,\n\nA quick follow-up on this. Have you had a chance to take a look? Let me know what you think.\n\nThanks,\n\(c.correspondent.sender)", subject: c.effectiveSubject))
         }
     }
     func receiveNew() {

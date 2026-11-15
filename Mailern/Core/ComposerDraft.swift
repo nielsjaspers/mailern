@@ -47,7 +47,7 @@ struct ComposerDraft: Codable, Equatable, Identifiable {
         var draft = Self(mode: mode)
         guard let c = conversation else { return draft }
         draft.accountID = c.accountID
-        let subject = c.latest.subject ?? c.subject
+        let subject = c.effectiveSubject
         switch mode {
         case .reply, .replyAll:
             let target = c.correspondent

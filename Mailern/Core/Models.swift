@@ -46,6 +46,7 @@ struct Conversation: Codable, Identifiable, Equatable {
     var snoozedUntil: Date?
     var messages: [MailMessage]
     var latest: MailMessage { messages[messages.count - 1] }
+    var effectiveSubject: String { messages.last(where: { $0.subject != nil })?.subject ?? subject }
     var correspondent: MailMessage { messages.last(where: { !$0.outgoing }) ?? latest }
     var account: MailAccount { MailAccount.demo.first(where: { $0.id == accountID }) ?? MailAccount.demo[0] }
 

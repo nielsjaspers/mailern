@@ -94,6 +94,11 @@ import Foundation
         let forward = ComposerDraft.make(mode: .forward(source.id), conversation: sent)
         assert(forward.mode.replyID == nil && forward.attachments == draft.attachments && forward.to.isEmpty)
         assert(MailStore(persistence: disk).conversation(source.id) == sent)
+        store.receiveReply(source.id)
+        let reactivated = store.conversation(source.id)!
+        assert(reactivated.latest.subject == "Updated project scope")
+        assert(ComposerDraft.make(mode: .reply(source.id), conversation: reactivated).subject == "Re: Updated project scope")
+        assert(ComposerDraft.make(mode: .forward(source.id), conversation: reactivated).subject == "Fwd: Updated project scope")
         assert(drafts.delete(draft.id) && DraftStore(url: dir.appending(path: "drafts.json")).drafts.isEmpty)
         let damagedURL = dir.appending(path: "damaged-drafts.json")
         let damaged = Data("[{trailing damage".utf8)
