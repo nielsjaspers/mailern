@@ -79,7 +79,11 @@ import UIKit
             ? UITextFormattingViewController.FormattingDescriptor(string: state.text, range: state.selection)
             : UITextFormattingViewController.FormattingDescriptor(attributes: state.attributes)
         descriptor.formattingStyleKey = descriptor.fonts.isEmpty ? nil : Self.styles.first { style in
-            descriptor.fonts.allSatisfy { $0.pointSize == style.2.pointSize }
+            descriptor.fonts.allSatisfy {
+                $0.pointSize == style.2.pointSize && $0.fontName == style.2.fontName
+                    && $0.familyName == style.2.familyName
+                    && $0.fontDescriptor.symbolicTraits == style.2.fontDescriptor.symbolicTraits
+            }
         }?.0
         controller.formattingDescriptor = descriptor
     }

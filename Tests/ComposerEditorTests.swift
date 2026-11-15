@@ -1,8 +1,27 @@
 import XCTest
 import UIKit
+import SwiftUI
 @testable import Mailern
 
 @MainActor final class ComposerEditorTests: XCTestCase {
+    func testComposerDisablesSubjectWritingTools() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let directory = URL.temporaryDirectory.appending(path: "composer-field-check-\(UUID())")
+        let store = MailStore(persistence: JSONPersistence(url: directory.appending(path: "mail.json")))
+        let host = UIHostingController(rootView: ComposerView(mode: .new).environment(store).environment(DraftStore(url: directory.appending(path: "drafts.json"))))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { host.view.endEditing(true); window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(300))
+        func fields(in view: UIView) -> [UITextField] {
+            (view as? UITextField).map { [$0] } ?? view.subviews.flatMap { fields(in: $0) }
+        }
+        let inputs = fields(in: host.view)
+        XCTAssertFalse(inputs.isEmpty)
+        for field in inputs { XCTAssertEqual(field.writingToolsBehavior, .none) }
+    }
+
     func testRelativeSizeAndNumberingKeepMixedParagraphs() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)
@@ -76,6 +95,14 @@ import UIKit
         coordinator.textViewDidChangeSelection(view)
         XCTAssertFalse((try XCTUnwrap(panel.formattingDescriptor)).fonts.contains { $0.fontDescriptor.symbolicTraits.contains(.traitBold) })
         XCTAssertTrue(host.presentedViewController === panel)
+        for (font, expected) in [(UIFont.systemFont(ofSize: 28), Optional<String>.none),
+                                 (UIFont.boldSystemFont(ofSize: 28), nil),
+                                 (UIFont.systemFont(ofSize: 28, weight: .bold), "title"),
+                                 (UIFont.monospacedSystemFont(ofSize: 13, weight: .regular), nil)] {
+            view.textStorage.addAttribute(.font, value: font, range: NSRange(location: 0, length: 5))
+            state.sync()
+            XCTAssertEqual(panel.formattingDescriptor?.formattingStyleKey, expected)
+        }
     }
 
     func testFormattingUndoRedoKeepsNativeTypingHistory() async throws {

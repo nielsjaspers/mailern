@@ -95,6 +95,7 @@ struct ComposerView: View {
             }
         }
         .tint(.blue)
+        .writingToolsBehavior(.disabled)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
         .interactiveDismissDisabled(importingPhotos || (!completed && dirty && savedInput != input))
