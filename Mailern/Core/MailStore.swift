@@ -134,14 +134,31 @@ final class MailStore {
         conversations.insert(Conversation(accountID: "icloud", subject: "Coffee this week?", messages: [MailMessage(sender: "Riley", address: "riley@example.com", to: [MailAccount.demo[1].address], date: .now, body: "Hi Morgan,\n\nI'll be in town on Thursday. Do you have time for a coffee around 11?\n\nRiley")]), at: 0)
         save()
     }
-    func send(threadID: UUID?, account: MailAccount, to: [String], cc: [String], subject: String, body: String) {
+    @discardableResult
+    func send(threadID: UUID?, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
+              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = []) -> Bool {
+        if let threadID, conversation(threadID) == nil {
+            error = "The original conversation is no longer available. Your draft has not been sent."
+            return false
+        }
         clearNotice()
-        let message = MailMessage(sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body, outgoing: true)
-        if let id = threadID {
-            update(id) { $0.messages.append(message); $0.move(to: .settled) }
+        let before = conversations
+        let message = MailMessage(sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body,
+                                  outgoing: true, bcc: bcc.isEmpty ? nil : bcc, richText: richText, attachments: attachments.isEmpty ? nil : attachments)
+        if let threadID, let i = conversations.firstIndex(where: { $0.id == threadID }) {
+            conversations[i].messages.append(message)
+            conversations[i].move(to: .settled)
         } else {
             conversations.insert(Conversation(accountID: account.id, subject: subject, workflow: .settled, unread: false, messages: [message]), at: 0)
-            save()
+        }
+        do {
+            try persistence.save(conversations)
+            error = nil
+            return true
+        } catch {
+            conversations = before
+            self.error = "Message could not be saved. Your draft has not been sent. \(error.localizedDescription)"
+            return false
         }
     }
     func reset() { clearNotice(); conversations = DemoData.conversations(); save() }

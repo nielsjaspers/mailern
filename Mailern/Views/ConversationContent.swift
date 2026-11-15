@@ -40,8 +40,15 @@ struct ConversationContent: View {
                             "To: \(message.to.joined(separator: ", "))"
                                 + (message.cc.isEmpty ? "" : "\nCc: \(message.cc.joined(separator: ", "))")
                         ).font(.caption).foregroundStyle(.secondary)
-                        Text(.init(message.body)).font(.body).lineSpacing(5).textSelection(.enabled).frame(
-                            maxWidth: .infinity, alignment: .leading)
+                        Group {
+                            if let richText = message.richText {
+                                RichMessageText(text: RichText.decode(richText, fallback: message.body))
+                            } else { Text(.init(message.body)) }
+                        }.font(.body).lineSpacing(5).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if let attachments = message.attachments, !attachments.isEmpty {
+                            AttachmentList(attachments: attachments)
+                        }
                     }
                     .padding(isPreview ? 0 : 18)
                     .background(

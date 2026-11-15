@@ -30,6 +30,9 @@ struct MailMessage: Codable, Identifiable, Equatable {
     var date: Date
     var body: String
     var outgoing = false
+    var bcc: [String]?
+    var richText: Data?
+    var attachments: [MailAttachment]?
 }
 
 struct Conversation: Codable, Identifiable, Equatable {

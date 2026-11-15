@@ -5,6 +5,8 @@ struct MailboxView: View {
     @State private var selection: Workflow = .inbox
     @State private var search = ""
     @AppStorage("inboxUnreadFirst") private var unreadFirst = false
+    @Namespace private var composeTransition
+    @State private var showDrafts = false
     @State private var selecting = false
     @State private var selectedIDs: Set<UUID> = []
     @State private var bulkSnooze = false
@@ -76,7 +78,10 @@ struct MailboxView: View {
                 peeking = nil
             }
         }
-        .sheet(item: $composer) { ComposerView(mode: $0) }
+        .sheet(item: $composer) {
+            ComposerView(mode: $0).modifier(ComposerTransition(source: composerSourceID, namespace: composeTransition))
+        }
+        .sheet(isPresented: $showDrafts) { DraftsView() }
         .sheet(isPresented: $settings) {
             NavigationStack { SettingsView(pullAction: $pullAction, bottomCompose: $bottomCompose) }
         }
@@ -113,8 +118,11 @@ struct MailboxView: View {
                     .badge(status == .inbox ? store.list(.inbox).filter(\.unread).count : 0)
                 }
                 if bottomCompose {
-                    Tab("Compose", systemImage: "square.and.pencil", value: MailboxTab.compose, role: .prominent) {
+                    Tab(value: MailboxTab.compose, role: .prominent) {
                         Color.clear
+                    } label: {
+                        Label("Compose", systemImage: "square.and.pencil")
+                            .modifier(ComposerSource(source: "compose-bottom", namespace: composeTransition))
                     }
                 }
             }
@@ -145,9 +153,10 @@ struct MailboxView: View {
                 .toolbar { mailboxToolbar(status) }
                 .toolbar {
                     if legacyBottomCompose && !selecting {
-                            ToolbarItem(placement: .bottomBar) {
-                                Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
-                            }
+                        ToolbarItem(placement: .bottomBar) {
+                            Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
+                                .modifier(ComposerSource(source: "compose-\(status.rawValue)", namespace: composeTransition))
+                        }
                     }
                 }
                 .toolbar {
@@ -172,6 +181,7 @@ struct MailboxView: View {
             } else {
                 Menu {
                     Button("Demo", systemImage: "play.circle") { demo = true }
+                    Button("Drafts", systemImage: "doc") { showDrafts = true }
                     Button("Settings", systemImage: "gearshape") { settings = true }
                 } label: { Label("More", systemImage: "ellipsis.circle") }
             }
@@ -198,8 +208,13 @@ struct MailboxView: View {
         ToolbarItem(placement: .topBarTrailing) {
             if !bottomCompose && !selecting {
                 Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
+                    .modifier(ComposerSource(source: "compose-\(status.rawValue)", namespace: composeTransition))
             }
         }
+    }
+    private var composerSourceID: String {
+        if #available(iOS 27, *), bottomCompose { return "compose-bottom" }
+        return "compose-\(selection.rawValue)"
     }
     private var legacyBottomCompose: Bool {
         if #available(iOS 27, *) { return false }
@@ -340,15 +355,11 @@ struct MailboxView: View {
         guard pullAction != .off && !selecting else { return }
         var transaction = Transaction()
         transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            if pullAction == .search { searching = true }
-            if pullAction == .compose { openComposer(.new) }
-        }
+        if pullAction == .search { withTransaction(transaction) { searching = true } }
+        if pullAction == .compose { openComposer(.new) }
     }
     private func openComposer(_ mode: ComposeMode) {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { composer = mode }
+        composer = mode
     }
     private func act(_ action: () -> Void) {
         withAnimation { action() }

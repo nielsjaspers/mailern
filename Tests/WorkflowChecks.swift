@@ -2,6 +2,7 @@ import Foundation
 
 @main struct WorkflowChecks {
     @MainActor static func main() throws {
+        try checkComposerData()
         try checkBulkActions()
         checkDeliberatePull()
         try checkInboxOrder()
@@ -57,6 +58,54 @@ import Foundation
         assert(store.error == nil)
         print("PASS: read/workflow independence, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
     }
+    @MainActor static func checkComposerData() throws {
+        let dir = URL.temporaryDirectory.appending(path: "mailern-composer-\(UUID())")
+        let disk = JSONPersistence(url: dir.appending(path: "mail.json"))
+        let store = MailStore(persistence: disk)
+        let source = store.list(.inbox).first { $0.subject == "Course project feedback" }!
+        let reply = ComposerDraft.make(mode: .replyAll(source.id), conversation: source)
+        assert(reply.to == source.correspondent.address)
+        assert(ComposerDraft.addresses(reply.cc) == ["coordinator@college.example.com"])
+        assert(reply.subject == "Re: \(source.subject)" && reply.text.contains(source.latest.body))
+        var draft = ComposerDraft.make(mode: .new, conversation: nil)
+        assert(!draft.canSend)
+        draft.to = "recipient@example.com"
+        assert(draft.canSend)
+        draft.bcc = "bad address"
+        assert(!draft.canSend)
+        draft.bcc = "hidden@example.com"
+        draft.to = ""
+        assert(draft.canSend)
+        draft.to = "recipient@example.com"
+        draft.text = "A formatted message"
+        draft.richText = Data("formatting payload".utf8)
+        draft.attachments = [MailAttachment(name: "Example.txt", data: Data("Attachment proof".utf8), contentType: "public.plain-text")]
+        let drafts = DraftStore(url: dir.appending(path: "drafts.json"))
+        assert(drafts.save(draft))
+        let reloaded = DraftStore(url: dir.appending(path: "drafts.json"))
+        assert(reloaded.drafts == [draft])
+        assert(store.send(threadID: source.id, account: source.account, to: [reply.to], cc: ComposerDraft.addresses(reply.cc),
+                          subject: reply.subject, body: draft.text, bcc: ComposerDraft.addresses(draft.bcc), richText: draft.richText, attachments: draft.attachments))
+        let sent = store.conversation(source.id)!
+        assert(sent.workflow == .settled && sent.latest.outgoing)
+        assert(sent.latest.bcc == ["hidden@example.com"] && sent.latest.richText == draft.richText && sent.latest.attachments == draft.attachments)
+        let forward = ComposerDraft.make(mode: .forward(source.id), conversation: sent)
+        assert(forward.mode.replyID == nil && forward.attachments == draft.attachments && forward.to.isEmpty)
+        assert(MailStore(persistence: disk).conversation(source.id) == sent)
+        assert(drafts.delete(draft.id) && DraftStore(url: dir.appending(path: "drafts.json")).drafts.isEmpty)
+        enum Failure: Error { case disk }
+        struct FailingDisk: ConversationPersistence {
+            func load() throws -> [Conversation]? { DemoData.conversations() }
+            func save(_ conversations: [Conversation]) throws { throw Failure.disk }
+        }
+        let failing = MailStore(persistence: FailingDisk())
+        let before = failing.conversations
+        assert(!failing.send(threadID: nil, account: source.account, to: ["test@example.com"], cc: [], subject: "Failure", body: "Retain draft"))
+        assert(failing.conversations == before)
+        assert(!store.send(threadID: UUID(), account: source.account, to: ["test@example.com"], cc: [], subject: "Missing source", body: "Retain draft"))
+        print("PASS: reply-all recipient deduplication, editable quotes, draft reload/delete, Bcc/rich text/attachments, forward payload and send-failure rollback")
+    }
+
     @MainActor static func checkBulkActions() throws {
         let disk = JSONPersistence(url: URL.temporaryDirectory.appending(path: "mailern-bulk-\(UUID())/demo.json"))
         let store = MailStore(persistence: disk)

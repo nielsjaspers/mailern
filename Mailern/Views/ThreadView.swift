@@ -4,6 +4,7 @@ struct ThreadView: View {
     @Environment(MailStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let id: UUID
+    @Namespace private var composeTransition
     @State private var mode: ComposeMode?
     @State private var snooze = false
     var body: some View {
@@ -36,13 +37,14 @@ struct ThreadView: View {
                             Button("Reply All") { mode = .replyAll(id) }
                             Button("Forward") { mode = .forward(id) }
                         } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+                        .modifier(ComposerSource(source: "reply", namespace: composeTransition))
                     }
                 }
             } else { ContentUnavailableView("Conversation unavailable", systemImage: "envelope") }
         }
         .toolbar(.hidden, for: .tabBar)
         .onAppear { store.markRead(id) }
-        .sheet(item: $mode) { ComposerView(mode: $0) }
+        .sheet(item: $mode) { ComposerView(mode: $0).modifier(ComposerTransition(source: "reply", namespace: composeTransition)) }
         .sheet(isPresented: $snooze) { SnoozeView(ids: [id], onSnooze: { dismiss() }) }
     }
 }
