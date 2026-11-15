@@ -36,8 +36,7 @@ struct ComposerTransition: ViewModifier {
     let source: String
     let namespace: Namespace.ID
     func body(content: Content) -> some View {
-        if #available(iOS 18, *) { content.navigationTransition(.zoom(sourceID: source, in: namespace)) }
-        else { content }
+        content.navigationTransition(.zoom(sourceID: source, in: namespace))
     }
 }
 
@@ -45,7 +44,6 @@ struct ComposerSource: ViewModifier {
     let source: String
     let namespace: Namespace.ID
     func body(content: Content) -> some View {
-        if #available(iOS 18, *) { content.matchedTransitionSource(id: source, in: namespace) }
-        else { content }
+        content.matchedTransitionSource(id: source, in: namespace)
     }
 }

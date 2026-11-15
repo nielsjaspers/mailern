@@ -1,6 +1,6 @@
 # Mailern
 
-A native SwiftUI email workflow prototype for iPhone and iPad, with fictional mail across four accounts. Requires iOS 17 or later and Xcode 26 or later.
+A native SwiftUI email workflow prototype for iPhone and iPad, with fictional mail across four accounts. Requires iOS 18 or later and Xcode 26 or later.
 
 Open `Mailern.xcodeproj`, select the Mailern scheme and your device, then choose your development team under Signing & Capabilities and run. No packages or provider credentials are needed.
 
@@ -18,7 +18,7 @@ Open `Mailern.xcodeproj`, select the Mailern scheme and your device, then choose
 - Undo reverses the most recent workflow move. Incoming mail and sending invalidate Undo so it cannot hide a newer message.
 - Search covers the current section's subjects, senders, accounts, and message bodies.
 
-Messages, workflow state, and drafts are saved as atomic JSON in the app's Application Support directory. The composer uses native sheet transitions, recipient and sender fields, and a rich text editor. Use Aa for text styles, fonts, color, lists, alignment, and indentation. Formatting participates in native Undo and Redo. iOS 18 and later use Apple's formatting panel. The paperclip imports files or photos, with a 25 MB total limit and native file previews. Save Draft and Delete Draft are in the close button's menu. Swiping the sheet away saves an edited draft before dismissal. If saving fails, the editor stays open with its contents intact. Unreadable draft storage is protected from overwrite; the Drafts storage alert offers Retry. Reopen it through More → Drafts. Replies include an editable quote and settle the source conversation when sent; forwards create a separate settled conversation. All sending remains simulated. The reader displays local text, rich outgoing messages, and attachments, but does not render arbitrary HTML email.
+Messages, workflow state, and drafts are saved as atomic JSON in the app's Application Support directory. The composer uses native sheet transitions, recipient and sender fields, and a rich text editor. Use Aa for text styles, fonts, color, lists, alignment, and indentation. Formatting participates in native Undo and Redo. Formatting uses Apple's native panel. The paperclip imports files or photos, with a 25 MB total limit and native file previews. Save Draft and Delete Draft are in the close button's menu. Swiping the sheet away saves an edited draft before dismissal. If saving fails, the editor stays open with its contents intact. Unreadable draft storage is protected from overwrite; the Drafts storage alert offers Retry. Reopen it through More → Drafts. Replies include an editable quote and settle the source conversation when sent; forwards create a separate settled conversation. All sending remains simulated. The reader displays local text, rich outgoing messages, and attachments, but does not render arbitrary HTML email.
 
 ## Code
 

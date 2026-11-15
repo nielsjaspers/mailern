@@ -3,6 +3,39 @@ import UIKit
 @testable import Mailern
 
 @MainActor final class ComposerEditorTests: XCTestCase {
+    func testOpenFormattingPanelTracksSelection() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let host = UIViewController()
+        window.rootViewController = host
+        let view = UITextView(frame: CGRect(x: 0, y: 0, width: 300, height: 200))
+        host.view.addSubview(view)
+        window.makeKeyAndVisible()
+        defer { host.dismiss(animated: false); view.resignFirstResponder(); window.isHidden = true }
+        let text = NSMutableAttributedString(attributedString: RichText.plain("Plain Bold"))
+        text.addAttribute(.font, value: UIFont.boldSystemFont(ofSize: 17), range: NSRange(location: 6, length: 4))
+        view.attributedText = text
+        view.selectedRange = NSRange(location: 0, length: 5)
+        let state = RichTextState()
+        state.view = view
+        state.sync()
+        let coordinator = RichTextEditor.Coordinator(state: state, attach: {}, photos: {})
+        view.delegate = coordinator
+        coordinator.installKeyboard(on: view)
+        state.showFormat()
+        try await Task.sleep(for: .milliseconds(500))
+        let panel = try XCTUnwrap(host.presentedViewController as? UITextFormattingViewController)
+        XCTAssertFalse((try XCTUnwrap(panel.formattingDescriptor)).fonts.contains { $0.fontDescriptor.symbolicTraits.contains(.traitBold) })
+        view.selectedRange = NSRange(location: 6, length: 4)
+        coordinator.textViewDidChangeSelection(view)
+        XCTAssertTrue((try XCTUnwrap(panel.formattingDescriptor)).fonts.allSatisfy { $0.fontDescriptor.symbolicTraits.contains(.traitBold) })
+        XCTAssertFalse((try XCTUnwrap(panel.formattingDescriptor)).fonts.isEmpty)
+        view.selectedRange = NSRange(location: 0, length: 5)
+        coordinator.textViewDidChangeSelection(view)
+        XCTAssertFalse((try XCTUnwrap(panel.formattingDescriptor)).fonts.contains { $0.fontDescriptor.symbolicTraits.contains(.traitBold) })
+        XCTAssertTrue(host.presentedViewController === panel)
+    }
+
     func testFormattingUndoRedoKeepsNativeTypingHistory() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)

@@ -41,9 +41,9 @@ final class RichTextState {
     var selection = NSRange(location: 0, length: 0)
     var typing: [NSAttributedString.Key: Any] = [:]
     var edited = false
-    var formatting = false
     @ObservationIgnored weak var view: UITextView?
-    @ObservationIgnored var reloadKeyboard: () -> Void = {}
+    @ObservationIgnored var presentFormatting: () -> Void = {}
+    @ObservationIgnored var didSync: () -> Void = {}
 
     var font: UIFont { attributes[.font] as? UIFont ?? .preferredFont(forTextStyle: .body) }
     var attributes: [NSAttributedString.Key: Any] {
@@ -55,11 +55,11 @@ final class RichTextState {
         text = NSAttributedString(attributedString: view.attributedText)
         selection = view.selectedRange
         typing = view.typingAttributes
+        didSync()
     }
-    func showFormat(_ show: Bool) {
-        formatting = show
+    func showFormat() {
         view?.becomeFirstResponder()
-        reloadKeyboard()
+        presentFormatting()
     }
     @MainActor private struct EditSnapshot {
         let text: NSAttributedString
@@ -184,7 +184,7 @@ struct RichTextEditor: UIViewRepresentable {
         view.textContainerInset = UIEdgeInsets(top: 12, left: 0, bottom: 20, right: 0)
         view.textContainer.lineFragmentPadding = 0
         view.allowsEditingTextAttributes = true
-        if #available(iOS 18, *) { view.writingToolsBehavior = .none }
+        view.writingToolsBehavior = .none
         view.accessibilityLabel = "Message body"
         view.delegate = context.coordinator
         state.view = view
@@ -211,7 +211,8 @@ struct RichTextEditor: UIViewRepresentable {
     }
     static func dismantleUIView(_ view: QuotedTextView, coordinator: Coordinator) {
         coordinator.state.view = nil
-        coordinator.state.reloadKeyboard = {}
+        coordinator.state.presentFormatting = {}
+        coordinator.state.didSync = {}
         view.delegate = nil
     }
 
@@ -220,13 +221,15 @@ struct RichTextEditor: UIViewRepresentable {
         let attach: () -> Void
         let photos: () -> Void
         private var accessory: UIView?
-        private var nativeFormat: AnyObject?
+        private var nativeFormat: NativeFormatting?
         var updating = false
-        var format: UIHostingController<FormattingPanel>?
         init(state: RichTextState, attach: @escaping () -> Void, photos: @escaping () -> Void) {
             self.state = state; self.attach = attach; self.photos = photos
         }
         func installKeyboard(on view: UITextView) {
+            state.didSync = { [weak self] in
+                self?.nativeFormat?.refreshDescriptor()
+            }
             let accessory = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 62))
             accessory.autoresizingMask = [.flexibleWidth]
             let effect: UIVisualEffect
@@ -244,7 +247,7 @@ struct RichTextEditor: UIViewRepresentable {
             formatButton.setTitle("Aa", for: .normal)
             formatButton.titleLabel?.font = .systemFont(ofSize: 22)
             formatButton.accessibilityLabel = "Format"
-            formatButton.addAction(UIAction { [weak state] _ in state?.showFormat(true) }, for: .touchUpInside)
+            formatButton.addAction(UIAction { [weak state] _ in state?.showFormat() }, for: .touchUpInside)
             let attachment = UIButton(type: .system)
             attachment.setImage(UIImage(systemName: "paperclip"), for: .normal)
             attachment.setPreferredSymbolConfiguration(.init(pointSize: 22), forImageIn: .normal)
@@ -270,31 +273,11 @@ struct RichTextEditor: UIViewRepresentable {
             formatButton.tintColor = .label; attachment.tintColor = .label
             view.inputAccessoryView = accessory
             self.accessory = accessory
-            state.reloadKeyboard = { [weak self, weak view] in
-                guard let self, let view else { return }
-                if self.state.formatting {
-                    if #available(iOS 18, *) {
-                        let native = NativeFormatting(state: self.state) { [weak self] in self?.nativeFormat = nil }
-                        self.nativeFormat = native
-                        native.present(from: view)
-                        return
-                    }
-                    let format = UIHostingController(rootView: FormattingPanel(state: self.state))
-                    let input = UIInputView(frame: CGRect(x: 0, y: 0, width: view.bounds.width, height: 340), inputViewStyle: .keyboard)
-                    input.backgroundColor = .clear
-                    format.view.backgroundColor = .clear
-                    format.view.frame = input.bounds
-                    format.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                    input.addSubview(format.view)
-                    self.format = format
-                    view.inputView = input
-                    view.inputAccessoryView = nil
-                } else {
-                    view.inputView = nil
-                    view.inputAccessoryView = self.accessory
-                    self.format = nil
-                }
-                view.reloadInputViews()
+            state.presentFormatting = { [weak self, weak view] in
+                guard let self, let view, self.nativeFormat == nil else { return }
+                let native = NativeFormatting(state: self.state) { [weak self] in self?.nativeFormat = nil }
+                self.nativeFormat = native
+                native.present(from: view)
             }
         }
         func textViewDidBeginEditing(_ textView: UITextView) { state.sync() }

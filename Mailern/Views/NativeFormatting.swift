@@ -1,6 +1,5 @@
 import UIKit
 
-@available(iOS 18, *)
 @MainActor final class NativeFormatting: NSObject, UITextFormattingViewController.Delegate, UIAdaptivePresentationControllerDelegate {
     private let state: RichTextState
     private let finish: () -> Void
@@ -75,7 +74,7 @@ import UIKit
         }
         refreshDescriptor()
     }
-    private func refreshDescriptor() {
+    func refreshDescriptor() {
         var descriptor = state.selection.length > 0
             ? UITextFormattingViewController.FormattingDescriptor(string: state.text, range: state.selection)
             : UITextFormattingViewController.FormattingDescriptor(attributes: state.attributes)
@@ -91,7 +90,6 @@ import UIKit
     private func resume() {
         guard !finished else { return }
         finished = true
-        state.formatting = false
         state.view?.becomeFirstResponder()
         finish()
     }
