@@ -45,7 +45,6 @@ final class RichTextState {
     @ObservationIgnored var presentFormatting: () -> Void = {}
     @ObservationIgnored var didSync: () -> Void = {}
 
-    var font: UIFont { attributes[.font] as? UIFont ?? .preferredFont(forTextStyle: .body) }
     var attributes: [NSAttributedString.Key: Any] {
         guard selection.length > 0, text.length > 0 else { return typing }
         return text.attributes(at: min(selection.location, text.length - 1), effectiveRange: nil)
@@ -131,21 +130,8 @@ final class RichTextState {
             return font.fontDescriptor.withSymbolicTraits(traits).map { UIFont(descriptor: $0, size: font.pointSize) } ?? font
         }
     }
-    func toggleTrait(_ trait: UIFontDescriptor.SymbolicTraits) {
-        setTrait(trait, enabled: !font.fontDescriptor.symbolicTraits.contains(trait))
-    }
     func resizeFont(to size: CGFloat) { transformFonts { $0.withSize(max(1, size)) } }
-    func toggle(_ key: NSAttributedString.Key) {
-        attribute(key, (attributes[key] as? Int ?? 0) == 0 ? NSUnderlineStyle.single.rawValue : 0)
-    }
-    func setFont(_ name: String?, size: CGFloat) {
-        let size = max(1, size)
-        var chosen = name.flatMap { UIFont(name: $0, size: size) } ?? UIFont.systemFont(ofSize: size)
-        if let descriptor = chosen.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits) {
-            chosen = UIFont(descriptor: descriptor, size: size)
-        }
-        attribute(.font, chosen)
-    }
+    func changeFontSize(by delta: CGFloat) { transformFonts { $0.withSize(max(1, $0.pointSize + delta)) } }
     func paragraph(_ change: (NSMutableParagraphStyle) -> Void) {
         recordEdit { view in
             let range = (view.text as NSString).paragraphRange(for: view.selectedRange)
@@ -161,9 +147,6 @@ final class RichTextState {
             typing[.paragraphStyle] = style
             view.typingAttributes = typing
         }
-    }
-    func list(numbered: Bool) {
-        paragraph { style in style.textLists = [NSTextList(markerFormat: numbered ? .decimal : .disc, options: 0)] }
     }
 }
 

@@ -3,6 +3,48 @@ import UIKit
 @testable import Mailern
 
 @MainActor final class ComposerEditorTests: XCTestCase {
+    func testRelativeSizeAndNumberingKeepMixedParagraphs() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let host = UIViewController()
+        window.rootViewController = host
+        let view = UITextView(frame: CGRect(x: 0, y: 0, width: 300, height: 200))
+        host.view.addSubview(view)
+        window.makeKeyAndVisible()
+        defer { host.dismiss(animated: false); view.resignFirstResponder(); window.isHidden = true }
+        let text = NSMutableAttributedString(attributedString: RichText.plain("First\nSecond"))
+        text.addAttribute(.font, value: UIFont.systemFont(ofSize: 22), range: NSRange(location: 6, length: 6))
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        style.headIndent = 10
+        text.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 6, length: 6))
+        view.attributedText = text
+        view.selectedRange = NSRange(location: 0, length: text.length)
+        let state = RichTextState()
+        state.view = view
+        state.sync()
+        let coordinator = RichTextEditor.Coordinator(state: state, attach: {}, photos: {})
+        view.delegate = coordinator
+        coordinator.installKeyboard(on: view)
+        state.showFormat()
+        try await Task.sleep(for: .milliseconds(500))
+        let panel = try XCTUnwrap(host.presentedViewController as? UITextFormattingViewController)
+        let format = try XCTUnwrap(panel.delegate as? NativeFormatting)
+        format.textFormattingViewController(panel, didChangeValue: .increaseFontSize)
+        XCTAssertEqual((view.attributedText.attribute(.font, at: 0, effectiveRange: nil) as! UIFont).pointSize, 18)
+        XCTAssertEqual((view.attributedText.attribute(.font, at: 6, effectiveRange: nil) as! UIFont).pointSize, 23)
+        format.textFormattingViewController(panel, didChangeValue: .decreaseFontSize)
+        XCTAssertEqual((view.attributedText.attribute(.font, at: 6, effectiveRange: nil) as! UIFont).pointSize, 22)
+        format.textFormattingViewController(panel, didChangeValue: .textList(.decimal))
+        let first = try XCTUnwrap((view.attributedText.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)?.textLists.first)
+        let second = try XCTUnwrap((view.attributedText.attribute(.paragraphStyle, at: 6, effectiveRange: nil) as? NSParagraphStyle)?.textLists.first)
+        XCTAssertTrue(first === second)
+        let htmlData = try view.attributedText.data(from: NSRange(location: 0, length: view.attributedText.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.html])
+        let html = try XCTUnwrap(String(data: htmlData, encoding: .utf8))
+        XCTAssertEqual(html.components(separatedBy: "<ol").count - 1, 1)
+        XCTAssertEqual(html.components(separatedBy: "<li").count - 1, 2)
+    }
+
     func testOpenFormattingPanelTracksSelection() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)

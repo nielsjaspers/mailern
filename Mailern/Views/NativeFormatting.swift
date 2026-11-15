@@ -54,16 +54,16 @@ import UIKit
         case .strikethrough(let enabled): state.attribute(.strikethroughStyle, enabled ? NSUnderlineStyle.single.rawValue : 0)
         case .font(let font): state.attribute(.font, font)
         case .fontSize(let size): state.resizeFont(to: size)
-        case .increaseFontSize: state.resizeFont(to: state.font.pointSize + 1)
-        case .decreaseFontSize: state.resizeFont(to: state.font.pointSize - 1)
+        case .increaseFontSize: state.changeFontSize(by: 1)
+        case .decreaseFontSize: state.changeFontSize(by: -1)
         case .textColor(let color): state.attribute(.foregroundColor, color)
         case .textAlignment(let alignment): state.paragraph { $0.alignment = alignment.nsTextAlignment }
         case .textList(let list):
-            state.paragraph { paragraph in
-                guard let list else { paragraph.textLists = []; return }
-                let marker: NSTextList.MarkerFormat = list == .decimal ? .decimal : list == .hyphen ? .init(rawValue: "{hyphen}") : .disc
-                paragraph.textLists = [NSTextList(markerFormat: marker, options: 0)]
+            let textList = list.map { value in
+                let marker: NSTextList.MarkerFormat = value == .decimal ? .decimal : value == .hyphen ? .init(rawValue: "{hyphen}") : .disc
+                return NSTextList(markerFormat: marker, options: 0)
             }
+            state.paragraph { $0.textLists = textList.map { [$0] } ?? [] }
         case .increaseIndentation: state.paragraph { $0.headIndent = min(160, $0.headIndent + 20); $0.firstLineHeadIndent = $0.headIndent }
         case .decreaseIndentation: state.paragraph { $0.headIndent = max(0, $0.headIndent - 20); $0.firstLineHeadIndent = $0.headIndent }
         case .lineHeightPointSize(let height): state.paragraph { $0.minimumLineHeight = height; $0.maximumLineHeight = height }
