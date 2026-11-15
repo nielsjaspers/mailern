@@ -28,6 +28,7 @@ final class MailernUITests: XCTestCase {
             app.buttons["Compose"].tap()
             XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
             app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(original)
+            capture("Native subject field", in: app)
             app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
             app.buttons["More"].tap(); app.buttons["Drafts"].tap()
             app.buttons.matching(NSPredicate(format: "label CONTAINS %@", original)).firstMatch.tap()

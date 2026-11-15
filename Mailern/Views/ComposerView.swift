@@ -13,6 +13,10 @@ struct ComposerView: View {
     @State private var editor = RichTextState()
     @State private var loaded = false
     @State private var completed = false
+    @State private var finishing = false
+    @State private var savesInFlight = 0
+    @State private var autosave: Task<Void, Never>?
+    @State private var subjectFocused = false
     @State private var expanded = false
     @State private var filePicker = false
     @State private var photoPicker = false
@@ -28,9 +32,10 @@ struct ComposerView: View {
     }
     private var input: DraftInput { DraftInput(draft: draft, text: editor.text, edited: editor.edited) }
     @FocusState private var focus: Field?
-    private enum Field { case to, cc, bcc, subject }
+    private enum Field { case to, cc, bcc }
     private var dirty: Bool {
         guard loaded else { return false }
+        if savesInFlight > 0 { return true }
         if let savedInput { return savedInput != input }
         return draft != initial || editor.edited
     }
@@ -71,7 +76,7 @@ struct ComposerView: View {
                     }
                     HStack(spacing: 6) {
                         Text("Subject:").foregroundStyle(.secondary)
-                        TextField("", text: $draft.subject).accessibilityLabel("Subject").focused($focus, equals: .subject)
+                        ComposerSubjectField(text: $draft.subject, isFocused: subjectFocused) { subjectFocused = $0 }
                     }.frame(minHeight: 48)
                     Divider()
                     RichTextEditor(state: editor, attach: { filePicker = true }, photos: { photoPicker = true })
@@ -81,16 +86,16 @@ struct ComposerView: View {
                     }
                 }.padding(.horizontal, 16).padding(.top, 10)
             }
-            .disabled(completed)
+            .disabled(completed || finishing)
             .scrollDismissesKeyboard(.interactively)
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(title).navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importingPhotos) }
+                ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importingPhotos || finishing) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Send", systemImage: "arrow.up", action: send)
+                    Button("Send", systemImage: "arrow.up") { Task { await send() } }
                         .labelStyle(.iconOnly).tint(.blue)
-                        .foregroundStyle(draft.canSend ? Color.white : Color.secondary).disabled(!draft.canSend || !loaded || completed || importingPhotos)
+                        .foregroundStyle(draft.canSend ? Color.white : Color.secondary).disabled(!draft.canSend || !loaded || completed || finishing || importingPhotos)
                 }
             }
         }
@@ -98,16 +103,23 @@ struct ComposerView: View {
         .writingToolsBehavior(.disabled)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .interactiveDismissDisabled(importingPhotos || (!completed && dirty && savedInput != input))
+        .interactiveDismissDisabled(importingPhotos || finishing || savesInFlight > 0 || (!completed && dirty && savedInput != input))
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear(perform: load)
-        .task(id: input) {
-            guard loaded, dirty, !completed else { return }
-            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
-            guard !completed, !Task.isCancelled else { return }
-            saveDraft(dismissAfter: false)
+        .onChange(of: input) { _, value in
+            autosave?.cancel()
+            guard loaded, !completed, !finishing,
+                  savedInput != nil || savesInFlight > 0 || value.draft != initial || value.edited else { return }
+            autosave = Task {
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                guard !completed, !finishing, !Task.isCancelled else { return }
+                await saveDraft(dismissAfter: false, submitted: value)
+            }
         }
-        .onChange(of: scenePhase) { _, phase in if phase == .background && !completed && dirty { saveDraft(dismissAfter: false) } }
+        .onDisappear { autosave?.cancel() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background && !completed && dirty { Task { await saveDraft(dismissAfter: false) } }
+        }
         .fileImporter(isPresented: $filePicker, allowedContentTypes: [.item], allowsMultipleSelection: true, onCompletion: importFiles)
         .photosPicker(isPresented: $photoPicker, selection: $photos, maxSelectionCount: 10, matching: .images)
         .onChange(of: photos) { _, items in
@@ -136,11 +148,18 @@ struct ComposerView: View {
         } else if dirty || saved {
             Menu {
                 Button("Delete Draft", role: .destructive) {
-                    guard !saved || drafts.delete(draft.id) else { return }
-                    completed = true
-                    dismiss()
+                    Task {
+                        guard !finishing else { return }
+                        let activity = DraftSaveActivity()
+                        defer { activity.end() }
+                        finishing = true
+                        defer { finishing = false }
+                        guard await drafts.delete(draft.id) else { return }
+                        completed = true
+                        dismiss()
+                    }
                 }
-                Button("Save Draft") { saveDraft(dismissAfter: true) }
+                Button("Save Draft") { Task { await saveDraft(dismissAfter: true) } }
             } label: { Image(systemName: "xmark") }
             .accessibilityLabel("Cancel").tint(.primary).disabled(importingPhotos)
         } else {
@@ -155,7 +174,10 @@ struct ComposerView: View {
                 .accessibilityLabel(label).keyboardType(.emailAddress)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .focused($focus, equals: field).submitLabel(.next)
-                .onSubmit { focus = field == .to ? .subject : .to }
+                .onSubmit {
+                    if field == .to { focus = nil; subjectFocused = true }
+                    else { focus = .to }
+                }
             if add {
                 Button("Add recipient", systemImage: "plus.circle.fill") { contacts = true }
                     .labelStyle(.iconOnly).foregroundStyle(.secondary)
@@ -225,24 +247,41 @@ struct ComposerView: View {
             }
         }
     }
-    private func snapshot() throws -> ComposerDraft {
-        var result = draft
-        result.text = editor.text.string
-        result.richText = try RichText.encode(editor.text)
+    private func snapshot(_ value: DraftInput) throws -> ComposerDraft {
+        var result = value.draft
+        result.text = value.text.string
+        result.richText = try RichText.encode(value.text)
         result.updatedAt = .now
         return result
     }
-    private func saveDraft(dismissAfter: Bool) {
+    private func saveDraft(dismissAfter: Bool, submitted: DraftInput? = nil) async {
+        guard loaded, !completed, !finishing else { return }
+        let activity = DraftSaveActivity()
+        defer { activity.end() }
+        if dismissAfter { finishing = true }
+        if dismissAfter { editor.view?.window?.endEditing(true) }
+        savesInFlight += 1
+        defer {
+            savesInFlight -= 1
+            if dismissAfter { finishing = false }
+        }
+        let submitted = submitted ?? input
         do {
-            guard drafts.save(try snapshot()) else { return }
-            savedInput = input
+            let content = try snapshot(submitted)
+            guard await drafts.save(content) else { return }
+            if drafts.drafts.first(where: { $0.id == content.id }) == content { savedInput = submitted }
             if dismissAfter { completed = true; dismiss() }
         } catch { self.error = error.localizedDescription }
     }
-    private func send() {
-        guard draft.canSend, loaded, !completed, !importingPhotos else { return }
+    private func send() async {
+        guard draft.canSend, loaded, !completed, !finishing, !importingPhotos else { return }
+        let activity = DraftSaveActivity()
+        defer { activity.end() }
+        finishing = true
+        defer { finishing = false }
+        editor.view?.window?.endEditing(true)
         do {
-            let content = try snapshot()
+            let content = try snapshot(input)
             guard store.send(threadID: content.mode.replyID, account: account, to: ComposerDraft.addresses(content.to), cc: ComposerDraft.addresses(content.cc),
                        subject: content.subject.isEmpty ? "(No Subject)" : content.subject, body: content.text,
                        bcc: ComposerDraft.addresses(content.bcc), richText: content.richText, attachments: content.attachments) else {
@@ -253,7 +292,7 @@ struct ComposerView: View {
             completed = true
             focus = nil
             editor.view?.resignFirstResponder()
-            if saved && !drafts.delete(draft.id) {
+            if !(await drafts.delete(draft.id)) {
                 drafts.error = nil
                 error = "Message saved, but the draft could not be removed. You can retry deleting it from Drafts."
                 return
@@ -280,5 +319,67 @@ struct ComposerView: View {
     private enum AttachmentError: LocalizedError {
         case tooLarge
         var errorDescription: String? { "Attachments can total up to 25 MB in this prototype." }
+    }
+}
+
+@MainActor private final class DraftSaveActivity {
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+    init() {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: "Save draft") { [weak self] in self?.end() }
+    }
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+}
+
+private struct ComposerSubjectField: UIViewRepresentable {
+    @Binding var text: String
+    var isFocused: Bool
+    var onFocus: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> UITextField {
+        let view = UITextField()
+        view.font = .preferredFont(forTextStyle: .body)
+        view.adjustsFontForContentSizeCategory = true
+        view.accessibilityLabel = "Subject"
+        view.writingToolsBehavior = .none
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.delegate = context.coordinator
+        view.addTarget(context.coordinator, action: #selector(Coordinator.changed), for: .editingChanged)
+        return view
+    }
+    func updateUIView(_ view: UITextField, context: Context) {
+        context.coordinator.parent = self
+        if view.isEnabled != context.environment.isEnabled { view.isEnabled = context.environment.isEnabled }
+        // Autosave updates must not replace text while the keyboard is editing it.
+        if !view.isFirstResponder, view.text != text { view.text = text }
+        if isFocused, !view.isFirstResponder, view.isEnabled {
+            let coordinator = context.coordinator
+            DispatchQueue.main.async { [weak view, weak coordinator] in
+                guard let view, let coordinator, coordinator.parent.isFocused, view.isEnabled, !view.isFirstResponder else { return }
+                view.becomeFirstResponder()
+            }
+        }
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextField, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 0, height: (uiView.font?.lineHeight ?? 20) + 4)
+    }
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: ComposerSubjectField
+        init(_ parent: ComposerSubjectField) { self.parent = parent }
+        @objc func changed(_ view: UITextField) { parent.text = view.text ?? "" }
+        func textFieldDidBeginEditing(_ textField: UITextField) { if !parent.isFocused { parent.onFocus(true) } }
+        func textFieldDidEndEditing(_ textField: UITextField) {
+            if parent.text != textField.text { parent.text = textField.text ?? "" }
+            if parent.isFocused { parent.onFocus(false) }
+        }
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            textField.resignFirstResponder()
+            return true
+        }
     }
 }

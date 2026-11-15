@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-enum ComposeMode: Codable, Equatable, Identifiable {
+enum ComposeMode: Codable, Equatable, Identifiable, Sendable {
     case new, reply(UUID), replyAll(UUID), forward(UUID), draft(UUID)
     var id: String { String(describing: self) }
     var sourceID: UUID? {
@@ -12,14 +12,14 @@ enum ComposeMode: Codable, Equatable, Identifiable {
     }
 }
 
-struct MailAttachment: Codable, Equatable, Identifiable {
+struct MailAttachment: Codable, Equatable, Identifiable, Sendable {
     var id = UUID()
     var name: String
     var data: Data
     var contentType: String
 }
 
-struct ComposerDraft: Codable, Equatable, Identifiable {
+struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     var id = UUID()
     var mode: ComposeMode = .new
     var accountID = MailAccount.demo[1].id
@@ -73,40 +73,71 @@ final class DraftStore {
     private(set) var drafts: [ComposerDraft] = []
     var error: String?
     private let url: URL
-    private let write: (Data, URL) throws -> Void
+    private let write: @Sendable (Data, URL) throws -> Void
     private var loadFailure: String?
+    @ObservationIgnored private var pending: Task<Bool, Never>?
+
     init(url: URL = URL.applicationSupportDirectory.appending(path: "Mailern/drafts-v1.json"),
-         write: @escaping (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }) {
+         write: @escaping @Sendable (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }) {
         self.url = url
         self.write = write
-        reload()
+        do { drafts = try Self.read(url) }
+        catch { failedToLoad(error) }
     }
-    func reload() {
-        do {
-            let loaded = FileManager.default.fileExists(atPath: url.path)
-                ? try JSONDecoder().decode([ComposerDraft].self, from: Data(contentsOf: url)) : []
-            drafts = loaded
-            loadFailure = nil
-            error = nil
-        } catch {
-            loadFailure = "Could not load drafts. Existing storage has not been changed. \(error.localizedDescription)"
-            self.error = loadFailure
+    private nonisolated static func read(_ url: URL) throws -> [ComposerDraft] {
+        try FileManager.default.fileExists(atPath: url.path)
+            ? JSONDecoder().decode([ComposerDraft].self, from: Data(contentsOf: url)) : []
+    }
+    func reload() async {
+        let url = url
+        _ = await enqueue {
+            do {
+                self.drafts = try await Task.detached { try Self.read(url) }.value
+                self.loadFailure = nil
+                self.error = nil
+                return true
+            } catch { self.failedToLoad(error); return false }
         }
     }
-    @discardableResult func save(_ draft: ComposerDraft) -> Bool {
-        var updated = drafts.filter { $0.id != draft.id }
-        updated.insert(draft, at: 0)
-        return persist(updated)
+    @discardableResult func save(_ draft: ComposerDraft) async -> Bool {
+        await enqueue {
+            var updated = self.drafts.filter { $0.id != draft.id }
+            updated.insert(draft, at: 0)
+            return await self.persist(updated)
+        }
     }
-    @discardableResult func delete(_ id: UUID) -> Bool { persist(drafts.filter { $0.id != id }) }
-    private func persist(_ updated: [ComposerDraft]) -> Bool {
+    @discardableResult func delete(_ id: UUID) async -> Bool {
+        await enqueue {
+            guard self.drafts.contains(where: { $0.id == id }) else { return true }
+            return await self.persist(self.drafts.filter { $0.id != id })
+        }
+    }
+    private func enqueue(_ operation: @escaping @MainActor () async -> Bool) async -> Bool {
+        let previous = pending
+        // Once submitted, writes finish in order even if an autosave task is cancelled.
+        let task = Task { @MainActor in
+            _ = await previous?.value
+            return await operation()
+        }
+        pending = task
+        return await task.value
+    }
+    private func persist(_ updated: [ComposerDraft]) async -> Bool {
         guard loadFailure == nil else { error = loadFailure; return false }
+        let url = url
+        let write = write
         do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try write(JSONEncoder().encode(updated), url)
+            try await Task.detached(priority: .utility) {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try write(JSONEncoder().encode(updated), url)
+            }.value
             drafts = updated
             error = nil
             return true
         } catch { self.error = "Could not save drafts. \(error.localizedDescription)"; return false }
+    }
+    private func failedToLoad(_ error: any Error) {
+        loadFailure = "Could not load drafts. Existing storage has not been changed. \(error.localizedDescription)"
+        self.error = loadFailure
     }
 }

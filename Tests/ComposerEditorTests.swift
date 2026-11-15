@@ -4,6 +4,93 @@ import SwiftUI
 @testable import Mailern
 
 @MainActor final class ComposerEditorTests: XCTestCase {
+    func testAttachmentAutosaveKeepsComposerResponsive() async throws {
+        final class Gate: @unchecked Sendable {
+            let release = DispatchSemaphore(value: 0)
+            private let lock = NSLock()
+            private var armed = false
+            private var started = false
+            var hasStarted: Bool { lock.lock(); defer { lock.unlock() }; return started }
+            func arm() { lock.lock(); armed = true; lock.unlock() }
+            func write(_ data: Data, to url: URL) throws {
+                guard !Thread.isMainThread else { throw CocoaError(.fileWriteUnknown) }
+                lock.lock()
+                let block = armed
+                armed = false
+                if block { started = true }
+                lock.unlock()
+                if block {
+                    guard release.wait(timeout: .now() + 5) == .success else { throw CocoaError(.fileWriteUnknown) }
+                }
+                try data.write(to: url, options: .atomic)
+            }
+        }
+        let gate = Gate()
+        defer { gate.release.signal() }
+        let directory = URL.temporaryDirectory.appending(path: "composer-attachment-check-\(UUID())")
+        let drafts = DraftStore(url: directory.appending(path: "drafts.json"), write: { try gate.write($0, to: $1) })
+        let payload = Data(repeating: 42, count: 25 * 1024 * 1024)
+        var draft = ComposerDraft(subject: "Attachment responsiveness", text: "Original",
+                                  attachments: [MailAttachment(name: "Sample.bin", data: payload, contentType: "public.data")])
+        let editingID = draft.id
+        for _ in 0..<3 {
+            let saved = await drafts.save(draft)
+            XCTAssertTrue(saved)
+            draft.id = UUID()
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let host = UIHostingController(rootView: ComposerView(mode: .draft(editingID))
+            .environment(MailStore(persistence: JSONPersistence(url: directory.appending(path: "mail.json"))))
+            .environment(drafts))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { host.view.endEditing(true); window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(500))
+        func editor(in view: UIView) -> UITextView? {
+            if let text = view as? UITextView, text.accessibilityLabel == "Message body" { return text }
+            return view.subviews.lazy.compactMap { editor(in: $0) }.first
+        }
+        let text = try XCTUnwrap(editor(in: host.view))
+        let heartbeat = Task { @MainActor in
+            var previous = Date()
+            var longestGap: TimeInterval = 0
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(10)) } catch { break }
+                let now = Date()
+                longestGap = max(longestGap, now.timeIntervalSince(previous))
+                previous = now
+            }
+            return longestGap
+        }
+        defer { heartbeat.cancel() }
+        gate.arm()
+        text.insertText("First ")
+        var entered = false
+        for _ in 0..<200 {
+            if gate.hasStarted { entered = true; break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(entered)
+        let start = Date()
+        text.insertText("Second ")
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.1)
+        XCTAssertTrue(text.text.contains("Second"))
+        let expected = text.text
+        gate.release.signal()
+        for _ in 0..<200 {
+            if drafts.drafts.first(where: { $0.id == editingID })?.text == expected { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(drafts.drafts.count, 3)
+        XCTAssertEqual(drafts.drafts.first(where: { $0.id == editingID })?.text, expected)
+        heartbeat.cancel()
+        let longestGap = await heartbeat.value
+        XCTAssertLessThan(longestGap, 0.2)
+        print("Main-actor longest heartbeat gap with three 25 MiB drafts: \(longestGap * 1000) ms")
+        XCTAssertEqual(DraftStore(url: directory.appending(path: "drafts.json")).drafts.first(where: { $0.id == editingID })?.text, expected)
+    }
+
     func testComposerDisablesSubjectWritingTools() async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)

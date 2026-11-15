@@ -17,7 +17,7 @@ struct DraftsView: View {
                             Text(draft.text).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
                         }.foregroundStyle(.primary).padding(.vertical, 6)
                     }
-                    .swipeActions { Button("Delete", role: .destructive) { drafts.delete(draft.id) } }
+                    .swipeActions { Button("Delete", role: .destructive) { Task { await drafts.delete(draft.id) } } }
                 }
             }
             .overlay { if drafts.drafts.isEmpty { ContentUnavailableView("No drafts", systemImage: "doc") } }
@@ -26,7 +26,7 @@ struct DraftsView: View {
         }
         .sheet(item: $composer) { ComposerView(mode: $0) }
         .alert("Draft storage", isPresented: Binding(get: { composer == nil && drafts.error != nil }, set: { if !$0 && composer == nil { drafts.error = nil } })) {
-            Button("Retry") { drafts.reload() }
+            Button("Retry") { Task { await drafts.reload() } }
             Button("OK", role: .cancel) { drafts.error = nil }
         } message: { Text(drafts.error ?? "") }
     }

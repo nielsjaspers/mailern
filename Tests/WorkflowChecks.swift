@@ -1,8 +1,9 @@
 import Foundation
 
 @main struct WorkflowChecks {
-    @MainActor static func main() throws {
-        try checkComposerData()
+    @MainActor static func main() async throws {
+        try await checkComposerData()
+        try await checkDraftWriteOrdering()
         try checkBulkActions()
         checkDeliberatePull()
         try checkInboxOrder()
@@ -58,7 +59,7 @@ import Foundation
         assert(store.error == nil)
         print("PASS: read/workflow independence, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
     }
-    @MainActor static func checkComposerData() throws {
+    @MainActor static func checkComposerData() async throws {
         let dir = URL.temporaryDirectory.appending(path: "mailern-composer-\(UUID())")
         let disk = JSONPersistence(url: dir.appending(path: "mail.json"))
         let store = MailStore(persistence: disk)
@@ -92,7 +93,8 @@ import Foundation
         draft.richText = Data("formatting payload".utf8)
         draft.attachments = [MailAttachment(name: "Example.txt", data: Data("Attachment proof".utf8), contentType: "public.plain-text")]
         let drafts = DraftStore(url: dir.appending(path: "drafts.json"))
-        assert(drafts.save(draft))
+        let savedDraft = await drafts.save(draft)
+        assert(savedDraft)
         let reloaded = DraftStore(url: dir.appending(path: "drafts.json"))
         assert(reloaded.drafts == [draft])
         assert(store.send(threadID: source.id, account: source.account, to: [reply.to], cc: ComposerDraft.addresses(reply.cc),
@@ -110,20 +112,24 @@ import Foundation
         assert(reactivated.latest.subject == "Updated project scope")
         assert(ComposerDraft.make(mode: .reply(source.id), conversation: reactivated).subject == "Re: Updated project scope")
         assert(ComposerDraft.make(mode: .forward(source.id), conversation: reactivated).subject == "Fwd: Updated project scope")
-        assert(drafts.delete(draft.id) && DraftStore(url: dir.appending(path: "drafts.json")).drafts.isEmpty)
+        let deletedDraft = await drafts.delete(draft.id)
+        assert(deletedDraft && DraftStore(url: dir.appending(path: "drafts.json")).drafts.isEmpty)
         let damagedURL = dir.appending(path: "damaged-drafts.json")
         let damaged = Data("[{trailing damage".utf8)
         try damaged.write(to: damagedURL)
         let protected = DraftStore(url: damagedURL)
         assert(protected.error != nil)
         protected.error = nil
-        assert(!protected.save(draft) && !protected.delete(draft.id))
+        let protectedSave = await protected.save(draft)
+        let protectedDelete = await protected.delete(draft.id)
+        assert(!protectedSave && protectedDelete)
         let retained = try Data(contentsOf: damagedURL)
         assert(retained == damaged)
         try JSONEncoder().encode([draft]).write(to: damagedURL)
-        protected.reload()
+        await protected.reload()
         assert(protected.error == nil && protected.drafts == [draft])
-        assert(protected.delete(draft.id))
+        let recoveredDelete = await protected.delete(draft.id)
+        assert(recoveredDelete)
         enum Failure: Error { case disk }
         struct FailingDisk: ConversationPersistence {
             func load() throws -> [Conversation]? { DemoData.conversations() }
@@ -155,6 +161,55 @@ import Foundation
         assert(recoverable.notice == nil && recoverable.conversation(recoveryID)!.workflow == .settled)
         assert(!store.send(threadID: UUID(), account: source.account, to: ["test@example.com"], cc: [], subject: "Missing source", body: "Retain draft"))
         print("PASS: reply-all recipient deduplication, editable quotes, draft reload/delete, Bcc/rich text/attachments, forward payload, unreadable draft protection, and send-failure rollback")
+    }
+
+    @MainActor static func checkDraftWriteOrdering() async throws {
+        final class Gate: @unchecked Sendable {
+            let release = DispatchSemaphore(value: 0)
+            private let lock = NSLock()
+            private var first = true
+            private var started = false
+            var hasStarted: Bool { lock.lock(); defer { lock.unlock() }; return started }
+            func write(_ data: Data, to url: URL) throws {
+                lock.lock()
+                let block = first
+                first = false
+                if block { started = true }
+                lock.unlock()
+                if block {
+                    guard release.wait(timeout: .now() + 5) == .success else { throw CocoaError(.fileWriteUnknown) }
+                }
+                try data.write(to: url, options: .atomic)
+            }
+        }
+        let url = URL.temporaryDirectory.appending(path: "mailern-ordered-drafts-\(UUID())/drafts.json")
+        let gate = Gate()
+        let store = DraftStore(url: url, write: { try gate.write($0, to: $1) })
+        let first = ComposerDraft(subject: "First")
+        let second = ComposerDraft(subject: "Second")
+        let savingFirst = Task { await store.save(first) }
+        var entered = false
+        for _ in 0..<200 {
+            if gate.hasStarted { entered = true; break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        assert(entered) // Main-actor work continues while the writer is blocked.
+        let savingSecond = Task { await store.save(second) }
+        savingFirst.cancel()
+        var deleteStarted = false
+        let deletingFirst = Task {
+            deleteStarted = true
+            return await store.delete(first.id)
+        }
+        while !deleteStarted { await Task.yield() }
+        gate.release.signal()
+        let firstSaved = await savingFirst.value
+        let secondSaved = await savingSecond.value
+        let deleted = await deletingFirst.value
+        assert(firstSaved && secondSaved && deleted)
+        assert(store.drafts.map(\.id) == [second.id])
+        assert(DraftStore(url: url).drafts.map(\.id) == [second.id])
+        print("PASS: background writes, cancelled-save completion, cross-draft ordering, and ordered deletion")
     }
 
     @MainActor static func checkBulkActions() throws {
