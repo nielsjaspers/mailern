@@ -1,0 +1,1 @@
+A fictional attachment for the composer UI test.

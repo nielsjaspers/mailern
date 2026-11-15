@@ -21,8 +21,8 @@ with (out / 'manifest.plist').open('wb') as f:
 install = 'itms-services://?action=download-manifest&url='+quote(base+'/manifest.plist', safe='')
 (out / 'index.html').write_text(f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Install Mailern</title>
 <style>body{{font:18px system-ui;max-width:36rem;margin:12vh auto;padding:24px;background:#f4f7f6;color:#162c2b}}a{{display:inline-block;background:#096f6e;color:white;padding:16px 24px;border-radius:14px;text-decoration:none}}p{{line-height:1.6}}</style>
-<h1>Mailern</h1><p>Native iOS email workflow prototype. Fictional mail, local state.</p><a href="{html.escape(install)}">Install on iPhone</a>
+<h1>Mailern</h1><p>Version {html.escape(info["CFBundleShortVersionString"])} · Build {html.escape(info["CFBundleVersion"])}</p><p>Native iOS email workflow prototype. Fictional mail, local state.</p><a href="{html.escape(install)}">Install on iPhone</a>
 <p>Open in Safari with Tailscale connected. This development build requires an iPhone registered in the signing profile and Developer Mode enabled in Settings → Privacy &amp; Security.</p>
 <p>If iOS asks you to trust the developer, open Settings → General → VPN &amp; Device Management. Return to the Home Screen after accepting the install prompt.</p>
-<p>In the app, use Demo to simulate replies. Use Snooze settings to adjust return times.</p></html>''')
+<p>In the app, use More → Drafts to reopen saved messages, Demo to simulate replies, and Settings to adjust snooze times and Labs.</p></html>''')
 print(base+'/')

@@ -18,7 +18,7 @@ Open `Mailern.xcodeproj`, select the Mailern scheme and your device, then choose
 - Undo reverses the most recent workflow move. Incoming mail and sending invalidate Undo so it cannot hide a newer message.
 - Search covers the current section's subjects, senders, accounts, and message bodies.
 
-Messages and workflow state are saved as atomic JSON in the app's Application Support directory. Cancel protects edited messages from accidental dismissal; drafts are not persisted. The message view renders local text and Markdown links, not arbitrary HTML email or attachments.
+Messages, workflow state, and drafts are saved as atomic JSON in the app's Application Support directory. The composer uses native sheet transitions, recipient and sender fields, and a rich text editor. Use Aa for text styles, fonts, color, lists, alignment, and indentation. iOS 18 and later use Apple's formatting panel. The paperclip imports files or photos, with a 25 MB total limit and native file previews. Save Draft and Delete Draft are in the close button's menu. Swiping the sheet away saves an edited draft. Reopen it through More → Drafts. Replies include an editable quote and settle the source conversation when sent; forwards create a separate settled conversation. All sending remains simulated. The reader displays local text, rich outgoing messages, and attachments, but does not render arbitrary HTML email.
 
 ## Code
 
@@ -28,7 +28,7 @@ Run `scripts/check-workflow.sh` for isolated state and persistence checks. It cr
 
 Prototype refinements use patch versions. Increment the build number for each distributed build; reserve minor versions for larger milestones.
 
-Run Product → Test in Xcode on a Simulator to check peek presentation across workflow sections. The UI test resets that Simulator’s demo messages.
+Run Product → Test in Xcode on a disposable Simulator to check workflow interactions. UI tests reset that Simulator's demo messages. For the composer suite, run `scripts/check-composer-ui.sh SIMULATOR_ID` on a booted disposable Simulator. The script installs the app, copies the fictional attachment fixture into its Documents directory, and tests file import, formatting, draft recovery, reply/forward sending, and swipe dismissal.
 
 The checked-in Xcode project works directly. After adding source files, regenerate it with `python3 scripts/create-project.py`. Edit `Mailern/AppIcon.icon` in Icon Composer. Its three vector groups separate the rounded upper wing, rear wing, and body, with the upper wing in front. Xcode compiles the layered icon and its appearance variants directly from this file. Building the icon requires Xcode 26 or later.
 
@@ -38,7 +38,7 @@ The checked-in Xcode project works directly. After adding source files, regenera
 
 `scripts/serve-demo.py HTTPS_BASE_URL` creates an OTA manifest and install page in `build/install`. Serve only that directory over trusted HTTPS, such as a dedicated Tailscale Serve path. Open its page in Safari on the registered iPhone with Tailscale connected. The computer serving the files must remain awake and connected.
 
-Settings in the More menu includes snooze preferences and Labs. Labs can assign the Inbox pull-down gesture to Search or New email, and move Compose to the bottom while preserving native tabs. iOS 27 uses the system's prominent trailing tab; earlier versions use a native bottom toolbar. Both experiments are off by default and persist locally. Pull actions require iOS 18 or later. Start a pull while the Inbox is stationary at the very top. Pull farther to fill the ring; a soft tap and brief pulse indicate readiness. Move back up to cancel or pull down again to rearm before releasing. Search and Compose open on release without an opening animation.
+Settings in the More menu includes snooze preferences and Labs. Labs can assign the Inbox pull-down gesture to Search or New email, and move Compose to the bottom while preserving native tabs. iOS 27 uses the system's prominent trailing tab; earlier versions use a native bottom toolbar. Both experiments are off by default and persist locally. Pull actions require iOS 18 or later. Start a pull while the Inbox is stationary at the very top. Pull farther to fill the ring; a soft tap and brief pulse indicate readiness. Move back up to cancel or pull down again to rearm before releasing. Search opens immediately on release. Compose uses the same native transition as its button.
 
 Labs → Swipe actions configures the full-swipe action and an optional additional button separately for left and right swipes. Choose Settle / Restore, Read / Unread, Snooze, Pin / Unpin, or None. The same configuration applies in all mailboxes, persists locally, and can be reset to the defaults.
 
