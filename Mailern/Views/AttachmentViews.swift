@@ -1,6 +1,5 @@
 import SwiftUI
 import QuickLook
-import UniformTypeIdentifiers
 
 struct AttachmentList: View {
     let attachments: [MailAttachment]
@@ -32,19 +31,14 @@ struct AttachmentList: View {
                 }.padding(12).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
             }
         }
-        .sheet(item: $preview) { file in
-            NavigationStack {
-                FilePreview(file: file).ignoresSafeArea(edges: .bottom)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { preview = nil } } }
-            }
-        }
+        .quickLookPreview(Binding(get: { preview?.url }, set: { if $0 == nil { preview = nil } }))
         .alert("Attachment", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK") { error = nil }
         } message: { Text(error ?? "") }
     }
 }
 
-private final class PreviewFile: Identifiable {
+private final class PreviewFile {
     let id = UUID()
     let url: URL
     private let directory: URL
@@ -56,21 +50,4 @@ private final class PreviewFile: Identifiable {
         try file.data.write(to: url, options: .atomic)
     }
     deinit { try? FileManager.default.removeItem(at: directory) }
-}
-
-private struct FilePreview: UIViewControllerRepresentable {
-    let file: PreviewFile
-    func makeCoordinator() -> Coordinator { Coordinator(file: file) }
-    func makeUIViewController(context: Context) -> QLPreviewController {
-        let controller = QLPreviewController()
-        controller.dataSource = context.coordinator
-        return controller
-    }
-    func updateUIViewController(_ controller: QLPreviewController, context: Context) {}
-    final class Coordinator: NSObject, QLPreviewControllerDataSource {
-        let file: PreviewFile
-        init(file: PreviewFile) { self.file = file }
-        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
-        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> any QLPreviewItem { file.url as NSURL }
-    }
 }

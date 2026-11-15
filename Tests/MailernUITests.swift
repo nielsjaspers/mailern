@@ -1,6 +1,22 @@
 import XCTest
+import UIKit
 
 final class MailernUITests: XCTestCase {
+    private func containsSamplePhoto(_ image: UIImage) -> Bool {
+        guard let cg = image.cgImage, let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8,
+                                      bytesPerRow: cg.width * 4, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+              let data = context.data else { return false }
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        let pixels = data.assumingMemoryBound(to: UInt8.self)
+        var matching = 0
+        for offset in stride(from: 0, to: cg.width * cg.height * 4, by: 4) {
+            if (20...50).contains(Int(pixels[offset])) && (120...160).contains(Int(pixels[offset + 1]))
+                && (200...240).contains(Int(pixels[offset + 2])) { matching += 1 }
+        }
+        return matching > 1_000
+    }
     @MainActor
     func testComposerRevertedHeadersPersistAndStayProtected() {
         continueAfterFailure = false
@@ -132,6 +148,42 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
+    func testComposerPhotoAttachment() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
+        to.tap(); to.typeText("recipient@example.com")
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText("Photo proof")
+        app.textViews["Message body"].tap(); app.textViews["Message body"].typeText("See the photo.")
+        app.buttons["Attach"].tap(); app.buttons["Photo Library"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 10))
+        let photo = app.images.matching(NSPredicate(format: "label BEGINSWITH %@", "Photo,")).firstMatch
+        XCTAssertTrue(photo.waitForExistence(timeout: 30))
+        capture("Native photo picker", in: app)
+        photo.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        app.buttons["Add"].tap()
+        let preview = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Preview Photo-")).firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 10))
+        capture("Photo attached to draft", in: app)
+        preview.tap()
+        XCTAssertTrue(app.buttons["QLOverlayDoneButtonAccessibilityIdentifier"].waitForExistence(timeout: 5))
+        let rendered = XCTNSPredicateExpectation(predicate: NSPredicate { [self] _, _ in
+            containsSamplePhoto(XCUIScreen.main.screenshot().image)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [rendered], timeout: 30), .completed)
+        capture("Native photo preview", in: app)
+        closeQuickLook(in: app)
+        app.buttons["Send"].tap()
+        waitForAbsence(app.navigationBars["Photo proof"])
+        select("Settled", in: app)
+        row("Photo proof", in: app).tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Preview Photo-")).firstMatch.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testComposerFileAttachment() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -156,12 +208,14 @@ final class MailernUITests: XCTestCase {
         app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Sample attachment")).firstMatch.tap()
         app.buttons["Open"].tap()
         let preview = app.buttons["Preview Sample attachment.txt"]
+        capture("File picker after Open", in: app)
         XCTAssertTrue(preview.waitForExistence(timeout: 10))
         capture("Imported real file attachment", in: app)
         preview.tap()
-        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["QLOverlayDoneButtonAccessibilityIdentifier"].waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 15) // Allow the native remote preview to finish loading on Simulator.
         capture("Native attachment preview", in: app)
-        app.buttons["Done"].tap()
+        closeQuickLook(in: app)
         app.buttons["Send"].tap()
         waitForAbsence(app.navigationBars["Attachment proof"])
         select("Settled", in: app)
@@ -844,8 +898,20 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
+    private func closeQuickLook(in app: XCUIApplication) {
+        let close = app.buttons["QLOverlayDoneButtonAccessibilityIdentifier"]
+        if !close.exists {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        close.tap()
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: app.buttons["Send"])
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
+    }
+
+    @MainActor
     private func capture(_ name: String, in app: XCUIApplication) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)

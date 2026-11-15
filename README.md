@@ -28,7 +28,7 @@ Run `scripts/check-workflow.sh` for isolated state and persistence checks. It cr
 
 Prototype refinements use patch versions. Increment the build number for each distributed build; reserve minor versions for larger milestones.
 
-Run Product → Test in Xcode on a disposable Simulator to check workflow interactions. UI tests reset that Simulator's demo messages. For the composer suite, run `scripts/check-composer-ui.sh SIMULATOR_ID` on a booted disposable Simulator. The script installs the app, copies the fictional attachment fixture into its Documents directory, and tests file import, formatting, draft recovery, reply/forward sending, and swipe dismissal, including forced storage failures. Native editor tests check mixed formatting and rich-text persistence.
+Run Product → Test in Xcode on a disposable Simulator to check workflow interactions. UI tests reset that Simulator's demo messages. For the composer suite, run `scripts/check-composer-ui.sh SIMULATOR_ID` on a booted disposable Simulator. The script installs the app, copies the fictional file fixture into its Documents directory, imports a sample image into Photos, and tests file and photo import, formatting, draft recovery, reply/forward sending, and swipe dismissal, including forced storage failures. Native editor tests check mixed formatting and rich-text persistence.
 
 The checked-in Xcode project works directly. After adding source files, regenerate it with `python3 scripts/create-project.py`. Edit `Mailern/AppIcon.icon` in Icon Composer. Its three vector groups separate the rounded upper wing, rear wing, and body, with the upper wing in front. Xcode compiles the layered icon and its appearance variants directly from this file. Building the icon requires Xcode 26 or later.
 

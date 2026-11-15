@@ -8,8 +8,10 @@ xcrun simctl install "$simulator_id" "$derived_data/Build/Products/Debug-iphones
 app_data=$(xcrun simctl get_app_container "$simulator_id" com.example.mailern data)
 mkdir -p "$app_data/Documents"
 cp 'Tests/Fixtures/Sample attachment.txt' "$app_data/Documents/Sample attachment.txt"
+xcrun simctl addmedia "$simulator_id" 'Tests/Fixtures/Sample photo.png'
 xcodebuild -project Mailern.xcodeproj -scheme Mailern -destination "id=$simulator_id" -derivedDataPath "$derived_data" test-without-building \
   -only-testing:MailernTests \
+  -only-testing:MailernUITests/MailernUITests/testComposerPhotoAttachment \
   -only-testing:MailernUITests/MailernUITests/testComposerRevertedHeadersPersistAndStayProtected \
   -only-testing:MailernUITests/MailernUITests/testComposerCleanupFailureClosesAfterAcknowledgement \
   -only-testing:MailernUITests/MailernUITests/testComposerDraftSaveFailureKeepsEditor \
