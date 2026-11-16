@@ -2,12 +2,15 @@ import SwiftUI
 
 struct SnoozeView: View {
     @Environment(MailStore.self) private var store
+    @Environment(DraftStore.self) private var drafts
     @Environment(SnoozePreferences.self) private var preferences
     @Environment(\.dismiss) private var dismiss
     let ids: Set<UUID>
+    var draftIDs: Set<UUID> = []
     var beforeSnooze: () -> Void = {}
     var onSnooze: () -> Void = {}
     @State private var date = Date.now.addingTimeInterval(3600)
+    @State private var saving = false
 
     var body: some View {
         NavigationStack {
@@ -43,12 +46,21 @@ struct SnoozeView: View {
             .navigationTitle("Snooze").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }.presentationDetents([.large])
+        .disabled(saving)
+        .interactiveDismissDisabled(saving)
+        .modifier(DraftStorageAlert(active: true))
     }
     private func snooze(_ date: Date) {
         guard date > .now else { return }
-        beforeSnooze()
-        store.apply(ids: ids, action: .move(.snoozed, until: date))
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        dismiss(); onSnooze()
+        guard !saving else { return }
+        saving = true
+        Task {
+            defer { saving = false }
+            if !draftIDs.isEmpty, !(await drafts.snooze(draftIDs, until: date)) { return }
+            beforeSnooze()
+            store.apply(ids: ids, action: .move(.snoozed, until: date))
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            dismiss(); onSnooze()
+        }
     }
 }

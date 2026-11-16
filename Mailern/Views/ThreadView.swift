@@ -9,6 +9,7 @@ struct ThreadView: View {
     @State private var mode: ComposeMode?
     @State private var snooze = false
     @State private var deleting = false
+    @State private var settling: Set<UUID> = []
     private var attachedDrafts: [ComposerDraft] { drafts.drafts.filter { $0.mode.replyID == id }.sorted { $0.updatedAt < $1.updatedAt } }
     var body: some View {
         Group {
@@ -28,20 +29,21 @@ struct ThreadView: View {
                             if c.workflow != .settled {
                                 Button("Mark unread", systemImage: "envelope.badge") { store.markRead(id, unread: true); dismiss() }
                             }
-                            Button("Snooze", systemImage: "clock") { snooze = true }.disabled(!attachedDrafts.isEmpty)
-                            if c.workflow != .inbox && attachedDrafts.isEmpty { Button("Restore to Inbox", systemImage: "tray") { store.move(id, to: .inbox); dismiss() } }
+                            Button("Snooze", systemImage: "clock") { snooze = true }
+                            if c.workflow != .inbox { Button("Restore to Inbox", systemImage: "tray") { store.move(id, to: .inbox); dismiss() } }
                             Divider()
                             Button("Simulate incoming reply", systemImage: "arrow.down.message") { store.receiveReply(id) }
                         } label: { Label("More actions", systemImage: "ellipsis.circle") }
                     }
                     ToolbarItemGroup(placement: .bottomBar) {
                         Button(c.workflow == .settled ? "Restore" : "Settle", systemImage: c.workflow == .settled ? "tray" : "checkmark") {
+                            if c.workflow != .settled && !attachedDrafts.isEmpty { settling = [id]; return }
                             store.move(id, to: c.workflow == .settled ? .inbox : .settled)
                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                             dismiss()
-                        }.disabled(!attachedDrafts.isEmpty)
+                        }
                         Spacer()
-                        Button("Snooze", systemImage: "clock") { snooze = true }.disabled(!attachedDrafts.isEmpty)
+                        Button("Snooze", systemImage: "clock") { snooze = true }
                         Spacer()
                         Menu {
                             Button("Reply") { mode = .reply(id) }
@@ -60,6 +62,7 @@ struct ThreadView: View {
             else { ComposerView(mode: mode).modifier(ComposerTransition(source: "reply", namespace: composeTransition)) }
         }
         .modifier(DraftStorageAlert(active: mode == nil))
+        .modifier(SettleDraftConfirmation(ids: $settling, onSettle: { dismiss() }))
         .sheet(isPresented: $snooze) { SnoozeView(ids: [id], onSnooze: { dismiss() }) }
     }
 }

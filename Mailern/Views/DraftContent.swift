@@ -14,7 +14,14 @@ struct DraftRow: View {
                 }
                 Text(draft.title).font(.subheadline).lineLimit(1)
                 Text(draft.text.replacingOccurrences(of: "\n", with: " ")).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-                Text(draft.account.name).font(.caption2).foregroundStyle(.secondary).padding(.top, 2)
+                HStack {
+                    Text(draft.account.name)
+                    if draft.pinned == true { Image(systemName: "pin.fill").foregroundStyle(.orange).accessibilityLabel("Pinned") }
+                    if let date = draft.snoozedUntil {
+                        Image(systemName: "clock")
+                        Text(date, format: .dateTime.weekday(.abbreviated).hour().minute())
+                    }
+                }.font(.caption2).foregroundStyle(.secondary).padding(.top, 2)
             }
         }.padding(.vertical, 1).accessibilityElement(children: .combine)
     }
@@ -67,6 +74,8 @@ struct DraftThreadView: View {
     let id: UUID
     @State private var mode: ComposeMode?
     @State private var deleting = false
+    @State private var settling: Set<UUID> = []
+    @State private var snoozing = false
 
     var body: some View {
         Group {
@@ -83,11 +92,28 @@ struct DraftThreadView: View {
                         }, deleting: deleting)
                     }.padding(18)
                 }.background(Color(uiColor: .systemGroupedBackground))
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Button(draft.pinned == true ? "Unpin" : "Pin", systemImage: "pin") { Task { await drafts.togglePin(id) } }
+                            if draft.snoozedUntil != nil {
+                                Button("Restore to Inbox", systemImage: "tray") { Task { if await drafts.restore(id) { dismiss() } } }
+                            }
+                        } label: { Label("More actions", systemImage: "ellipsis.circle") }
+                    }
+                    ToolbarItemGroup(placement: .bottomBar) {
+                        Button("Settle", systemImage: "checkmark") { settling = [id] }
+                        Spacer()
+                        Button("Snooze", systemImage: "clock") { snoozing = true }
+                    }
+                }
             } else { ContentUnavailableView("Draft unavailable", systemImage: "square.and.pencil") }
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .modifier(DraftStorageAlert(active: mode == nil))
+        .modifier(SettleDraftConfirmation(ids: $settling, onSettle: { dismiss() }))
+        .sheet(isPresented: $snoozing) { SnoozeView(ids: [], draftIDs: [id], onSnooze: { dismiss() }) }
         .sheet(item: $mode, onDismiss: {
             if !drafts.drafts.contains(where: { $0.id == id }) { dismiss() }
         }) { ComposerView(mode: $0) }

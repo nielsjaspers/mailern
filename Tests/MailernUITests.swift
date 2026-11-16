@@ -3,6 +3,231 @@ import UIKit
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testSnoozeExpiryKeepsComposerSwipeDismissal() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let subject = "Expiry \(UUID().uuidString.prefix(6))"
+        app.launchEnvironment["MAILERN_TEST_EXPIRING_DRAFT"] = subject
+        app.launch()
+        select("Snoozed", in: app)
+        XCTAssertTrue(row(subject, in: app).waitForExistence(timeout: 5))
+        row(subject, in: app).tap()
+        app.buttons["Edit draft"].tap()
+        XCTAssertTrue(app.textViews["Message body"].waitForExistence(timeout: 5))
+        let deadline = Date.now.addingTimeInterval(22)
+        let expired = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in Date.now >= deadline }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [expired], timeout: 25), .completed)
+        app.textViews["Message body"].tap()
+        app.textViews["Message body"].typeText(" after expiry")
+        let grabber = app.buttons["Sheet Grabber"].firstMatch
+        XCTAssertTrue(grabber.waitForExistence(timeout: 5))
+        grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)),
+            withVelocity: .slow, thenHoldForDuration: 0.1)
+        waitForAbsence(app.textViews["Message body"])
+        app.navigationBars.buttons["Snoozed"].tap()
+        XCTAssertFalse(row(subject, in: app).exists)
+        select("Inbox", in: app)
+        XCTAssertTrue(row(subject, in: app).waitForExistence(timeout: 5))
+        row(subject, in: app).tap()
+        app.buttons["Edit draft"].tap()
+        XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").contains("after expiry"))
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+    }
+
+    @MainActor
+    func testMailboxFilterOptionsAndPersistence() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetMailboxFilters(in: app)
+        resetDemo(in: app)
+        capture("After - mailbox filter controls", in: app)
+        app.buttons["Filter"].tap()
+        XCTAssertFalse(row("Dinner on Saturday?", in: app).exists)
+        XCTAssertTrue(row("Course project feedback", in: app).exists)
+        row("A little less, but better", in: app).tap()
+        XCTAssertTrue(app.navigationBars.buttons["Inbox"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertFalse(row("A little less, but better", in: app).exists)
+        app.buttons["Filter options"].tap()
+        capture("After - native filter sheet", in: app)
+        app.buttons["filter-read-read"].tap()
+        app.buttons["Done"].tap()
+        XCTAssertTrue(row("Dinner on Saturday?", in: app).exists)
+        XCTAssertFalse(row("Course project feedback", in: app).exists)
+        app.buttons["Filter options"].tap()
+        app.buttons["filter-read-all"].tap()
+        for id in ["icloud", "gmail", "proton"] { app.buttons["filter-account-\(id)"].tap() }
+        app.buttons["Done"].tap()
+        XCTAssertTrue(row("Course project feedback", in: app).exists)
+        XCTAssertFalse(row("Dinner on Saturday?", in: app).exists)
+        capture("After - University account filter", in: app)
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.staticTexts["Filtered by University"].waitForExistence(timeout: 5))
+        XCTAssertFalse(row("Dinner on Saturday?", in: app).exists)
+        app.buttons["Select"].tap(); app.buttons["Select All"].tap()
+        XCTAssertTrue(app.staticTexts["2 selected"].exists)
+        app.buttons["Cancel"].tap()
+        select("Snoozed", in: app)
+        XCTAssertTrue(row("Tickets go on sale next week", in: app).exists)
+        app.buttons["Filter options"].tap()
+        XCTAssertTrue(app.switches["Only drafts"].exists)
+        app.buttons["Done"].tap()
+        select("Inbox", in: app)
+        app.buttons["Filter"].tap()
+        row("Dinner on Saturday?", in: app).tap()
+        app.buttons["Settle"].tap()
+        select("Settled", in: app)
+        app.buttons["Filter options"].tap()
+        XCTAssertTrue(app.switches["Only sent"].exists)
+        XCTAssertFalse(app.buttons["filter-read-unread"].exists)
+        app.switches["Only sent"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        app.switches["Only sent"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        app.buttons["Done"].tap()
+        XCTAssertTrue(row("Dinner on Saturday?", in: app).exists)
+        XCTAssertFalse(row("The photos from our trip", in: app).exists)
+        app.buttons["Filter options"].tap()
+        app.buttons["filter-account-icloud"].tap()
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.staticTexts["No matching mail"].exists)
+        app.buttons["Filter"].tap()
+        XCTAssertTrue(row("The photos from our trip", in: app).exists)
+        resetMailboxFilters(in: app)
+    }
+
+    @MainActor
+    func testStandaloneDraftSwipeActions() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetMailboxFilters(in: app)
+        resetDemo(in: app)
+        let subject = "Standalone swipe \(UUID().uuidString.prefix(6))"
+        saveNewDraft(subject, in: app)
+        app.buttons["More"].tap(); app.buttons["Settings"].tap(); app.buttons["Swipe actions"].tap()
+        app.buttons["Swipe left-primary"].tap(); app.buttons["None"].tap()
+        app.navigationBars.buttons["Settings"].tap(); app.buttons["Done"].tap()
+        fullSwipe(row(subject, in: app), right: false)
+        XCTAssertTrue(row(subject, in: app).exists)
+        XCTAssertFalse(app.navigationBars["Snooze"].exists)
+        XCTAssertFalse(app.buttons["Edit draft"].exists)
+        app.buttons["More"].tap(); app.buttons["Settings"].tap(); app.buttons["Swipe actions"].tap()
+        app.buttons["Reset Swipe Actions"].tap()
+        app.navigationBars.buttons["Settings"].tap(); app.buttons["Done"].tap()
+        fullSwipe(row(subject, in: app), right: true)
+        XCTAssertTrue(row(subject, in: app).label.contains("Pinned"))
+        row(subject, in: app).swipeLeft()
+        XCTAssertTrue(app.buttons["Settle"].exists)
+        XCTAssertTrue(app.buttons["Snooze"].exists)
+        app.buttons["Snooze"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "In ")).firstMatch.tap()
+        XCTAssertFalse(row(subject, in: app).exists)
+        select("Snoozed", in: app)
+        XCTAssertTrue(row(subject, in: app).label.contains("Pinned"))
+        app.buttons["Filter options"].tap()
+        app.buttons["filter-read-all"].tap()
+        app.switches["Only drafts"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertEqual(app.switches["Only drafts"].value as? String, "1")
+        app.buttons["Done"].tap()
+        XCTAssertTrue(row(subject, in: app).exists)
+        XCTAssertFalse(row("Tickets go on sale next week", in: app).exists)
+        capture("After - snoozed standalone draft", in: app)
+        app.terminate(); app.launch()
+        select("Snoozed", in: app)
+        XCTAssertTrue(row(subject, in: app).label.contains("Pinned"))
+        row(subject, in: app).tap()
+        app.buttons["More actions"].tap(); app.buttons["Unpin"].tap()
+        app.buttons["More actions"].tap(); app.buttons["Restore to Inbox"].tap()
+        select("Inbox", in: app)
+        XCTAssertFalse(row(subject, in: app).label.contains("Pinned"))
+        row(subject, in: app).tap()
+        confirmSnooze(in: app)
+        select("Snoozed", in: app)
+        row(subject, in: app).tap()
+        app.buttons["Settle"].tap()
+        app.alerts.buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["Edit draft"].exists)
+        app.navigationBars.buttons["Snoozed"].tap()
+        fullSwipe(row(subject, in: app), right: false)
+        XCTAssertTrue(app.buttons["Discard draft"].waitForExistence(timeout: 5))
+        capture("After - standalone settle confirmation", in: app)
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(row(subject, in: app).exists)
+        fullSwipe(row(subject, in: app), right: false)
+        app.buttons["Discard draft"].tap()
+        waitForAbsence(row(subject, in: app))
+        XCTAssertTrue(app.staticTexts["No matching mail"].exists)
+        resetMailboxFilters(in: app)
+    }
+
+    @MainActor
+    func testAttachedDraftReadSnoozeAndSettle() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetMailboxFilters(in: app)
+        resetDemo(in: app)
+        let subject = "Course project feedback"
+        saveReplyDraft(subject, in: app)
+        fullSwipe(row(subject, in: app), right: true)
+        XCTAssertEqual(row(subject, in: app).value as? String, "Unread")
+        fullSwipe(row(subject, in: app), right: true)
+        XCTAssertEqual(row(subject, in: app).value as? String, "Read")
+        row(subject, in: app).tap()
+        app.buttons["Settle"].tap()
+        XCTAssertTrue(app.buttons["Discard drafts and settle"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["Edit draft"].exists)
+        confirmSnooze(in: app)
+        select("Snoozed", in: app)
+        XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
+        peek(subject, in: app)
+        XCTAssertTrue(preview(in: app).staticTexts["Snoozed"].exists)
+        app.buttons["Settle"].tap()
+        XCTAssertTrue(app.buttons["Discard drafts and settle"].waitForExistence(timeout: 5))
+        capture("After - attached draft settle confirmation", in: app)
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(preview(in: app).exists)
+        app.buttons["Dismiss peek"].coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
+        waitForAbsence(preview(in: app))
+        app.buttons["Select"].tap(); row(subject, in: app).tap()
+        app.buttons["Settle"].tap()
+        app.alerts.buttons["Cancel"].tap()
+        XCTAssertTrue(app.staticTexts["1 selected"].exists)
+        app.buttons["Settle"].tap()
+        app.buttons["Discard drafts and settle"].tap()
+        waitForAbsence(row(subject, in: app))
+        select("Settled", in: app)
+        XCTAssertTrue(row(subject, in: app).exists)
+        XCTAssertFalse(row(subject, in: app).label.contains("Draft"))
+    }
+
+    @MainActor
+    func testSettleDraftWriteFailurePreservesDraft() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["MAILERN_TEST_DRAFT_DELETE_FAILURE"] = "1"
+        app.launch()
+        resetMailboxFilters(in: app)
+        resetDemo(in: app)
+        let subject = "Course project feedback"
+        saveReplyDraft(subject, in: app)
+        fullSwipe(row(subject, in: app), right: false)
+        app.buttons["Discard drafts and settle"].tap()
+        XCTAssertTrue(app.alerts["Draft storage"].waitForExistence(timeout: 5))
+        app.alerts["Draft storage"].buttons["OK"].tap()
+        XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
+        select("Settled", in: app)
+        XCTAssertFalse(row(subject, in: app).exists)
+        app.terminate(); app.launchEnvironment = [:]; app.launch()
+        row(subject, in: app).tap()
+        app.buttons["Settle"].tap(); app.buttons["Discard drafts and settle"].tap()
+        select("Settled", in: app)
+        XCTAssertTrue(row(subject, in: app).exists)
+    }
+
+    @MainActor
     func testComposerSelectionHandleDragKeepsEditing() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -137,7 +362,7 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
-    func testSettledReplyDraftReturnsToInboxAndSends() {
+    func testSettledReplyDraftStaysInSettledAndSends() {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launch()
@@ -152,13 +377,10 @@ final class MailernUITests: XCTestCase {
         app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
         app.navigationBars.buttons["Settled"].tap()
         XCTAssertFalse(app.buttons["Undo"].exists)
-        XCTAssertFalse(row(subject, in: app).exists)
-        select("Inbox", in: app)
         XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
         peek(subject, in: app)
-        XCTAssertTrue(preview(in: app).staticTexts["Inbox"].waitForExistence(timeout: 5))
-        XCTAssertFalse(preview(in: app).staticTexts["Settled"].exists)
-        capture("Reply draft Peek uses Inbox status", in: app)
+        XCTAssertTrue(preview(in: app).staticTexts["Settled"].waitForExistence(timeout: 5))
+        capture("Reply draft Peek keeps Settled status", in: app)
         app.buttons["Dismiss peek"].coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.98)).tap()
         row(subject, in: app).tap()
         app.buttons["Edit draft"].tap()
@@ -166,9 +388,7 @@ final class MailernUITests: XCTestCase {
         app.buttons["Send"].tap()
         waitForAbsence(app.navigationBars["Re: \(subject)"])
         XCTAssertFalse(app.buttons["Edit draft"].exists)
-        app.navigationBars.buttons["Inbox"].tap()
-        XCTAssertFalse(row(subject, in: app).exists)
-        select("Settled", in: app)
+        app.navigationBars.buttons["Settled"].tap()
         XCTAssertTrue(row(subject, in: app).exists)
         XCTAssertFalse(row(subject, in: app).label.contains("Draft"))
         capture("After - sent reply in Settled", in: app)
@@ -660,7 +880,7 @@ final class MailernUITests: XCTestCase {
         XCTAssertFalse(peekHasUnread)
         XCTAssertFalse(bulkHasUnread)
         XCTAssertFalse(threadHasUnread)
-        app.buttons["More actions"].tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65)).tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
         select("Inbox", in: app)
         let unreadSubject = "Course project feedback"
@@ -1327,6 +1547,38 @@ final class MailernUITests: XCTestCase {
     @MainActor
     private func preview(in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: "peek-preview").firstMatch
+    }
+
+    @MainActor
+    private func resetMailboxFilters(in app: XCUIApplication) {
+        for status in ["Inbox", "Snoozed", "Settled"] {
+            select(status, in: app)
+            app.buttons["Filter options"].tap()
+            app.buttons["Reset filters"].tap()
+            app.buttons["Done"].tap()
+        }
+        select("Inbox", in: app)
+    }
+
+    @MainActor
+    private func saveNewDraft(_ subject: String, in app: XCUIApplication) {
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(subject)
+        app.textViews["Message body"].tap(); app.textViews["Message body"].typeText("Draft workflow proof")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        XCTAssertTrue(row(subject, in: app).waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    private func saveReplyDraft(_ subject: String, in app: XCUIApplication) {
+        row(subject, in: app).tap()
+        app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        app.textViews["Message body"].typeText("Draft workflow proof\n")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
     }
 
     @MainActor

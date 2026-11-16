@@ -12,6 +12,7 @@ import Foundation
         try checkBulkActions()
         checkDeliberatePull()
         try checkInboxOrder()
+        try await checkMailboxFiltersAndDraftActions()
         try checkSnoozeSettings()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = JSONPersistence(url: directory.appending(path: "demo.json"))
@@ -143,13 +144,13 @@ import Foundation
             MailboxItem.list(conversations: mail.conversations, drafts: DraftStore(url: draftsURL).drafts, status: status, search: search)
         }
         let inbox = items(.inbox)
-        let attached = inbox.first { $0.id == source.id }!
+        let attached = items(.snoozed).first { $0.id == source.id }!
         assert(attached.drafts == [reply] && attached.conversation?.messages == source.messages)
-        assert(inbox.filter { $0.id == source.id }.count == 1)
+        assert(!inbox.contains { $0.id == source.id })
         assert(!inbox.contains { $0.id == reply.id })
         assert([new, forward, orphan].allSatisfy { draft in inbox.contains { $0.id == draft.id && $0.conversation == nil } })
-        assert(!items(.snoozed).contains { $0.id == source.id })
-        assert(items(.inbox, search: "Unsent reply search proof").map(\.id) == [source.id])
+        assert(items(.snoozed).filter { $0.id == source.id }.count == 1)
+        assert(items(.snoozed, search: "Unsent reply search proof").map(\.id) == [source.id])
         assert(items(.inbox, search: "new@example.com").map(\.id) == [new.id])
         let deleted = await drafts.delete(reply.id)
         assert(deleted && items(.snoozed).contains { $0.id == source.id })
@@ -167,7 +168,7 @@ import Foundation
         mail.clearWorkflowUndo(involving: [source.id])
         mail.undo()
         assert(!mail.conversation(source.id)!.unread)
-        assert(saved && items(.inbox).contains { $0.id == source.id } && !items(.settled).contains { $0.id == source.id })
+        assert(saved && !items(.inbox).contains { $0.id == source.id } && items(.settled).contains { $0.id == source.id && $0.hasDraft })
         assert(mail.send(threadID: source.id, account: source.account, to: [reply.to], cc: [], subject: reply.subject, body: reply.text))
         let sent = await drafts.delete(reply.id)
         assert(sent && !items(.inbox).contains { $0.id == source.id } && items(.settled).contains { $0.id == source.id && !$0.hasDraft })
@@ -176,7 +177,7 @@ import Foundation
         assert(newSent && !items(.inbox).contains { $0.id == new.id })
         assert(items(.settled).contains { $0.conversation?.subject == new.subject && !$0.hasDraft })
         assert(MailStore(persistence: disk).conversations == mail.conversations)
-        print("PASS: persisted Inbox drafts, attached replies, standalone new/forward/orphan drafts, draft search, discard restores prior section, and sent drafts settle")
+        print("PASS: persisted drafts stay with their conversation, standalone new/forward/orphan drafts, draft search, discard preserves section, and sent drafts settle")
     }
 
     @MainActor static func mailboxLoadFailurePreservesStoredMail() throws {
@@ -473,14 +474,92 @@ import Foundation
             item("Settled unread", minutes: 20, unread: true, workflow: .settled)
         ]))
         assert(store.list(.inbox).map(\.subject) == ["Read pinned", "Read newest", "Unread newer", "Unread older"])
-        assert(store.list(.inbox, unreadFirst: true).map(\.subject) == ["Read pinned", "Unread newer", "Unread older", "Read newest"])
-        assert(store.list(.inbox, search: "older", unreadFirst: true).map(\.subject) == ["Unread older"])
+        assert(store.list(.inbox, search: "older").map(\.subject) == ["Unread older"])
         let newer = store.list(.inbox).first { $0.subject == "Unread newer" }!
         store.markRead(newer.id)
-        assert(store.list(.inbox, unreadFirst: true).map(\.subject) == ["Read pinned", "Unread older", "Read newest", "Unread newer"])
+        assert(store.list(.inbox).map(\.subject) == ["Read pinned", "Read newest", "Unread newer", "Unread older"])
         assert(store.conversation(newer.id)!.workflow == .inbox)
-        assert(store.list(.settled, unreadFirst: true).map(\.subject) == ["Settled read", "Settled unread"])
-        print("PASS: pinned precedence, unread-first ordering, arrival order, search, mark-read reorder, other sections unchanged")
+        assert(store.list(.settled).map(\.subject) == ["Settled read", "Settled unread"])
+        print("PASS: pinned precedence, arrival order, search, mark-read preserves order, other sections unchanged")
+    }
+
+    @MainActor static func checkMailboxFiltersAndDraftActions() async throws {
+        let now = Date.now
+        var conversations = DemoData.conversations(now: now)
+        let source = conversations[0]
+        var reply = ComposerDraft.make(mode: .reply(source.id), conversation: source)
+        reply.text = "Filter draft needle"
+        var standalone = ComposerDraft(subject: "Standalone filter draft")
+        standalone.updatedAt = now.addingTimeInterval(60)
+        let drafts = [reply, standalone]
+        func list(_ status: Workflow, _ filter: MailboxFilter = MailboxFilter(), search: String = "") -> [MailboxItem] {
+            MailboxItem.list(conversations: conversations, drafts: drafts, status: status, search: search, filter: filter)
+        }
+        assert(list(.inbox).first?.id == source.id)
+        let unread = MailboxFilter(enabled: true, readStatus: .unread)
+        assert(list(.inbox, unread).count == 4 && list(.inbox, unread).allSatisfy(\.unread))
+        assert(list(.inbox, MailboxFilter(enabled: true, readStatus: .read)).count == 2)
+        assert(list(.inbox, MailboxFilter(enabled: true, accountIDs: ["university", "icloud"])).count == 5)
+        assert(list(.inbox, MailboxFilter(enabled: true, accountIDs: [])).isEmpty)
+        assert(list(.inbox, MailboxFilter(enabled: false, accountIDs: [], readStatus: .read, onlyDrafts: true)).count == 7)
+        let draftFilter = MailboxFilter(enabled: true, onlyDrafts: true)
+        assert(Set(list(.inbox, draftFilter).map(\.id)) == [source.id, standalone.id])
+        assert(list(.inbox, draftFilter, search: "needle").map(\.id) == [source.id])
+        assert(list(.inbox, MailboxFilter(enabled: true, readStatus: .unread, onlyDrafts: true)).map(\.id) == [source.id])
+        conversations[0].move(to: .snoozed, until: now.addingTimeInterval(7200))
+        assert(list(.snoozed, draftFilter).map(\.id) == [source.id])
+        assert(!list(.inbox, draftFilter).contains { $0.id == source.id })
+        conversations[0].unread = false
+        assert(list(.snoozed, unread).isEmpty)
+        assert(list(.snoozed, MailboxFilter(enabled: true, readStatus: .read)).count == 2)
+        conversations[2].move(to: .settled)
+        assert(list(.settled, MailboxFilter(enabled: true, onlySent: true)).map(\.id) == [conversations[2].id])
+        // A sent reply still counts even when the latest message is incoming.
+        assert(conversations[2].latest.outgoing == false)
+        assert(list(.settled, MailboxFilter(enabled: true, accountIDs: ["proton"], onlySent: true)).isEmpty)
+        var settings = MailboxFilters()
+        settings[.inbox] = draftFilter
+        settings[.snoozed] = unread
+        let encoded = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(MailboxFilters.self, from: encoded)
+        assert(decoded == settings)
+
+        let url = URL.temporaryDirectory.appending(path: "mailern-draft-actions-\(UUID())/drafts.json")
+        let store = DraftStore(url: url)
+        let standaloneSaved = await store.save(standalone)
+        assert(standaloneSaved)
+        await store.togglePin(standalone.id)
+        let snoozed = await store.snooze([standalone.id], until: now.addingTimeInterval(3600))
+        assert(snoozed)
+        let reloaded = DraftStore(url: url)
+        let saved = reloaded.drafts[0]
+        assert(saved.pinned == true && saved.snoozedUntil != nil)
+        assert(MailboxItem.list(conversations: [], drafts: reloaded.drafts, status: .inbox).isEmpty)
+        assert(MailboxItem.list(conversations: [], drafts: reloaded.drafts, status: .snoozed, filter: draftFilter).map(\.id) == [standalone.id])
+        await reloaded.wakeDue(now: now.addingTimeInterval(3601))
+        var staleEditor = saved
+        staleEditor.text = "Edited after expiry"
+        let edited = await reloaded.save(staleEditor)
+        assert(edited)
+        assert(reloaded.drafts[0].snoozedUntil == nil && reloaded.drafts[0].pinned == true)
+        assert(reloaded.drafts[0].matchesContent(of: staleEditor))
+        var newerEditor = staleEditor
+        newerEditor.text += " Newer content"
+        assert(!reloaded.drafts[0].matchesContent(of: newerEditor))
+        newerEditor = staleEditor
+        newerEditor.updatedAt = staleEditor.updatedAt.addingTimeInterval(1)
+        assert(!reloaded.drafts[0].matchesContent(of: newerEditor))
+        assert(MailboxItem.list(conversations: [], drafts: reloaded.drafts, status: .inbox).count == 1)
+        let replySaved = await reloaded.save(reply)
+        assert(replySaved)
+        let failing = DraftStore(url: url, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let failedDiscard = await failing.discardForSettling([source.id, standalone.id])
+        assert(!failedDiscard)
+        assert(failing.drafts.count == 2 && DraftStore(url: url).drafts.count == 2)
+        let discarded = await reloaded.discardForSettling([source.id, standalone.id])
+        assert(discarded)
+        assert(reloaded.drafts.isEmpty && DraftStore(url: url).drafts.isEmpty)
+        print("PASS: account/read/draft/sent filter intersections, disabled filters, search, per-mailbox persistence, standalone pin/snooze/expiry, stale editor protection, and atomic discard failure")
     }
 
     @MainActor static func checkSnoozeSettings() throws {

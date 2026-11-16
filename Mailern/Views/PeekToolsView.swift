@@ -6,7 +6,6 @@ enum PeekTool {
 
 struct PeekToolsView: UIViewRepresentable {
     let conversation: Conversation
-    var hasDraft = false
     let offset: CGFloat
     let onResize: (CGFloat) -> Void
     let onResizeEnd: (CGFloat) -> Void
@@ -20,7 +19,7 @@ struct PeekToolsView: UIViewRepresentable {
         view.onResizeEnd = onResizeEnd
         view.onHeight = onHeight
         view.onAction = onAction
-        view.update(conversation: conversation, hasDraft: hasDraft, offset: offset)
+        view.update(conversation: conversation, offset: offset)
     }
 }
 
@@ -34,7 +33,6 @@ final class PeekToolsSurface: UIView {
     private let stack = UIStackView()
     private var top: NSLayoutConstraint!
     private var previous: Conversation?
-    private var hasDraft = false
     private var measuredHeight: CGFloat = 0
 
     override init(frame: CGRect) {
@@ -74,10 +72,9 @@ final class PeekToolsSurface: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(conversation: Conversation, hasDraft: Bool, offset: CGFloat) {
+    func update(conversation: Conversation, offset: CGFloat) {
         top.constant = -offset
-        if self.hasDraft != hasDraft || previous?.unread != conversation.unread || previous?.pinned != conversation.pinned || previous?.workflow != conversation.workflow {
-            self.hasDraft = hasDraft
+        if previous?.unread != conversation.unread || previous?.pinned != conversation.pinned || previous?.workflow != conversation.workflow {
             rebuild(conversation)
         }
         previous = conversation
@@ -147,7 +144,6 @@ final class PeekToolsSurface: UIView {
         button.configuration = config
         button.tintColor = .label
         button.accessibilityLabel = title
-        if hasDraft && [.settle, .snooze, .restore].contains(tool) { button.isEnabled = false; button.alpha = 0.4 }
         button.configurationUpdateHandler = { button in
             button.configuration?.background.backgroundColor = button.isHighlighted ? UIColor.label.withAlphaComponent(0.12) : .clear
         }

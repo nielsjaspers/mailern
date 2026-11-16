@@ -53,6 +53,16 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     var richText: Data?
     var attachments: [MailAttachment] = []
     var updatedAt = Date.now
+    var pinned: Bool?
+    var snoozedUntil: Date?
+
+    func matchesContent(of other: Self) -> Bool {
+        // Pinning and snooze expiry do not change the editor's saved content.
+        var content = self
+        content.pinned = other.pinned
+        content.snoozedUntil = other.snoozedUntil
+        return content == other
+    }
 
     static func addresses(_ text: String) -> [String] {
         text.split(whereSeparator: { $0 == "," || $0 == ";" || $0.isNewline })
@@ -123,6 +133,12 @@ final class DraftStore {
     }
     @discardableResult func save(_ draft: ComposerDraft) async -> Bool {
         await enqueue {
+            var draft = draft
+            if let existing = self.drafts.first(where: { $0.id == draft.id }) {
+                // An open editor can hold mailbox state from before a snooze expired.
+                draft.pinned = existing.pinned
+                draft.snoozedUntil = existing.snoozedUntil
+            }
             var updated = self.drafts.filter { $0.id != draft.id }
             updated.insert(draft, at: 0)
             return await self.persist(updated)
@@ -138,6 +154,39 @@ final class DraftStore {
                 return true
             }
             return await self.persist(self.drafts.filter { $0.id != id })
+        }
+    }
+    func discardForSettling(_ ids: Set<UUID>) async -> Bool {
+        await enqueue {
+            await self.persist(self.drafts.filter { !ids.contains($0.id) && !($0.mode.replyID.map(ids.contains) ?? false) })
+        }
+    }
+    func togglePin(_ id: UUID) async {
+        _ = await updateMailbox(ids: [id]) { $0.pinned = !($0.pinned ?? false) }
+    }
+    func snooze(_ ids: Set<UUID>, until date: Date) async -> Bool {
+        guard date > .now else { return false }
+        return await updateMailbox(ids: ids) { $0.snoozedUntil = date }
+    }
+    func restore(_ id: UUID) async -> Bool {
+        await updateMailbox(ids: [id]) { $0.snoozedUntil = nil }
+    }
+    func wakeDue(now: Date = .now) async {
+        guard drafts.contains(where: { ($0.snoozedUntil ?? .distantFuture) <= now }) else { return }
+        _ = await enqueue {
+            var updated = self.drafts
+            for i in updated.indices where (updated[i].snoozedUntil ?? .distantFuture) <= now {
+                updated[i].snoozedUntil = nil
+            }
+            if updated == self.drafts { return true }
+            return await self.persist(updated)
+        }
+    }
+    private func updateMailbox(ids: Set<UUID>, change: @escaping (inout ComposerDraft) -> Void) async -> Bool {
+        await enqueue {
+            var updated = self.drafts
+            for i in updated.indices where ids.contains(updated[i].id) { change(&updated[i]) }
+            return await self.persist(updated)
         }
     }
     private func enqueue(_ operation: @escaping @MainActor () async -> Bool) async -> Bool {

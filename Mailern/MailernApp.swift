@@ -27,10 +27,21 @@ struct MailernApp: App {
     var body: some Scene {
         WindowGroup {
             MailboxView().environment(store).environment(drafts).environment(snoozePreferences).tint(.teal)
-                .onChange(of: scenePhase) { _, phase in if phase == .active { store.wakeDue() } }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { store.wakeDue(); Task { await drafts.wakeDue() } }
+                }
                 .task {
+                    #if DEBUG
+                    if let subject = ProcessInfo.processInfo.environment["MAILERN_TEST_EXPIRING_DRAFT"],
+                       !drafts.drafts.contains(where: { $0.subject == subject }) {
+                        var draft = ComposerDraft(subject: subject, text: "Expiry proof")
+                        draft.snoozedUntil = .now.addingTimeInterval(20)
+                        await drafts.save(draft)
+                    }
+                    #endif
                     while !Task.isCancelled {
                         store.wakeDue()
+                        await drafts.wakeDue()
                         try? await Task.sleep(for: .seconds(1))
                     }
                 }
