@@ -89,7 +89,8 @@ struct ComposerView: View {
                 }.padding(.horizontal, 16).padding(.top, 10)
             }
             .disabled(completed || finishing)
-            .scrollDismissesKeyboard(.interactively)
+            .scrollDismissesKeyboard(.immediately)
+            .scrollBounceBehavior(.always)
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(title).navigationBarTitleDisplayMode(.large)
             .toolbar {
