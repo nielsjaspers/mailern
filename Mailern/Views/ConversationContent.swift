@@ -100,6 +100,7 @@ struct ConversationContent: View {
 }
 
 private struct MessageSection: View {
+    @Environment(\.dynamicTypeSize) private var textSize
     let message: MailMessage
     let conversationID: UUID
     let threadSubject: String
@@ -143,8 +144,8 @@ private struct MessageSection: View {
     @ViewBuilder private var controls: some View {
         if let compose {
             let id = conversationID
-            // In the labels, the time tells apart two open messages from one sender.
-            let time = message.date.formatted(date: .omitted, time: .shortened)
+            // In the labels, the date and time tell apart two open messages from one sender.
+            let time = message.date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
             HStack(spacing: 8) {
                 Button { compose(.reply(id)) } label: { Image(systemName: "arrowshape.turn.up.left") }
                     .accessibilityLabel("Reply to \(message.sender), \(time)")
@@ -189,13 +190,17 @@ private struct MessageSection: View {
                     }
                 }
                 if expanded {
-                    HStack(alignment: .bottom) {
+                    // At accessibility sizes the reply controls get their own line, so the
+                    // recipients keep the full width.
+                    let layout = textSize.isAccessibilitySize
+                        ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 8)) : AnyLayout(HStackLayout(alignment: .bottom))
+                    layout {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(message.address).lineLimit(1)
+                            Text(message.address)
                             Text("To: \(message.to.joined(separator: ", "))")
                             if !message.cc.isEmpty { Text("Cc: \(message.cc.joined(separator: ", "))") }
                         }
-                        Spacer(minLength: 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         // A hidden copy reserves the space of the reply controls at any text size.
                         // The live controls sit outside the fold button.
                         controls.hidden().accessibilityHidden(true)

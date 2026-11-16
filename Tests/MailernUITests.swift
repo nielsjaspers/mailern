@@ -608,6 +608,21 @@ final class MailernUITests: XCTestCase {
         app.buttons["Simulate incoming reply"].tap()
         XCTAssertTrue(caseyReplies.element(boundBy: 1).waitForExistence(timeout: 5))
         XCTAssertEqual(caseyReplies.count, 2)
+
+        // The thread is now longer than the screen. A new message scrolls into view, and
+        // reopening the thread lands on the latest message.
+        let newest = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera")).element(boundBy: 4)
+        app.buttons["More actions"].tap()
+        app.buttons["Simulate incoming reply"].tap()
+        XCTAssertTrue(newest.waitForExistence(timeout: 5))
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: newest)
+        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
+        capture("Long thread after an incoming reply", in: app)
+        app.navigationBars.buttons["Inbox"].tap()
+        row(subject, in: app).tap()
+        XCTAssertTrue(newest.waitForExistence(timeout: 5))
+        XCTAssertTrue(newest.isHittable)
+        capture("Long thread opens on the latest message", in: app)
     }
 
     @MainActor
