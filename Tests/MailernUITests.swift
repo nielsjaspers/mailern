@@ -585,8 +585,12 @@ final class MailernUITests: XCTestCase {
         caseyReplies.element(boundBy: 0).tap()
         XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
         XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").hasPrefix("Earlier reply draft"))
-        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+        // Sending it adds the message and removes only its own draft.
+        app.buttons["Send"].tap()
+        waitForAbsence(app.navigationBars["Re: \(subject)"])
         waitForAbsence(app.buttons.matching(identifier: "Edit draft").element(boundBy: 1))
+        XCTAssertTrue(app.buttons["Edit draft"].exists)
+        XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value BEGINSWITH %@", "Earlier reply draft")).firstMatch.waitForExistence(timeout: 5))
         app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
         XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
         XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").hasPrefix("One reply draft"))
@@ -595,8 +599,9 @@ final class MailernUITests: XCTestCase {
 
         // A new message opens and the message it replaces folds, whether the reader left
         // that message open or folded it. Open messages are counted by their reply controls.
+        // The sent reply is the latest message now, so Casey's last message has folded.
         let incoming = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Hi Morgan,"))
-        XCTAssertEqual(caseyReplies.count, 2)
+        XCTAssertEqual(caseyReplies.count, 1)
         app.buttons["More actions"].tap()
         app.buttons["Simulate incoming reply"].tap()
         XCTAssertTrue(incoming.firstMatch.waitForExistence(timeout: 5))
@@ -608,11 +613,23 @@ final class MailernUITests: XCTestCase {
         app.buttons["Simulate incoming reply"].tap()
         XCTAssertTrue(caseyReplies.element(boundBy: 1).waitForExistence(timeout: 5))
         XCTAssertEqual(caseyReplies.count, 2)
+    }
+
+    @MainActor
+    func testLongThreadScrollsToLatestMessage() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        let subject = "Dinner on Saturday?"
+        row(subject, in: app).tap()
+        let caseyReplies = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera"))
+        XCTAssertTrue(caseyReplies.firstMatch.waitForExistence(timeout: 5))
 
         // Grow the thread until its folded headers alone fill the screen, so the latest
         // message is on screen only if the reader scrolled to it.
         let headers = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera"))
-        for index in 4...13 {
+        for index in 2...13 {
             if index == 13 { app.swipeDown(); app.swipeDown() }
             app.buttons["More actions"].tap()
             app.buttons["Simulate incoming reply"].tap()

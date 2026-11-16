@@ -12,6 +12,7 @@ struct ConversationContent: View {
     var compose: ((ComposeMode, UUID) -> Void)?
     // Only the latest message starts open. This set holds the messages the reader flipped.
     @State private var toggled: Set<UUID> = []
+    private func isExpanded(_ message: MailMessage) -> Bool { (message.id == latest.id) != toggled.contains(message.id) }
     private var workflow: Workflow { conversation.workflow }
     private var latest: MailMessage { conversation.latest }
     private var earlier: [MailMessage] { Array(conversation.messages.dropLast()) }
@@ -59,14 +60,14 @@ struct ConversationContent: View {
         }
     }
 
-    // One surface for the whole conversation: earlier messages fold to a single line each.
+    // One surface for the whole conversation: earlier messages fold to compact headers.
     private var thread: some View {
         VStack(spacing: 0) {
             ForEach(conversation.messages) { message in
                 if message.id != conversation.messages.first?.id { Divider().padding(.leading, 16) }
                 MessageSection(
                     message: message, conversationID: conversation.id, threadSubject: conversation.subject,
-                    expanded: (message.id == latest.id) != toggled.contains(message.id),
+                    expanded: isExpanded(message),
                     toggle: earlier.isEmpty ? nil : {
                         withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { _ = toggled.formSymmetricDifference([message.id]) }
                     },
