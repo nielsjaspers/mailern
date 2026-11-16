@@ -714,6 +714,31 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
+    func testUndoBannerExpires() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        let subject = "Course project feedback"
+        for action in ["Settle", "Restore", "Snooze"] {
+            app.buttons["Select"].tap()
+            row(subject, in: app).tap()
+            app.buttons[action].tap()
+            if action == "Snooze" {
+                app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "In ")).firstMatch.tap()
+            }
+            let undo = app.buttons["Undo"]
+            XCTAssertTrue(undo.waitForExistence(timeout: 2))
+            capture("\(action) Undo banner visible", in: app)
+            let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: undo)
+            XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 7), .completed)
+            capture("\(action) Undo banner expired", in: app)
+            if action == "Settle" { select("Settled", in: app) }
+            if action == "Restore" { select("Inbox", in: app) }
+        }
+    }
+
+    @MainActor
     func testBulkSelection() {
         continueAfterFailure = false
         let app = XCUIApplication()

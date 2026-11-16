@@ -32,6 +32,7 @@ final class MailStore {
     private(set) var notice: String?
     private var undoSnapshot: [Conversation] = []
     private var undoAction: ConversationAction?
+    @ObservationIgnored private var noticeExpiryTask: Task<Void, Never>?
     private let persistence: any ConversationPersistence
     private var loadFailure: String?
     var needsReload: Bool { loadFailure != nil }
@@ -126,6 +127,12 @@ final class MailStore {
         case .pin(let pinned): message = pinned ? "Pinned" : "Unpinned"
         }
         notice = before.count > 1 ? "\(before.count) conversations: \(message)" : message
+        noticeExpiryTask?.cancel()
+        noticeExpiryTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(5)) }
+            catch { return }
+            self?.clearNotice()
+        }
         save()
     }
     func undo() {
@@ -147,7 +154,13 @@ final class MailStore {
         save()
         clearNotice()
     }
-    func clearNotice() { notice = nil; undoSnapshot = []; undoAction = nil }
+    func clearNotice() {
+        noticeExpiryTask?.cancel()
+        noticeExpiryTask = nil
+        notice = nil
+        undoSnapshot = []
+        undoAction = nil
+    }
     func clearWorkflowUndo(involving ids: Set<UUID>) {
         guard case .move = undoAction, undoSnapshot.contains(where: { ids.contains($0.id) }) else { return }
         clearNotice()
