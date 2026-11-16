@@ -7,10 +7,16 @@ struct ThreadView: View {
     let id: UUID
     @Namespace private var composeTransition
     @State private var mode: ComposeMode?
+    // The message a per-message reply targets. Nil for the toolbar, which targets the latest.
+    @State private var target: UUID?
     @State private var snooze = false
     @State private var deleting = false
     @State private var settling: Set<UUID> = []
     private var attachedDrafts: [ComposerDraft] { drafts.drafts.filter { $0.mode.replyID == id }.sorted { $0.updatedAt < $1.updatedAt } }
+    private func compose(_ mode: ComposeMode, message: UUID? = nil) {
+        target = message
+        self.mode = mode
+    }
     var body: some View {
         Group {
             if let c = store.conversation(id) {
@@ -20,7 +26,7 @@ struct ThreadView: View {
                         defer { deleting = false }
                         await drafts.delete(draftID)
                     }
-                }, deletingDraft: deleting)
+                }, deletingDraft: deleting, compose: { compose($0, message: $1) })
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -46,9 +52,9 @@ struct ThreadView: View {
                         Button("Snooze", systemImage: "clock") { snooze = true }
                         Spacer()
                         Menu {
-                            Button("Reply") { mode = .reply(id) }
-                            Button("Reply All") { mode = .replyAll(id) }
-                            Button("Forward") { mode = .forward(id) }
+                            Button("Reply") { compose(.reply(id)) }
+                            Button("Reply All") { compose(.replyAll(id)) }
+                            Button("Forward") { compose(.forward(id)) }
                         } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
                         .modifier(ComposerSource(source: "reply", namespace: composeTransition))
                     }
@@ -59,6 +65,8 @@ struct ThreadView: View {
         .onAppear { store.markRead(id) }
         .sheet(item: $mode) { mode in
             if case .draft = mode { ComposerView(mode: mode) }
+            // The zoom transition belongs to the toolbar's Reply button.
+            else if target != nil { ComposerView(mode: mode, messageID: target) }
             else { ComposerView(mode: mode).modifier(ComposerTransition(source: "reply", namespace: composeTransition)) }
         }
         .modifier(DraftStorageAlert(active: mode == nil))

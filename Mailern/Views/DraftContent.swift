@@ -3,27 +3,12 @@ import SwiftUI
 struct DraftRow: View {
     let draft: ComposerDraft
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Color.clear.frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline) {
-                    Image(systemName: "square.and.pencil").foregroundStyle(.orange).accessibilityLabel("Draft")
-                    Text(draft.to.isEmpty ? "No recipients" : draft.to).font(.subheadline.weight(.medium)).lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text(draft.updatedAt, format: .dateTime.month(.abbreviated).day()).font(.caption).foregroundStyle(.secondary)
-                }
-                Text(draft.title).font(.subheadline).lineLimit(1)
-                Text(draft.text.replacingOccurrences(of: "\n", with: " ")).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-                HStack {
-                    Text(draft.account.name)
-                    if draft.pinned == true { Image(systemName: "pin.fill").foregroundStyle(.orange).accessibilityLabel("Pinned") }
-                    if let date = draft.snoozedUntil {
-                        Image(systemName: "clock")
-                        Text(date, format: .dateTime.weekday(.abbreviated).hour().minute())
-                    }
-                }.font(.caption2).foregroundStyle(.secondary).padding(.top, 2)
-            }
-        }.padding(.vertical, 1).accessibilityElement(children: .combine)
+        MailboxRow(
+            avatar: SenderAvatar(name: draft.to, symbol: "square.and.pencil", tint: .orange, label: "Draft"),
+            title: draft.to.isEmpty ? "No recipients" : draft.to, date: draft.updatedAt,
+            subject: draft.title, snippet: draft.text.snippet, account: draft.account.name,
+            pinned: draft.pinned == true, snoozedUntil: draft.snoozedUntil
+        )
     }
 }
 

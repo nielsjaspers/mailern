@@ -46,9 +46,27 @@ struct Conversation: Codable, Identifiable, Equatable {
     var snoozedUntil: Date?
     var messages: [MailMessage]
     var latest: MailMessage { messages[messages.count - 1] }
-    var effectiveSubject: String { messages.last(where: { $0.subject != nil })?.subject ?? subject }
+    var effectiveSubject: String { subject(at: latest) }
+    /// The subject in effect when `message` was written. A reply can rename a thread part-way.
+    func subject(at message: MailMessage) -> String {
+        let index = messages.firstIndex { $0.id == message.id } ?? messages.count - 1
+        return messages[...index].last(where: { $0.subject != nil })?.subject ?? subject
+    }
     var correspondent: MailMessage { messages.last(where: { !$0.outgoing }) ?? latest }
     var account: MailAccount { MailAccount.demo.first(where: { $0.id == accountID }) ?? MailAccount.demo[0] }
+    /// Everyone who wrote in the thread, in order of first appearance. Sent-only threads show their recipients.
+    var participants: String {
+        guard messages.contains(where: { !$0.outgoing }) else { return "To: \(latest.to.joined(separator: ", "))" }
+        // The address identifies a sender. Two people can share a display name.
+        var seen = Set<String>()
+        return messages.filter { seen.insert($0.outgoing ? "" : $0.address.lowercased()).inserted }
+            .map { $0.outgoing ? "Me" : $0.sender }.joined(separator: ", ")
+    }
+    var avatarName: String {
+        messages.contains(where: { !$0.outgoing }) ? correspondent.sender : latest.to.first ?? latest.sender
+    }
+    /// The message a reply or forward targets. Falls back to the latest message.
+    func message(_ id: UUID?) -> MailMessage { messages.first { $0.id == id } ?? latest }
 
     mutating func move(to status: Workflow, until: Date? = nil) {
         if status == .settled { unread = false }

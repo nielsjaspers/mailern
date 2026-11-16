@@ -1,11 +1,22 @@
 import XCTest
 import UIKit
 
-final class MailernUITests: XCTestCase {
+@MainActor
+final class TestApplication: XCUIApplication {
+    private let session = UUID().uuidString
+
+    override func launch() {
+        // Reapply this after tests replace launchEnvironment to clear fault injection.
+        launchEnvironment["MAILERN_TEST_SESSION"] = session
+        super.launch()
+    }
+}
+
+final class MailboxUITests: MailernUITestCase {
     @MainActor
     func testComposeDefaultsToBottomRight() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         for arguments in [[], ["-bottomCompose", "NO"]] {
             app.launchArguments = arguments
             app.launch()
@@ -27,7 +38,7 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testFilterToggleStaysAnchoredOnRepeatedChanges() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
         let filter = app.buttons["Filter"]
         XCTAssertTrue(filter.waitForExistence(timeout: 5))
@@ -50,12 +61,11 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testMailFilterBarLayoutAndSearch() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
         openFilterOptions(in: app)
         app.buttons["Reset filters"].tap()
         app.buttons["Done"].tap()
-        resetDemo(in: app)
         let filter = app.buttons["Filter"]
         filter.tap()
         capture("Filter enabled - connected toolbar capsule", in: app)
@@ -104,7 +114,7 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testSnoozeExpiryKeepsComposerSwipeDismissal() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         let subject = "Expiry \(UUID().uuidString.prefix(6))"
         app.launchEnvironment["MAILERN_TEST_EXPIRING_DRAFT"] = subject
         app.launch()
@@ -137,10 +147,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testMailboxFilterOptionsAndPersistence() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetMailboxFilters(in: app)
-        resetDemo(in: app)
         capture("After - mailbox filter controls", in: app)
         app.buttons["Filter"].tap()
         XCTAssertFalse(row("Dinner on Saturday?", in: app).exists)
@@ -193,16 +201,13 @@ final class MailernUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["No matching mail"].exists)
         app.buttons["Filter"].tap()
         XCTAssertTrue(row("The photos from our trip", in: app).exists)
-        resetMailboxFilters(in: app)
     }
 
     @MainActor
     func testStandaloneDraftSwipeActions() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetMailboxFilters(in: app)
-        resetDemo(in: app)
         let subject = "Standalone swipe \(UUID().uuidString.prefix(6))"
         saveNewDraft(subject, in: app)
         app.buttons["More"].tap(); app.buttons["Settings"].tap(); app.buttons["Swipe actions"].tap()
@@ -258,16 +263,13 @@ final class MailernUITests: XCTestCase {
         app.buttons["Discard draft"].tap()
         waitForAbsence(row(subject, in: app))
         XCTAssertTrue(app.staticTexts["No matching mail"].exists)
-        resetMailboxFilters(in: app)
     }
 
     @MainActor
     func testAttachedDraftReadSnoozeAndSettle() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetMailboxFilters(in: app)
-        resetDemo(in: app)
         let subject = "Course project feedback"
         saveReplyDraft(subject, in: app)
         fullSwipe(row(subject, in: app), right: true)
@@ -306,11 +308,9 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testSettleDraftWriteFailurePreservesDraft() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launchEnvironment["MAILERN_TEST_DRAFT_DELETE_FAILURE"] = "1"
         app.launch()
-        resetMailboxFilters(in: app)
-        resetDemo(in: app)
         let subject = "Course project feedback"
         saveReplyDraft(subject, in: app)
         fullSwipe(row(subject, in: app), right: false)
@@ -326,11 +326,13 @@ final class MailernUITests: XCTestCase {
         select("Settled", in: app)
         XCTAssertTrue(row(subject, in: app).exists)
     }
+}
 
+final class ComposerInteractionUITests: MailernUITestCase {
     @MainActor
     func testComposerSelectionHandleDragKeepsEditing() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
         app.buttons["Compose"].tap()
         let body = app.textViews["Message body"]
@@ -357,7 +359,7 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testAttachmentMenuDismissalKeepsEditorUsable() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
         app.buttons["Compose"].tap()
         let body = app.textViews["Message body"]
@@ -373,8 +375,7 @@ final class MailernUITests: XCTestCase {
             XCTAssertTrue(app.keyboards.firstMatch.exists)
         }
         capture("Attachment controls after menu dismissal", in: app)
-        body.typeText("Editing after menu dismissal")
-        XCTAssertTrue((body.value as? String)?.contains("Editing after menu dismissal") == true)
+        enterText("Editing after menu dismissal", in: body)
         app.buttons["Cancel"].tap()
         app.buttons["Delete Draft"].tap()
     }
@@ -382,9 +383,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testComposerDragDismissesKeyboardAndKeepsContent() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         let body = app.textViews["Message body"]
@@ -408,13 +408,14 @@ final class MailernUITests: XCTestCase {
         }
         capture("Keyboard hidden with content intact", in: app)
     }
+}
 
+final class DraftReaderUITests: MailernUITestCase {
     @MainActor
     func testInboxDraftPreviewEditAndDiscard() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         let subject = "Inbox draft proof"
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
@@ -464,9 +465,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testSettledReplyDraftStaysInSettledAndSends() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         let subject = "Course project feedback"
         row(subject, in: app).tap(); app.buttons["Settle"].tap()
         select("Settled", in: app)
@@ -493,13 +493,14 @@ final class MailernUITests: XCTestCase {
         XCTAssertFalse(row(subject, in: app).label.contains("Draft"))
         capture("After - sent reply in Settled", in: app)
     }
+}
 
+final class ThreadUITests: MailernUITestCase {
     @MainActor
     func testThreadActionsReplaceMailboxTabs() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         row("Course project feedback", in: app).tap()
         XCTAssertTrue(app.buttons["More actions"].waitForExistence(timeout: 5))
         capture("Thread actions without mailbox tabs", in: app)
@@ -511,7 +512,7 @@ final class MailernUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Reply All"].waitForExistence(timeout: 5))
         app.buttons["Reply All"].tap()
         XCTAssertTrue(app.navigationBars["Re: Course project feedback"].waitForExistence(timeout: 5))
-        app.textViews["Message body"].typeText("Thread action check\n")
+        enterText("Thread action check\n", in: app.textViews["Message body"])
         app.buttons["Cancel"].tap()
         app.buttons["Delete Draft"].tap()
         app.navigationBars.buttons["Inbox"].tap()
@@ -520,11 +521,142 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
+    func testThreadFoldsMessagesAndRepliesToEarlierMessage() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let subject = "Dinner on Saturday?"
+        XCTAssertTrue(row(subject, in: app).label.contains("Casey Rivera, Me"))
+        XCTAssertTrue(row(subject, in: app).label.contains("3 messages"))
+        row(subject, in: app).tap()
+
+        // Only the latest message starts open, so only it offers reply controls.
+        let caseyReplies = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera"))
+        let ownReply = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Morgan")).firstMatch
+        XCTAssertTrue(caseyReplies.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(caseyReplies.count, 1)
+        XCTAssertFalse(ownReply.exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Around 7?")).firstMatch.exists)
+        capture("Thread with folded earlier messages", in: app)
+
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Hey! Are you free")).firstMatch.tap()
+        XCTAssertTrue(caseyReplies.element(boundBy: 1).waitForExistence(timeout: 5))
+        XCTAssertFalse(ownReply.exists)
+        capture("Thread with an earlier message open", in: app)
+
+        // The first message in the thread is the first in the accessibility order.
+        caseyReplies.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        let quote = app.textViews["Message body"].value as? String ?? ""
+        XCTAssertTrue(quote.contains("Are you free on Saturday?"))
+        XCTAssertFalse(quote.contains("Around 7?"))
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "To").firstMatch.value as? String, "casey@example.com")
+        capture("Reply quotes the earlier message", in: app)
+        app.buttons["Cancel"].tap()
+        waitForAbsence(app.navigationBars["Re: \(subject)"])
+
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Message actions")).element(boundBy: 0).tap()
+        app.buttons["Forward"].tap()
+        XCTAssertTrue(app.navigationBars["Fwd: \(subject)"].waitForExistence(timeout: 5))
+        XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").contains("Are you free on Saturday?"))
+        app.buttons["Cancel"].tap()
+        waitForAbsence(app.navigationBars["Fwd: \(subject)"])
+
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Sounds good.")).firstMatch.tap()
+        XCTAssertTrue(ownReply.waitForExistence(timeout: 5))
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Morgan")).firstMatch.tap()
+        waitForAbsence(ownReply)
+
+        // The toolbar still targets the latest message after a per-message reply.
+        app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").contains("Around 7?"))
+        app.textViews["Message body"].typeText("One reply draft\n")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        XCTAssertTrue(app.buttons["Edit draft"].waitForExistence(timeout: 5))
+        // A reply started from a message does not resume the toolbar's draft, and keeps its own.
+        caseyReplies.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        let separate = app.textViews["Message body"].value as? String ?? ""
+        XCTAssertTrue(separate.contains("Are you free on Saturday?") && !separate.contains("One reply draft"))
+        app.textViews["Message body"].typeText("Earlier reply draft\n")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        XCTAssertTrue(app.buttons.matching(identifier: "Edit draft").element(boundBy: 1).waitForExistence(timeout: 5))
+        caseyReplies.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").hasPrefix("Earlier reply draft"))
+        // Sending it adds the message and removes only its own draft.
+        app.buttons["Send"].tap()
+        waitForAbsence(app.navigationBars["Re: \(subject)"])
+        waitForAbsence(app.buttons.matching(identifier: "Edit draft").element(boundBy: 1))
+        XCTAssertTrue(app.buttons["Edit draft"].exists)
+        XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value BEGINSWITH %@", "Earlier reply draft")).firstMatch.waitForExistence(timeout: 5))
+        app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").hasPrefix("One reply draft"))
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+        waitForAbsence(app.buttons["Edit draft"])
+
+        // A new message opens and the message it replaces folds, whether the reader left
+        // that message open or folded it. Open messages are counted by their reply controls.
+        // The sent reply is the latest message now, so Casey's last message has folded.
+        let incoming = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Hi Morgan,"))
+        XCTAssertEqual(caseyReplies.count, 1)
+        app.buttons["More actions"].tap()
+        app.buttons["Simulate incoming reply"].tap()
+        XCTAssertTrue(incoming.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(caseyReplies.count, 2)
+        capture("Thread after an incoming reply", in: app)
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera")).element(boundBy: 2).tap()
+        waitForAbsence(caseyReplies.element(boundBy: 1))
+        app.buttons["More actions"].tap()
+        app.buttons["Simulate incoming reply"].tap()
+        XCTAssertTrue(caseyReplies.element(boundBy: 1).waitForExistence(timeout: 5))
+        XCTAssertEqual(caseyReplies.count, 2)
+    }
+
+    @MainActor
+    func testLongThreadScrollsToLatestMessage() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launchEnvironment["MAILERN_TEST_LONG_THREAD"] = "1"
+        app.launch()
+        let subject = "Dinner on Saturday?"
+        row(subject, in: app).tap()
+        let caseyReplies = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera"))
+        XCTAssertTrue(caseyReplies.firstMatch.waitForExistence(timeout: 5))
+
+        // Receive a reply while scrolled away, so visibility requires the arrival scroll.
+        let headers = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera"))
+        let previousLatest = headers.element(boundBy: 12)
+        XCTAssertTrue(previousLatest.isHittable)
+        app.swipeDown(); app.swipeDown()
+        XCTAssertLessThan(headers.element(boundBy: 0).frame.minY, app.frame.height)
+        XCTAssertGreaterThan(previousLatest.frame.minY, app.frame.height)
+        app.buttons["More actions"].tap()
+        app.buttons["Simulate incoming reply"].tap()
+        XCTAssertTrue(headers.element(boundBy: 13).waitForExistence(timeout: 5))
+        let newest = headers.element(boundBy: 13)
+        XCTAssertGreaterThan(newest.frame.minY - headers.element(boundBy: 0).frame.minY, app.frame.height)
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: newest)
+        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
+        XCTAssertTrue(caseyReplies.element(boundBy: caseyReplies.count - 1).isHittable)
+        capture("Long thread after an incoming reply", in: app)
+        app.navigationBars.buttons["Inbox"].tap()
+        row(subject, in: app).tap()
+        XCTAssertTrue(newest.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(newest.frame.minY - headers.element(boundBy: 0).frame.minY, app.frame.height)
+        XCTAssertTrue(newest.isHittable)
+        XCTAssertEqual(caseyReplies.count, 1)
+        XCTAssertTrue(caseyReplies.firstMatch.isHittable)
+        capture("Long thread opens on the latest message", in: app)
+    }
+
+    @MainActor
     func testAllReadStatusKeepsRowsInPlace() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         app.buttons["Select"].tap()
         app.buttons["Select All"].tap()
         app.buttons["Mark"].tap()
@@ -543,11 +675,13 @@ final class MailernUITests: XCTestCase {
         XCTAssertEqual(row(subject, in: app).frame.minY, before, accuracy: 2)
         capture("Last unread toggle preserves row position", in: app)
     }
+}
 
+final class ComposerUITests: MailernUITestCase {
     @MainActor
     func testFormattingKeepsSelectionAbovePanel() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
@@ -587,9 +721,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testComposePreservesRevealedSearchPosition() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
@@ -614,25 +747,10 @@ final class MailernUITests: XCTestCase {
         XCTAssertEqual(search.frame.minY, before.minY, accuracy: 2)
     }
 
-    private func containsSamplePhoto(_ image: UIImage) -> Bool {
-        guard let cg = image.cgImage, let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8,
-                                      bytesPerRow: cg.width * 4, space: space,
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
-              let data = context.data else { return false }
-        context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
-        let pixels = data.assumingMemoryBound(to: UInt8.self)
-        var matching = 0
-        for offset in stride(from: 0, to: cg.width * cg.height * 4, by: 4) {
-            if (20...50).contains(Int(pixels[offset])) && (120...160).contains(Int(pixels[offset + 1]))
-                && (200...240).contains(Int(pixels[offset + 2])) { matching += 1 }
-        }
-        return matching > 1_000
-    }
     @MainActor
     func testComposerRevertedHeadersPersistAndStayProtected() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         for failure in [false, true] {
             let original = "Header \(UUID().uuidString.prefix(6))"
             app.launchEnvironment = failure ? ["MAILERN_TEST_DRAFT_REVERT_SUBJECT": original] : [:]
@@ -680,7 +798,7 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testComposerCleanupFailureClosesAfterAcknowledgement() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launchEnvironment["MAILERN_TEST_DRAFT_DELETE_FAILURE"] = "1"
         app.launch()
         let subject = "Sent cleanup \(UUID().uuidString.prefix(6))"
@@ -710,7 +828,7 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testComposerDraftSaveFailureKeepsEditor() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
         let subject = "Draft recovery \(UUID().uuidString.prefix(6))"
         app.buttons["Compose"].tap()
@@ -758,7 +876,7 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testComposerPhotoAttachment() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
@@ -794,7 +912,7 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testComposerFileAttachment() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
@@ -834,9 +952,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testComposerFormattingDraftAndSend() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
@@ -876,9 +993,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testComposerReplyAndForwardSend() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         let subject = "Course project feedback"
         peek(subject, in: app)
         app.buttons["Reply All"].tap()
@@ -912,7 +1028,7 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testComposerSwipeSavesDraft() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Compose"].exists)
         app.buttons["Compose"].tap()
@@ -930,13 +1046,14 @@ final class MailernUITests: XCTestCase {
         waitForAbsence(app.navigationBars["Swipe draft proof"])
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Swipe draft proof")).firstMatch.exists)
     }
+}
 
+final class MailboxActionUITests: MailernUITestCase {
     @MainActor
     func testSettledReadActions() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         select("Settled", in: app)
         let subject = "The photos from our trip"
         peek(subject, in: app)
@@ -961,7 +1078,7 @@ final class MailernUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         select("Inbox", in: app)
         let unreadSubject = "Course project feedback"
-        expectUnread(unreadSubject, in: app)
+        expectReadStatus(unreadSubject, in: app)
         peek(unreadSubject, in: app)
         app.buttons["Settle"].tap()
         waitForAbsence(preview(in: app))
@@ -980,9 +1097,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testSettledReadOnlySwipeDoesNotOpenThread() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         app.buttons["More"].tap()
         app.buttons["Settings"].tap()
         app.buttons["Swipe actions"].tap()
@@ -1013,9 +1129,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testUndoBannerExpires() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         let subject = "Course project feedback"
         for action in ["Settle", "Restore", "Snooze"] {
             app.buttons["Select"].tap()
@@ -1038,9 +1153,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testBulkSelection() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         let first = "Course project feedback"
         let second = "Dinner on Saturday?"
         capture("Select is separate from Filter and Compose", in: app)
@@ -1053,7 +1167,7 @@ final class MailernUITests: XCTestCase {
         XCTAssertFalse(row(first, in: app).exists)
         XCTAssertFalse(row(second, in: app).exists)
         app.buttons["Undo"].tap()
-        expectUnread(first, in: app)
+        expectReadStatus(first, in: app)
         XCTAssertEqual(row(second, in: app).value as? String, "Read")
         app.buttons["Select"].tap()
         app.buttons["Select All"].tap()
@@ -1068,16 +1182,18 @@ final class MailernUITests: XCTestCase {
         capture("Select All toggles to Deselect All", in: app)
         app.buttons["Mark"].tap()
         app.buttons["Mark read"].tap()
-        XCTAssertEqual(row(first, in: app).value as? String, "Read")
+        // Undo lasts five seconds, so the banner confirms each action and the rows are
+        // checked after Undo.
+        XCTAssertTrue(app.staticTexts["6 conversations: Marked read"].exists)
         app.buttons["Undo"].tap()
-        expectUnread(first, in: app)
+        expectReadStatus(first, in: app)
         app.buttons["Select"].tap()
         row(second, in: app).tap()
         app.buttons["Mark"].tap()
         XCTAssertTrue(app.buttons["Mark unread"].exists)
         XCTAssertFalse(app.buttons["Mark read"].exists)
         app.buttons["Mark unread"].tap()
-        expectUnread(second, in: app)
+        XCTAssertTrue(app.staticTexts["Marked unread"].exists)
         app.buttons["Undo"].tap()
         XCTAssertEqual(row(second, in: app).value as? String, "Read")
         app.buttons["Select"].tap()
@@ -1111,14 +1227,14 @@ final class MailernUITests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "In ")).firstMatch.tap()
         XCTAssertFalse(row(first, in: app).exists)
         select("Snoozed", in: app)
-        expectUnread(first, in: app)
+        expectReadStatus(first, in: app)
         app.buttons["Select"].tap()
         app.buttons["Select All"].tap()
         app.buttons["Mark"].tap()
         app.buttons["Restore to Inbox"].tap()
         XCTAssertFalse(row(first, in: app).exists)
         select("Inbox", in: app)
-        expectUnread(first, in: app)
+        expectReadStatus(first, in: app)
         app.buttons["Select"].tap()
         app.buttons["Cancel"].tap()
         row(first, in: app).tap()
@@ -1128,9 +1244,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testFilteredBulkSelection() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         app.searchFields.firstMatch.tap()
         app.searchFields.firstMatch.typeText("Course project\n")
         app.buttons["Select"].tap()
@@ -1146,15 +1261,14 @@ final class MailernUITests: XCTestCase {
         row("Course project feedback", in: app).tap()
         app.buttons["Restore"].tap()
         select("Inbox", in: app)
-        expectUnread("Course project feedback", in: app)
+        expectReadStatus("Course project feedback", unread: false, in: app)
     }
 
     @MainActor
     func testCustomSwipeActions() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         func settings() {
             app.buttons["More"].tap()
             app.buttons["Settings"].tap()
@@ -1212,9 +1326,9 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testFastReturnDoesNotCompose() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
+        app.launchEnvironment["MAILERN_TEST_LARGE_INBOX"] = "1"
         app.launch()
-        resetDemo(in: app)
         app.buttons["More"].tap()
         app.buttons["Settings"].tap()
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Inbox pull-down")).firstMatch.tap()
@@ -1235,9 +1349,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testPullProgressAndReturn() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         func setPull(_ title: String) {
             app.buttons["More"].tap()
             app.buttons["Settings"].tap()
@@ -1268,9 +1381,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testLabsInboxActionsAndBottomCompose() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         func settings() {
             app.buttons["More"].tap()
             app.buttons["Settings"].tap()
@@ -1327,20 +1439,21 @@ final class MailernUITests: XCTestCase {
         app.buttons["Done"].tap()
         XCTAssertTrue(app.tabBars.firstMatch.exists)
     }
+}
 
+final class PeekUITests: MailernUITestCase {
     @MainActor
     func testPeekMenuTouchCancellation() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         let subject = "Course project feedback"
         peek(subject, in: app)
         let read = app.buttons["Mark read"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         let outside = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: app.frame.maxX - 5, dy: app.buttons["Mark read"].frame.midY))
         read.press(forDuration: 0.8, thenDragTo: outside, withVelocity: .fast, thenHoldForDuration: 0.2)
         XCTAssertTrue(preview(in: app).exists)
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, in: app)
         capture("Menu after cancelled touch", in: app)
         app.buttons["Mark read"].tap()
         waitForAbsence(preview(in: app))
@@ -1350,9 +1463,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testPeekWorkflowPresentation() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         let subject = "Course project feedback"
 
         peek(subject, in: app)
@@ -1361,52 +1473,51 @@ final class MailernUITests: XCTestCase {
         XCTAssertFalse(row(subject, in: app).exists)
 
         select("Settled", in: app)
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, unread: false, in: app)
         peek(subject, in: app)
         XCTAssertFalse(app.buttons["Settle"].exists)
         app.buttons["Restore to Inbox"].tap()
         waitForAbsence(preview(in: app))
 
         select("Inbox", in: app)
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, unread: false, in: app)
         XCTAssertFalse(preview(in: app).exists)
         peek(subject, in: app)
         app.buttons["Snooze"].tap()
         XCTAssertTrue(app.navigationBars["Snooze"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
         XCTAssertTrue(preview(in: app).waitForExistence(timeout: 5))
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, unread: false, in: app)
 
         confirmSnooze(in: app)
         XCTAssertFalse(row(subject, in: app).exists)
         select("Snoozed", in: app)
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, unread: false, in: app)
         XCTAssertFalse(preview(in: app).exists)
 
         peek(subject, in: app)
         XCTAssertTrue(app.buttons["Restore to Inbox"].exists)
         confirmSnooze(in: app)
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, unread: false, in: app)
         XCTAssertFalse(preview(in: app).exists)
 
         peek(subject, in: app)
         app.buttons["Settle"].tap()
         waitForAbsence(preview(in: app))
         select("Settled", in: app)
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, unread: false, in: app)
         peek(subject, in: app)
         confirmSnooze(in: app)
         select("Snoozed", in: app)
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, unread: false, in: app)
         XCTAssertFalse(preview(in: app).exists)
     }
 
     @MainActor
     func testPeekScrollTapAndReplyTools() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         let subject = "Course project feedback"
         peek(subject, in: app)
 
@@ -1419,7 +1530,7 @@ final class MailernUITests: XCTestCase {
         XCTAssertLessThan(card.frame.height, app.frame.height * 0.7)
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = "Custom peek and separate tools"
-        capture.lifetime = .keepAlways
+        capture.lifetime = .deleteOnSuccess
         add(capture)
 
         let body = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Hi Morgan,")).firstMatch
@@ -1429,10 +1540,10 @@ final class MailernUITests: XCTestCase {
         XCTAssertTrue(card.exists)
         XCTAssertTrue(body.exists)
         XCTAssertLessThan(body.frame.minY, bodyTop - 30)
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, in: app)
         let scrolled = XCTAttachment(screenshot: app.screenshot())
         scrolled.name = "Scrolled peek"
-        scrolled.lifetime = .keepAlways
+        scrolled.lifetime = .deleteOnSuccess
         add(scrolled)
         card.tap()
         waitForAbsence(card)
@@ -1464,9 +1575,8 @@ final class MailernUITests: XCTestCase {
     @MainActor
     func testPeekReadPinAndMailboxGestures() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         let subject = "Course project feedback"
 
         peek(subject, in: app)
@@ -1476,16 +1586,16 @@ final class MailernUITests: XCTestCase {
         peek(subject, in: app)
         app.buttons["Mark unread"].tap()
         waitForAbsence(preview(in: app))
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, in: app)
 
         peek(subject, in: app)
         app.buttons["Unpin"].tap()
         waitForAbsence(preview(in: app))
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, in: app)
         peek(subject, in: app)
         app.buttons["Pin"].tap()
         waitForAbsence(preview(in: app))
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, in: app)
         peek(subject, in: app)
         XCTAssertTrue(app.buttons["Unpin"].exists)
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.5)).tap()
@@ -1496,11 +1606,12 @@ final class MailernUITests: XCTestCase {
         app.navigationBars.buttons["Inbox"].tap()
         XCTAssertEqual(row(subject, in: app).value as? String, "Read")
         fullSwipe(row(subject, in: app), right: true)
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, in: app)
         fullSwipe(row(subject, in: app), right: false)
         waitForAbsence(row(subject, in: app))
         select("Settled", in: app)
-        expectUnread(subject, in: app)
+        // Settling marks a conversation read.
+        XCTAssertEqual(row(subject, in: app).value as? String, "Read")
 
         select("Inbox", in: app)
         let thread = "Dinner on Saturday?"
@@ -1508,6 +1619,7 @@ final class MailernUITests: XCTestCase {
         peek(thread, in: app)
         XCTAssertEqual(preview(in: app).value as? String, "Read")
         XCTAssertTrue(app.staticTexts["· 3 messages"].exists)
+        XCTAssertTrue(app.staticTexts["2 earlier messages"].exists)
         let latest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Around 7?")).firstMatch
         XCTAssertTrue(latest.exists)
         for _ in 0..<4 where !preview(in: app).frame.contains(latest.frame) { preview(in: app).swipeUp() }
@@ -1516,16 +1628,15 @@ final class MailernUITests: XCTestCase {
         XCTAssertEqual(preview(in: app).value as? String, "Read")
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = "Multi-message peek"
-        capture.lifetime = .keepAlways
+        capture.lifetime = .deleteOnSuccess
         add(capture)
     }
 
     @MainActor
     func testPeekMenuResizeAndTaps() {
         continueAfterFailure = false
-        let app = XCUIApplication()
+        let app = TestApplication()
         app.launch()
-        resetDemo(in: app)
         let subject = "Course project feedback"
         peek(subject, in: app)
         let card = preview(in: app)
@@ -1547,46 +1658,72 @@ final class MailernUITests: XCTestCase {
         // isHittable is false for this partial panel even though its shortcuts accept
         // touches. Exercise the actual visible controls rather than that proxy.
         app.buttons["Reply"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.navigationBars["Reply"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
-        waitForAbsence(app.navigationBars["Reply"])
-        expectUnread(subject, in: app)
+        waitForAbsence(app.navigationBars["Re: \(subject)"])
+        expectReadStatus(subject, in: app)
         peek(subject, in: app)
         XCTAssertEqual(card.frame.height, compactHeight, accuracy: 2)
-        XCTAssertFalse(app.navigationBars["Reply"].exists)
-        expectUnread(subject, in: app)
+        XCTAssertFalse(app.navigationBars["Re: \(subject)"].exists)
+        expectReadStatus(subject, in: app)
         capture("Apple Mail style tools", in: app)
         card.swipeUp()
         XCTAssertEqual(card.frame.height, compactHeight, accuracy: 2)
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, in: app)
 
         dragMenu(280, in: app)
         XCTAssertGreaterThan(card.frame.height, compactHeight + 100)
-        expectUnread(subject, in: app)
+        expectReadStatus(subject, in: app)
         dragMenu(-280, in: app)
         XCTAssertEqual(card.frame.height, compactHeight, accuracy: 2)
         dragMenu(280, in: app)
         // Reply shortcuts remain usable before revealing the other tools.
         app.buttons["Forward"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.navigationBars["Forward"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Fwd: \(subject)"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
-        waitForAbsence(app.navigationBars["Forward"])
-        expectUnread(subject, in: app)
+        waitForAbsence(app.navigationBars["Fwd: \(subject)"])
+        expectReadStatus(subject, in: app)
 
         peek(subject, in: app)
         app.buttons["Mark read"].tap()
         waitForAbsence(preview(in: app))
         XCTAssertEqual(row(subject, in: app).value as? String, "Read")
     }
+}
+
+class MailernUITestCase: XCTestCase {
+    @MainActor
+    func enterText(_ text: String, in editor: XCUIElement) {
+        editor.tap()
+        editor.typeText(text)
+        let inserted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", text), object: editor)
+        XCTAssertEqual(XCTWaiter.wait(for: [inserted], timeout: 5), .completed)
+    }
+
+    func containsSamplePhoto(_ image: UIImage) -> Bool {
+        guard let cg = image.cgImage, let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8,
+                                      bytesPerRow: cg.width * 4, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+              let data = context.data else { return false }
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        let pixels = data.assumingMemoryBound(to: UInt8.self)
+        var matching = 0
+        for offset in stride(from: 0, to: cg.width * cg.height * 4, by: 4) {
+            if (20...50).contains(Int(pixels[offset])) && (120...160).contains(Int(pixels[offset + 1]))
+                && (200...240).contains(Int(pixels[offset + 2])) { matching += 1 }
+        }
+        return matching > 1_000
+    }
 
     @MainActor
-    private func dragMenu(_ distance: CGFloat, in app: XCUIApplication) {
+    func dragMenu(_ distance: CGFloat, in app: XCUIApplication) {
         let start = app.buttons["Reply"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: distance)), withVelocity: .fast, thenHoldForDuration: 0.1)
     }
 
     @MainActor
-    private func closeQuickLook(in app: XCUIApplication) {
+    func closeQuickLook(in app: XCUIApplication) {
         let close = app.buttons["QLOverlayDoneButtonAccessibilityIdentifier"]
         if !close.exists {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
@@ -1598,44 +1735,33 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
-    private func capture(_ name: String, in app: XCUIApplication) {
+    func capture(_ name: String, in app: XCUIApplication) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
-        attachment.lifetime = .keepAlways
+        attachment.lifetime = .deleteOnSuccess
         add(attachment)
     }
 
     @MainActor
-    private func fullSwipe(_ element: XCUIElement, right: Bool) {
+    func fullSwipe(_ element: XCUIElement, right: Bool) {
         let start = element.coordinate(withNormalizedOffset: CGVector(dx: right ? 0.02 : 0.98, dy: 0.5))
         let end = element.coordinate(withNormalizedOffset: CGVector(dx: right ? 0.98 : 0.02, dy: 0.5))
         start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0.1)
     }
 
     @MainActor
-    private func preview(in app: XCUIApplication) -> XCUIElement {
+    func preview(in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: "peek-preview").firstMatch
     }
 
     @MainActor
-    private func openFilterOptions(in app: XCUIApplication) {
+    func openFilterOptions(in app: XCUIApplication) {
         if !app.buttons["Filter options"].exists { app.buttons["Filter"].tap() }
         app.buttons["Filter options"].tap()
     }
 
     @MainActor
-    private func resetMailboxFilters(in app: XCUIApplication) {
-        for status in ["Inbox", "Snoozed", "Settled"] {
-            select(status, in: app)
-            openFilterOptions(in: app)
-            app.buttons["Reset filters"].tap()
-            app.buttons["Done"].tap()
-        }
-        select("Inbox", in: app)
-    }
-
-    @MainActor
-    private func saveNewDraft(_ subject: String, in app: XCUIApplication) {
+    func saveNewDraft(_ subject: String, in app: XCUIApplication) {
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
         app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(subject)
@@ -1645,31 +1771,27 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
-    private func saveReplyDraft(_ subject: String, in app: XCUIApplication) {
+    func saveReplyDraft(_ subject: String, in app: XCUIApplication) {
         row(subject, in: app).tap()
         app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
         XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
-        app.textViews["Message body"].typeText("Draft workflow proof\n")
+        enterText("Draft workflow proof\n", in: app.textViews["Message body"])
         app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
         app.navigationBars.buttons["Inbox"].tap()
         XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
     }
 
     @MainActor
-    private func resetDemo(in app: XCUIApplication) {
-        app.buttons["More"].tap()
-        app.buttons["Demo"].tap()
-        let reset = app.buttons["Reset Demo Data"]
-        for _ in 0..<4 where !reset.isHittable { app.swipeUp() }
-        XCTAssertTrue(reset.isHittable)
-        reset.tap()
-        let confirmations = app.buttons.matching(identifier: "Reset Demo Data")
-        confirmations.element(boundBy: confirmations.count - 1).tap()
+    func resetDemo(in app: XCUIApplication) {
+        app.terminate()
+        app.launchEnvironment["MAILERN_TEST_RESET_MAIL"] = "1"
+        app.launch()
+        app.launchEnvironment.removeValue(forKey: "MAILERN_TEST_RESET_MAIL")
         XCTAssertTrue(row("Course project feedback", in: app).waitForExistence(timeout: 5))
     }
 
     @MainActor
-    private func openDraft(_ subject: String, in app: XCUIApplication) {
+    func openDraft(_ subject: String, in app: XCUIApplication) {
         select("Inbox", in: app)
         row(subject, in: app).tap()
         XCTAssertTrue(app.buttons["Edit draft"].waitForExistence(timeout: 5))
@@ -1677,12 +1799,12 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
-    private func row(_ subject: String, in app: XCUIApplication) -> XCUIElement {
+    func row(_ subject: String, in app: XCUIApplication) -> XCUIElement {
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", subject)).firstMatch
     }
 
     @MainActor
-    private func peek(_ subject: String, in app: XCUIApplication) {
+    func peek(_ subject: String, in app: XCUIApplication) {
         let conversation = row(subject, in: app)
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
         conversation.press(forDuration: 0.8)
@@ -1690,19 +1812,19 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
-    private func expectUnread(_ subject: String, in app: XCUIApplication) {
+    func expectReadStatus(_ subject: String, unread: Bool = true, in app: XCUIApplication) {
         let conversation = preview(in: app).exists ? preview(in: app) : row(subject, in: app)
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
-        XCTAssertEqual(conversation.value as? String, "Unread")
+        XCTAssertEqual(conversation.value as? String, unread ? "Unread" : "Read")
     }
 
     @MainActor
-    private func select(_ section: String, in app: XCUIApplication) {
+    func select(_ section: String, in app: XCUIApplication) {
         app.tabBars.buttons[section].tap()
     }
 
     @MainActor
-    private func confirmSnooze(in app: XCUIApplication) {
+    func confirmSnooze(in app: XCUIApplication) {
         app.buttons["Snooze"].tap()
         XCTAssertTrue(app.navigationBars["Snooze"].waitForExistence(timeout: 5))
         let option = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "In ")).firstMatch
@@ -1713,7 +1835,7 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
-    private func waitForAbsence(_ element: XCUIElement) {
+    func waitForAbsence(_ element: XCUIElement) {
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
         XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 5), .completed)
     }

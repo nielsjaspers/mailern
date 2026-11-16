@@ -223,6 +223,23 @@ import Foundation
         let revisedReply = ComposerDraft.make(mode: .replyAll(revisedID), conversation: revisedSource)
         assert(revisedReply.to == "revised@example.com" && revisedReply.cc == "team@example.com")
         assert(revisedReply.text.contains("Revised recipient group") && !revisedReply.text.contains(source.latest.body))
+        // A reply or forward can target an earlier message instead of the latest.
+        let first = revisedSource.messages[0]
+        let earlierReply = ComposerDraft.make(mode: .replyAll(revisedID), conversation: revisedSource, message: first.id)
+        assert(earlierReply.to == first.address && ComposerDraft.addresses(earlierReply.cc) == ["coordinator@college.example.com"])
+        assert(earlierReply.text.contains(first.body) && !earlierReply.text.contains("Revised recipient group"))
+        assert(earlierReply.messageID == first.id && revisedReply.messageID == nil)
+        let earlierForward = ComposerDraft.make(mode: .forward(revisedID), conversation: revisedSource, message: first.id)
+        assert(earlierForward.text.contains(first.body) && !earlierForward.text.contains("Revised recipient group"))
+        assert(ComposerDraft.make(mode: .reply(revisedID), conversation: revisedSource, message: UUID()).text.contains("Revised recipient group"))
+        assert(revisedSource.participants == "Dr. Jordan Lee, Me" && revisedSource.avatarName == "Dr. Jordan Lee")
+        revised.send(threadID: nil, account: source.account, to: ["new@example.com", "other@example.com"], cc: [], subject: "Sent only", body: "Hello")
+        var namesakes = revisedSource
+        namesakes.receive(MailMessage(sender: "Dr. Jordan Lee", address: "other@example.com", to: [], date: .now, body: "A namesake"))
+        namesakes.receive(MailMessage(sender: "Jordan", address: "JORDAN@college.example.com", to: [], date: .now, body: "A new display name"))
+        assert(namesakes.participants == "Dr. Jordan Lee, Me, Dr. Jordan Lee")
+        let sentOnly = revised.conversations.first { $0.subject == "Sent only" }!
+        assert(sentOnly.participants == "To: new@example.com, other@example.com" && sentOnly.avatarName == "new@example.com")
         let singleReply = ComposerDraft.make(mode: .reply(revisedID), conversation: revisedSource)
         assert(singleReply.to == "revised@example.com" && singleReply.cc.isEmpty)
         var draft = ComposerDraft.make(mode: .new, conversation: nil)
@@ -238,6 +255,8 @@ import Foundation
         draft.text = "A formatted message"
         draft.richText = Data("formatting payload".utf8)
         draft.attachments = [MailAttachment(name: "Example.txt", data: Data("Attachment proof".utf8), contentType: "public.plain-text")]
+        // The reply target is part of the stored draft.
+        draft.messageID = source.messages[0].id
         let drafts = DraftStore(url: dir.appending(path: "drafts.json"))
         let savedDraft = await drafts.save(draft)
         assert(savedDraft)
@@ -251,6 +270,8 @@ import Foundation
         assert(store.list(.settled, search: "Updated project scope").contains { $0.id == source.id })
         assert(sent.latest.bcc == ["hidden@example.com"] && sent.latest.richText == draft.richText && sent.latest.attachments == draft.attachments)
         let forward = ComposerDraft.make(mode: .forward(source.id), conversation: sent)
+        // Forwarding an earlier message takes that message's attachments, not the latest ones.
+        assert(ComposerDraft.make(mode: .forward(source.id), conversation: sent, message: sent.messages[0].id).attachments.isEmpty)
         assert(forward.mode.replyID == nil && forward.attachments == draft.attachments && forward.to.isEmpty)
         assert(MailStore(persistence: disk).conversation(source.id) == sent)
         store.receiveReply(source.id)
@@ -258,6 +279,10 @@ import Foundation
         assert(reactivated.latest.subject == "Updated project scope")
         assert(ComposerDraft.make(mode: .reply(source.id), conversation: reactivated).subject == "Re: Updated project scope")
         assert(ComposerDraft.make(mode: .forward(source.id), conversation: reactivated).subject == "Fwd: Updated project scope")
+        // An earlier message keeps the subject it was written under.
+        let original = reactivated.messages[0].id
+        assert(ComposerDraft.make(mode: .forward(source.id), conversation: reactivated, message: original).subject == "Fwd: \(source.subject)")
+        assert(ComposerDraft.make(mode: .reply(source.id), conversation: reactivated, message: original).subject == "Re: \(source.subject)")
         let deletedDraft = await drafts.delete(draft.id)
         assert(deletedDraft && DraftStore(url: dir.appending(path: "drafts.json")).drafts.isEmpty)
         let damagedURL = dir.appending(path: "damaged-drafts.json")
