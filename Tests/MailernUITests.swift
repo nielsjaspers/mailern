@@ -3,6 +3,31 @@ import UIKit
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testAttachmentMenuDismissalKeepsEditorUsable() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        let body = app.textViews["Message body"]
+        body.tap()
+        for _ in 0..<3 {
+            app.buttons["Attach"].tap()
+            XCTAssertTrue(app.buttons["Attach File"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["Photo Library"].exists)
+            body.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.2)).tap()
+            waitForAbsence(app.buttons["Attach File"])
+            XCTAssertTrue(app.buttons["Format"].isHittable)
+            XCTAssertTrue(app.buttons["Attach"].isHittable)
+            XCTAssertTrue(app.keyboards.firstMatch.exists)
+        }
+        capture("Attachment controls after menu dismissal", in: app)
+        body.typeText("Editing after menu dismissal")
+        XCTAssertTrue((body.value as? String)?.contains("Editing after menu dismissal") == true)
+        app.buttons["Cancel"].tap()
+        app.buttons["Delete Draft"].tap()
+    }
+
+    @MainActor
     func testComposerDragDismissesKeyboardAndKeepsContent() {
         continueAfterFailure = false
         let app = XCUIApplication()
