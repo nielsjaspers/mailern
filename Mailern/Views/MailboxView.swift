@@ -273,7 +273,7 @@ struct MailboxView: View {
                                 if selecting {
                                     if selectedIDs.contains(conversation.id) { selectedIDs.remove(conversation.id) }
                                     else { selectedIDs.insert(conversation.id) }
-                                } else { paths[status, default: []].append(conversation.id) }
+                                } else if peeking == nil { paths[status, default: []].append(conversation.id) }
                             } label: {
                                 HStack {
                                     ConversationRow(conversation: conversation, hasDraft: item.hasDraft)
