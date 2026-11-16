@@ -126,6 +126,7 @@ struct MailboxView: View {
                     }
                 }
             }
+            .background(ComposeTabAction(enabled: bottomCompose) { openComposer(.new) })
         } else {
             TabView(selection: $selection) {
                 ForEach(Workflow.allCases) { status in

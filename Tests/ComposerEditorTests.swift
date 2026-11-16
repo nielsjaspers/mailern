@@ -4,6 +4,33 @@ import SwiftUI
 @testable import Mailern
 
 @MainActor final class ComposerEditorTests: XCTestCase {
+    func testBottomComposeDoesNotSelectBlankTab() async throws {
+        guard #available(iOS 27, *) else { return }
+        let previous = UserDefaults.standard.object(forKey: "bottomCompose")
+        UserDefaults.standard.set(true, forKey: "bottomCompose")
+        defer { UserDefaults.standard.set(previous, forKey: "bottomCompose") }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let directory = URL.temporaryDirectory.appending(path: "bottom-compose-\(UUID())")
+        let host = UIHostingController(rootView: MailboxView()
+            .environment(MailStore(persistence: JSONPersistence(url: directory.appending(path: "mail.json"))))
+            .environment(DraftStore(url: directory.appending(path: "drafts.json"))))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { host.dismiss(animated: false); window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(500))
+        func findTabs(_ controller: UIViewController) -> UITabBarController? {
+            (controller as? UITabBarController) ?? controller.children.lazy.compactMap { findTabs($0) }.first
+        }
+        let tabs = try XCTUnwrap(findTabs(host))
+        let compose = try XCTUnwrap(tabs.tabs.last)
+        let selected = tabs.selectedTab
+        XCTAssertEqual(tabs.tabs.count, 4)
+        XCTAssertFalse(tabs.delegate?.tabBarController?(tabs, shouldSelectTab: compose) ?? true,
+                       "Compose must open a sheet before UIKit selects its empty tab")
+        XCTAssertTrue(tabs.selectedTab === selected)
+    }
+
     func testCoordinatedAttachmentReadWaitsForWriterAndChecksLimit() async throws {
         let directory = URL.temporaryDirectory.appending(path: "coordinated-import-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

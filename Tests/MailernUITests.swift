@@ -36,6 +36,41 @@ final class MailernUITests: XCTestCase {
         app.buttons["Delete Draft"].tap()
     }
 
+    @MainActor
+    func testComposePreservesRevealedSearchPosition() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        let bottom = app.switches["Compose at bottom right"]
+        if bottom.value as? String != "1" { bottom.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap() }
+        app.buttons["Done"].tap()
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        select("Snoozed", in: app)
+        XCTAssertTrue(app.navigationBars["Snoozed"].waitForExistence(timeout: 5))
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Snoozed"].isSelected)
+        select("Inbox", in: app)
+        let list = app.collectionViews.firstMatch
+        list.swipeDown(velocity: .slow)
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        let before = search.frame
+        capture("Revealed search before Compose", in: app)
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        capture("Revealed search after Compose", in: app)
+        XCTAssertEqual(search.frame.minY, before.minY, accuracy: 2)
+    }
+
     private func containsSamplePhoto(_ image: UIImage) -> Bool {
         guard let cg = image.cgImage, let space = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8,
