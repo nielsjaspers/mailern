@@ -167,7 +167,7 @@ struct MailboxView: View {
                                          allPinned: !selectedIDs.isEmpty && selectedConversations.allSatisfy { $0.pinned },
                                          apply: applySelection, snooze: { bulkSnooze = true })
                 }
-                .toolbar(selecting ? .hidden : .visible, for: .tabBar)
+                .toolbar(selecting || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
                 .navigationDestination(for: UUID.self) { ThreadView(id: $0) }
         }
     }

@@ -3,6 +3,40 @@ import UIKit
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testThreadActionsReplaceMailboxTabs() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        for bottomEnabled in [true, false] {
+            app.buttons["More"].tap()
+            app.buttons["Settings"].tap()
+            let bottom = app.switches["Compose at bottom right"]
+            if (bottom.value as? String == "1") != bottomEnabled {
+                bottom.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+            }
+            app.buttons["Done"].tap()
+            row("Course project feedback", in: app).tap()
+            XCTAssertTrue(app.buttons["More actions"].waitForExistence(timeout: 5))
+            capture("Thread actions without mailbox tabs, bottom Compose \(bottomEnabled)", in: app)
+            XCTAssertFalse(app.tabBars.buttons["Inbox"].isHittable)
+            XCTAssertFalse(app.buttons["Compose"].isHittable)
+            XCTAssertTrue(app.buttons["Settle"].isHittable)
+            XCTAssertTrue(app.buttons["Snooze"].isHittable)
+            app.buttons["Reply"].tap()
+            XCTAssertTrue(app.buttons["Reply All"].waitForExistence(timeout: 5))
+            app.buttons["Reply All"].tap()
+            XCTAssertTrue(app.navigationBars["Re: Course project feedback"].waitForExistence(timeout: 5))
+            app.textViews["Message body"].typeText("Thread action check\n")
+            app.buttons["Cancel"].tap()
+            app.buttons["Delete Draft"].tap()
+            app.navigationBars.buttons["Inbox"].tap()
+            XCTAssertTrue(app.tabBars.buttons["Inbox"].isHittable)
+            XCTAssertTrue(app.buttons["Compose"].isHittable)
+        }
+    }
+
+    @MainActor
     func testAllReadStatusKeepsRowsInPlace() {
         continueAfterFailure = false
         let app = XCUIApplication()
