@@ -23,6 +23,7 @@ struct ComposerView: View {
     @State private var photos: [PhotosPickerItem] = []
     @State private var contacts = false
     @State private var importingPhotos = false
+    @State private var importingFiles = false
     @State private var error: String?
     @State private var savedInput: DraftInput?
     private struct DraftInput: Equatable {
@@ -91,11 +92,11 @@ struct ComposerView: View {
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(title).navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importingPhotos || finishing) }
+                ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importingPhotos || importingFiles || finishing) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Send", systemImage: "arrow.up") { Task { await send() } }
                         .labelStyle(.iconOnly).tint(.blue)
-                        .foregroundStyle(draft.canSend ? Color.white : Color.secondary).disabled(!draft.canSend || !loaded || completed || finishing || importingPhotos)
+                        .foregroundStyle(draft.canSend ? Color.white : Color.secondary).disabled(!draft.canSend || !loaded || completed || finishing || importingPhotos || importingFiles)
                 }
             }
         }
@@ -103,7 +104,7 @@ struct ComposerView: View {
         .writingToolsBehavior(.disabled)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .interactiveDismissDisabled(importingPhotos || finishing || savesInFlight > 0 || (!completed && dirty && savedInput != input))
+        .interactiveDismissDisabled(importingPhotos || importingFiles || finishing || savesInFlight > 0 || (!completed && dirty && savedInput != input))
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear(perform: load)
         .onChange(of: input) { _, value in
@@ -274,7 +275,7 @@ struct ComposerView: View {
         } catch { self.error = error.localizedDescription }
     }
     private func send() async {
-        guard draft.canSend, loaded, !completed, !finishing, !importingPhotos else { return }
+        guard draft.canSend, loaded, !completed, !finishing, !importingPhotos, !importingFiles else { return }
         let activity = DraftSaveActivity()
         defer { activity.end() }
         finishing = true
@@ -302,23 +303,23 @@ struct ComposerView: View {
         } catch { self.error = error.localizedDescription }
     }
     private func importFiles(_ result: Result<[URL], any Error>) {
-        do {
-            for url in try result.get() {
-                let scoped = url.startAccessingSecurityScopedResource()
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                let info = try url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
-                guard (info.fileSize ?? 0) <= attachmentLimit else { throw AttachmentError.tooLarge }
-                try attach(MailAttachment(name: url.lastPathComponent, data: Data(contentsOf: url), contentType: (info.contentType ?? .data).identifier))
-            }
-        } catch { self.error = error.localizedDescription }
+        importingFiles = true
+        Task {
+            defer { importingFiles = false }
+            do {
+                for url in try result.get() {
+                    let remaining = attachmentLimit - draft.attachments.reduce(0) { $0 + $1.data.count }
+                    let file = try await Task.detached(priority: .userInitiated) {
+                        try AttachmentImport.read(url, limit: remaining)
+                    }.value
+                    try attach(file)
+                }
+            } catch { self.error = error.localizedDescription }
+        }
     }
     private func attach(_ file: MailAttachment) throws {
-        guard draft.attachments.reduce(file.data.count, { $0 + $1.data.count }) <= attachmentLimit else { throw AttachmentError.tooLarge }
+        guard draft.attachments.reduce(file.data.count, { $0 + $1.data.count }) <= attachmentLimit else { throw AttachmentImport.Failure.tooLarge }
         draft.attachments.append(file)
-    }
-    private enum AttachmentError: LocalizedError {
-        case tooLarge
-        var errorDescription: String? { "Attachments can total up to 25 MB in this prototype." }
     }
 }
 

@@ -4,6 +4,34 @@ import SwiftUI
 @testable import Mailern
 
 @MainActor final class ComposerEditorTests: XCTestCase {
+    func testCoordinatedAttachmentReadWaitsForWriterAndChecksLimit() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "coordinated-import-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appending(path: "Sample.txt")
+        try Data("Original".utf8).write(to: file)
+        let entered = expectation(description: "Coordinated writer holds file")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let writer = Task.detached {
+            var error: NSError?
+            NSFileCoordinator().coordinate(writingItemAt: file, options: .forReplacing, error: &error) { writable in
+                entered.fulfill()
+                _ = release.wait(timeout: .now() + 5)
+                try? Data("Updated".utf8).write(to: writable, options: .atomic)
+            }
+            if let error { throw error }
+        }
+        await fulfillment(of: [entered], timeout: 3)
+        let reader = Task.detached { try AttachmentImport.read(file, limit: 25) }
+        try await Task.sleep(for: .milliseconds(100))
+        release.signal()
+        try await writer.value
+        let imported = try await reader.value
+        XCTAssertEqual(imported.name, "Sample.txt")
+        XCTAssertEqual(String(data: imported.data, encoding: .utf8), "Updated")
+        XCTAssertThrowsError(try AttachmentImport.read(file, limit: 2))
+    }
+
     func testAttachmentAutosaveKeepsComposerResponsive() async throws {
         final class Gate: @unchecked Sendable {
             let release = DispatchSemaphore(value: 0)
