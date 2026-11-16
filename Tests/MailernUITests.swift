@@ -2,6 +2,40 @@ import XCTest
 import UIKit
 
 final class MailernUITests: XCTestCase {
+    @MainActor
+    func testFormattingKeepsSelectionAbovePanel() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+        let body = app.textViews["Message body"]
+        body.tap()
+        body.typeText("Select this text to format")
+        app.buttons["Format"].tap()
+        let close = app.buttons["close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        body.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.12)).tap()
+        capture("Body remains selectable with Format open", in: app)
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "The keyboard must not cover Format when the body is tapped")
+        XCTAssertTrue(close.isHittable)
+        body.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.08)).doubleTap()
+        capture("Selected text with Format open", in: app)
+        app.descendants(matching: .any).matching(identifier: "Title").firstMatch.tap()
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "Title").firstMatch.value as? String, "1")
+        capture("Title applied to selected body text", in: app)
+        XCTAssertTrue(close.isHittable)
+        close.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        app.buttons["Format"].tap()
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        app.textFields["Subject"].tap()
+        waitForAbsence(close)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        app.buttons["Delete Draft"].tap()
+    }
+
     private func containsSamplePhoto(_ image: UIImage) -> Bool {
         guard let cg = image.cgImage, let space = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8,

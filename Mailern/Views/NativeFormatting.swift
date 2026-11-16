@@ -4,6 +4,10 @@ import UIKit
     private let state: RichTextState
     private let finish: () -> Void
     private let controller: UITextFormattingViewController
+    private weak var textView: UITextView?
+    private weak var composerView: UIView?
+    private var previousInput: UIView?
+    private var previousAccessory: UIView?
     private var finished = false
     private static let styles: [(String, String, UIFont)] = [
         ("title", "Title", .systemFont(ofSize: 28, weight: .bold)),
@@ -33,9 +37,18 @@ import UIKit
         var responder: UIResponder? = textView
         while let current = responder, !(current is UIViewController) { responder = current.next }
         guard let presenter = responder as? UIViewController else { resume(); return }
+        composerView = presenter.view
         state.sync()
         refreshDescriptor()
-        textView.resignFirstResponder()
+        self.textView = textView
+        previousInput = textView.inputView
+        previousAccessory = textView.inputAccessoryView
+        // Keep native text selection active while Format replaces the software keyboard.
+        textView.inputView = UIView(frame: .zero)
+        textView.inputAccessoryView = nil
+        textView.reloadInputViews()
+        NotificationCenter.default.addObserver(self, selector: #selector(headerBeganEditing),
+                                               name: UITextField.textDidBeginEditingNotification, object: nil)
         controller.modalPresentationStyle = .pageSheet
         if let sheet = controller.sheetPresentationController {
             let height = UISheetPresentationController.Detent.Identifier("format")
@@ -91,10 +104,19 @@ import UIKit
         viewController.dismiss(animated: true) { [weak self] in self?.resume() }
     }
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { resume() }
-    private func resume() {
+    @objc private func headerBeganEditing(_ notification: Notification) {
+        guard let field = notification.object as? UITextField, let composerView,
+              field.isDescendant(of: composerView) else { return }
+        controller.dismiss(animated: true) { [weak self] in self?.resume(focusBody: false) }
+    }
+    private func resume(focusBody: Bool = true) {
         guard !finished else { return }
         finished = true
-        state.view?.becomeFirstResponder()
+        NotificationCenter.default.removeObserver(self)
+        textView?.inputView = previousInput
+        textView?.inputAccessoryView = previousAccessory
+        textView?.reloadInputViews()
+        if focusBody { textView?.becomeFirstResponder() }
         finish()
     }
 }
