@@ -27,7 +27,6 @@ struct MailboxFilterToolbar: View {
                     }
                 }
                 control.toggleButton
-                    .padding(.horizontal, 4)
                     .glassEffect(.regular.interactive(), in: .capsule)
                     .glassEffectUnion(id: "filter", namespace: glass)
                 MailboxFilterControl(filter: .initial(for: status), status: status, toggle: toggle, options: options)
@@ -38,7 +37,7 @@ struct MailboxFilterToolbar: View {
     }
 }
 
-// One layout owns the expansion. The circle never changes position, including between animation frames.
+// One layout owns the expansion. The toggle never changes position, including between animation frames.
 private struct FilterToolbarLayout: Layout {
     var expansion: CGFloat
     var animatableData: CGFloat {
@@ -48,19 +47,19 @@ private struct FilterToolbarLayout: Layout {
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let select = subviews[0].sizeThatFits(.unspecified)
-        let summary = subviews[1].sizeThatFits(.unspecified)
-        let idealWidth = select.width + 12 + summary.width + 8 + 52
+        let summary = subviews[1].sizeThatFits(ProposedViewSize(width: 144, height: nil))
+        let idealWidth = select.width + 12 + summary.width + 52
         let minimumSummary = min(summary.width, subviews[3].sizeThatFits(.unspecified).width)
-        let minimumWidth = select.width + 12 + minimumSummary + 8 + 52
+        let minimumWidth = select.width + 12 + minimumSummary + 52
         return CGSize(width: max(minimumWidth, min(idealWidth, proposal.width ?? idealWidth)),
                       height: max(44, select.height, summary.height))
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let select = subviews[0].sizeThatFits(.unspecified)
-        let available = max(0, bounds.width - select.width - 12 - 8 - 52)
-        let summary = subviews[1].sizeThatFits(ProposedViewSize(width: available, height: 44))
-        let extra = summary.width + 8
+        let available = max(0, bounds.width - select.width - 12 - 52)
+        let summary = subviews[1].sizeThatFits(ProposedViewSize(width: min(144, available), height: 44))
+        let extra = summary.width
         subviews[0].place(at: CGPoint(x: bounds.minX + extra * (1 - expansion), y: bounds.midY),
                           anchor: .leading, proposal: .unspecified)
         subviews[1].place(at: CGPoint(x: bounds.maxX - 52 - extra, y: bounds.midY),
@@ -79,7 +78,7 @@ struct MailboxFilterControl: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if filter.enabled { summary }
+            if filter.enabled { summary.frame(maxWidth: 144) }
             toggleButton
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -96,11 +95,10 @@ struct MailboxFilterControl: View {
                     Text(filter.summary(for: status)).lineLimit(1)
                     Image(systemName: "chevron.down").font(.caption.weight(.semibold))
                 }
-                .font(.subheadline.weight(.medium))
+                .font(.caption.weight(.medium))
                 .foregroundStyle(.tint)
             }
-            .frame(maxWidth: 120, alignment: .leading)
-            .padding(.leading, 8)
+            .padding(.horizontal, 16)
             .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
@@ -115,10 +113,10 @@ struct MailboxFilterControl: View {
                 .font(.system(size: 20, weight: .medium))
                 .contentTransition(.identity)
                 .foregroundStyle(filter.enabled ? Color.white : Color.primary)
-                .frame(width: 40, height: 40)
-                .background { Circle().fill(.tint).opacity(filter.enabled ? 1 : 0) }
+                .frame(width: 48, height: 40)
+                .background { Capsule().fill(.tint).opacity(filter.enabled ? 1 : 0) }
                 .padding(2)
-                .contentShape(Circle())
+                .contentShape(Capsule())
                 .transaction { $0.animation = nil }
         }
         .buttonStyle(.plain)
