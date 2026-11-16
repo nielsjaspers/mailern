@@ -3,12 +3,11 @@ import SwiftUI
 struct ConversationContent: View {
     let conversation: Conversation
     var isPreview = false
-    var hasDraft = false
     var drafts: [ComposerDraft] = []
     var editDraft: (UUID) -> Void = { _ in }
     var discardDraft: (UUID) -> Void = { _ in }
     var deletingDraft = false
-    private var workflow: Workflow { hasDraft || !drafts.isEmpty ? .inbox : conversation.workflow }
+    private var workflow: Workflow { conversation.workflow }
 
     var body: some View {
         ScrollViewReader { proxy in

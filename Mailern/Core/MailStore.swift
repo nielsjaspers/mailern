@@ -64,12 +64,11 @@ final class MailStore {
         }
     }
     func conversation(_ id: UUID) -> Conversation? { conversations.first { $0.id == id } }
-    func list(_ status: Workflow, search: String = "", unreadFirst: Bool = false) -> [Conversation] {
+    func list(_ status: Workflow, search: String = "") -> [Conversation] {
         conversations.filter { c in
             c.workflow == status && (search.isEmpty || ([c.subject, c.account.name] + c.messages.flatMap { [$0.sender, $0.address, $0.body, $0.subject ?? ""] }).contains { $0.localizedCaseInsensitiveContains(search) })
         }.sorted {
             if status == .inbox && $0.pinned != $1.pinned { return $0.pinned }
-            if status == .inbox && unreadFirst && $0.unread != $1.unread { return $0.unread }
             if status == .snoozed { return ($0.snoozedUntil ?? .distantFuture) < ($1.snoozedUntil ?? .distantFuture) }
             if $0.latest.date != $1.latest.date { return $0.latest.date > $1.latest.date }
             return $0.id.uuidString < $1.id.uuidString

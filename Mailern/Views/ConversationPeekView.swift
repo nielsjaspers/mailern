@@ -12,6 +12,7 @@ struct ConversationPeekView: View {
     @State private var toolsHeight: CGFloat = 300
     @State private var menuPosition: CGFloat?
     @State private var dragOrigin: CGFloat?
+    @State private var settling: Set<UUID> = []
     @AccessibilityFocusState private var previewFocused: Bool
 
     private var hasDraft: Bool { drafts.drafts.contains { $0.mode.replyID == conversation.id } }
@@ -38,7 +39,7 @@ struct ConversationPeekView: View {
                 .accessibilitySortPriority(-1)
 
                 VStack(alignment: .leading, spacing: 16) {
-                    ConversationContent(conversation: conversation, isPreview: true, hasDraft: hasDraft)
+                    ConversationContent(conversation: conversation, isPreview: true)
                         .frame(height: previewHeight)
                         .clipShape(RoundedRectangle(cornerRadius: 26))
                         .overlay {
@@ -62,7 +63,6 @@ struct ConversationPeekView: View {
 
                     PeekToolsView(
                         conversation: conversation,
-                        hasDraft: hasDraft,
                         offset: max(0, position - travel),
                         onResize: { translation in
                             if dragOrigin == nil { dragOrigin = position }
@@ -100,6 +100,7 @@ struct ConversationPeekView: View {
             }
         }
         .accessibilityAction(.escape, onDismiss)
+        .modifier(SettleDraftConfirmation(ids: $settling, onSettle: onDismiss))
     }
 
     private func animate(_ changes: () -> Void) {
@@ -116,6 +117,7 @@ struct ConversationPeekView: View {
             onDismiss()
             store.markRead(conversation.id, unread: !conversation.unread)
         case .settle:
+            if conversation.workflow != .settled && hasDraft { settling = [conversation.id]; return }
             onDismiss()
             store.move(conversation.id, to: conversation.workflow == .settled ? .inbox : .settled)
         case .pin:

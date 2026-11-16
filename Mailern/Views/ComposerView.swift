@@ -284,7 +284,7 @@ struct ComposerView: View {
         do {
             let content = try snapshot(submitted)
             guard await drafts.save(content) else { return }
-            if drafts.drafts.first(where: { $0.id == content.id }) == content { savedInput = submitted }
+            if drafts.drafts.first(where: { $0.id == content.id })?.matchesContent(of: content) == true { savedInput = submitted }
             if dismissAfter { completed = true; dismiss() }
         } catch { self.error = error.localizedDescription }
     }
