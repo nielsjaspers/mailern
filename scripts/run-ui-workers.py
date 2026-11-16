@@ -203,7 +203,7 @@ def main():
                 result, durations = batch("pickers", simulator, pickers)
                 results.append(result)
                 measured.update(durations)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers + 1) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, 3) if cold_start else workers + 1) as executor:
                 futures = {} if cold_start else {executor.submit(batch, "pickers", simulator, pickers): "pickers"}
                 futures.update({executor.submit(batch, f"worker-{i + 1}", device, batches[i]): f"worker-{i + 1}" for i, device in enumerate(pool)})
                 for future in concurrent.futures.as_completed(futures):
