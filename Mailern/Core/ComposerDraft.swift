@@ -75,14 +75,14 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
             return parts.count == 2 && !parts[0].isEmpty && parts[1].contains(".") && !address.contains(where: \.isWhitespace)
         }
     }
-    static func make(mode: ComposeMode, conversation: Conversation?) -> Self {
+    static func make(mode: ComposeMode, conversation: Conversation?, message: UUID? = nil) -> Self {
         var draft = Self(mode: mode)
         guard let c = conversation else { return draft }
         draft.accountID = c.accountID
         let subject = c.effectiveSubject
+        let target = c.message(message)
         switch mode {
         case .reply, .replyAll:
-            let target = c.latest
             draft.to = target.outgoing ? target.to.joined(separator: ", ") : target.address
             draft.subject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
             if case .replyAll = mode {
@@ -92,8 +92,8 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
             draft.text = "\n\nOn \(target.date.formatted()), \(target.sender) <\(target.address)> wrote:\n\(target.body)"
         case .forward:
             draft.subject = subject.lowercased().hasPrefix("fwd:") ? subject : "Fwd: \(subject)"
-            draft.text = "\n\nBegin forwarded message:\n\nFrom: \(c.latest.sender) <\(c.latest.address)>\nDate: \(c.latest.date.formatted())\nSubject: \(subject)\nTo: \(c.latest.to.joined(separator: ", "))\n\n\(c.latest.body)"
-            draft.attachments = c.latest.attachments ?? []
+            draft.text = "\n\nBegin forwarded message:\n\nFrom: \(target.sender) <\(target.address)>\nDate: \(target.date.formatted())\nSubject: \(subject)\nTo: \(target.to.joined(separator: ", "))\n\n\(target.body)"
+            draft.attachments = target.attachments ?? []
         default: break
         }
         return draft

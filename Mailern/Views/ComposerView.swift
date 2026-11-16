@@ -8,6 +8,8 @@ struct ComposerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     let mode: ComposeMode
+    /// The message a new reply or forward quotes. Nil targets the latest message.
+    var messageID: UUID?
     @State private var draft = ComposerDraft()
     @State private var initial = ComposerDraft()
     @State private var editor = RichTextState()
@@ -229,14 +231,15 @@ struct ComposerView: View {
         } else if let replyID = mode.replyID, let existing = drafts.drafts.first(where: { $0.mode.replyID == replyID }) {
             draft = existing
         } else {
-            draft = ComposerDraft.make(mode: mode, conversation: mode.sourceID.flatMap(store.conversation))
+            draft = ComposerDraft.make(mode: mode, conversation: mode.sourceID.flatMap(store.conversation), message: messageID)
         }
         let text = NSMutableAttributedString(attributedString: RichText.decode(draft.richText, fallback: draft.text))
         if !saved, draft.richText == nil, let sourceID = draft.mode.sourceID, let source = store.conversation(sourceID), text.length > 2 {
             // Retain the original formatting inside the editable reply or forward quote.
-            let original = source.latest.body as NSString
+            let target = source.message(messageID)
+            let original = target.body as NSString
             let bodyRange = NSRange(location: text.length - original.length, length: original.length)
-            text.replaceCharacters(in: bodyRange, with: RichText.decode(source.latest.richText, fallback: source.latest.body))
+            text.replaceCharacters(in: bodyRange, with: RichText.decode(target.richText, fallback: target.body))
             let quote = NSRange(location: 2, length: text.length - 2)
             text.addAttribute(.foregroundColor, value: UIColor.systemPurple, range: NSRange(location: 2, length: bodyRange.location - 2))
             text.addAttribute(RichText.quote, value: true, range: quote)

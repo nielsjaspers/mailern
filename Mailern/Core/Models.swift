@@ -49,6 +49,17 @@ struct Conversation: Codable, Identifiable, Equatable {
     var effectiveSubject: String { messages.last(where: { $0.subject != nil })?.subject ?? subject }
     var correspondent: MailMessage { messages.last(where: { !$0.outgoing }) ?? latest }
     var account: MailAccount { MailAccount.demo.first(where: { $0.id == accountID }) ?? MailAccount.demo[0] }
+    /// Everyone who wrote in the thread, in order of first appearance. Sent-only threads show their recipients.
+    var participants: String {
+        guard messages.contains(where: { !$0.outgoing }) else { return "To: \(latest.to.joined(separator: ", "))" }
+        var seen = Set<String>()
+        return messages.map { $0.outgoing ? "Me" : $0.sender }.filter { seen.insert($0).inserted }.joined(separator: ", ")
+    }
+    var avatarName: String {
+        messages.contains(where: { !$0.outgoing }) ? correspondent.sender : latest.to.first ?? latest.sender
+    }
+    /// The message a reply or forward targets. Falls back to the latest message.
+    func message(_ id: UUID?) -> MailMessage { messages.first { $0.id == id } ?? latest }
 
     mutating func move(to status: Workflow, until: Date? = nil) {
         if status == .settled { unread = false }

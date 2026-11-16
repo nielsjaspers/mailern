@@ -223,6 +223,18 @@ import Foundation
         let revisedReply = ComposerDraft.make(mode: .replyAll(revisedID), conversation: revisedSource)
         assert(revisedReply.to == "revised@example.com" && revisedReply.cc == "team@example.com")
         assert(revisedReply.text.contains("Revised recipient group") && !revisedReply.text.contains(source.latest.body))
+        // A reply or forward can target an earlier message instead of the latest.
+        let first = revisedSource.messages[0]
+        let earlierReply = ComposerDraft.make(mode: .replyAll(revisedID), conversation: revisedSource, message: first.id)
+        assert(earlierReply.to == first.address && ComposerDraft.addresses(earlierReply.cc) == ["coordinator@college.example.com"])
+        assert(earlierReply.text.contains(first.body) && !earlierReply.text.contains("Revised recipient group"))
+        let earlierForward = ComposerDraft.make(mode: .forward(revisedID), conversation: revisedSource, message: first.id)
+        assert(earlierForward.text.contains(first.body) && !earlierForward.text.contains("Revised recipient group"))
+        assert(ComposerDraft.make(mode: .reply(revisedID), conversation: revisedSource, message: UUID()).text.contains("Revised recipient group"))
+        assert(revisedSource.participants == "Dr. Jordan Lee, Me" && revisedSource.avatarName == "Dr. Jordan Lee")
+        revised.send(threadID: nil, account: source.account, to: ["new@example.com", "other@example.com"], cc: [], subject: "Sent only", body: "Hello")
+        let sentOnly = revised.conversations.first { $0.subject == "Sent only" }!
+        assert(sentOnly.participants == "To: new@example.com, other@example.com" && sentOnly.avatarName == "new@example.com")
         let singleReply = ComposerDraft.make(mode: .reply(revisedID), conversation: revisedSource)
         assert(singleReply.to == "revised@example.com" && singleReply.cc.isEmpty)
         var draft = ComposerDraft.make(mode: .new, conversation: nil)

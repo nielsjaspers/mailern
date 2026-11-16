@@ -520,6 +520,54 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
+    func testThreadFoldsMessagesAndRepliesToEarlierMessage() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        let subject = "Dinner on Saturday?"
+        XCTAssertTrue(row(subject, in: app).label.contains("Casey Rivera, Me"))
+        XCTAssertTrue(row(subject, in: app).label.contains("3 messages"))
+        row(subject, in: app).tap()
+
+        // Only the latest message starts open, so only it offers reply controls.
+        let latestReplies = app.buttons.matching(identifier: "Reply to Casey Rivera")
+        XCTAssertTrue(latestReplies.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(latestReplies.count, 1)
+        XCTAssertFalse(app.buttons["Reply to Morgan"].exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Around 7?")).firstMatch.exists)
+        capture("Thread with folded earlier messages", in: app)
+
+        let first = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Hey! Are you free")).firstMatch
+        first.tap()
+        XCTAssertTrue(latestReplies.element(boundBy: 1).waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Reply to Morgan"].exists)
+        capture("Thread with an earlier message open", in: app)
+
+        latestReplies.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        let quote = app.textViews["Message body"].value as? String ?? ""
+        XCTAssertTrue(quote.contains("Are you free on Saturday?"))
+        XCTAssertFalse(quote.contains("Around 7?"))
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "To").firstMatch.value as? String, "casey@example.com")
+        capture("Reply quotes the earlier message", in: app)
+        app.buttons["Cancel"].tap()
+        waitForAbsence(app.navigationBars["Re: \(subject)"])
+
+        app.buttons.matching(identifier: "Message actions").element(boundBy: 0).tap()
+        app.buttons["Forward"].tap()
+        XCTAssertTrue(app.navigationBars["Fwd: \(subject)"].waitForExistence(timeout: 5))
+        XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").contains("Are you free on Saturday?"))
+        app.buttons["Cancel"].tap()
+        waitForAbsence(app.navigationBars["Fwd: \(subject)"])
+
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Sounds good.")).firstMatch.tap()
+        XCTAssertTrue(app.buttons["Reply to Morgan"].waitForExistence(timeout: 5))
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Morgan")).firstMatch.tap()
+        waitForAbsence(app.buttons["Reply to Morgan"])
+    }
+
+    @MainActor
     func testAllReadStatusKeepsRowsInPlace() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -1500,7 +1548,8 @@ final class MailernUITests: XCTestCase {
         fullSwipe(row(subject, in: app), right: false)
         waitForAbsence(row(subject, in: app))
         select("Settled", in: app)
-        expectUnread(subject, in: app)
+        // Settling marks a conversation read.
+        XCTAssertEqual(row(subject, in: app).value as? String, "Read")
 
         select("Inbox", in: app)
         let thread = "Dinner on Saturday?"
@@ -1508,6 +1557,7 @@ final class MailernUITests: XCTestCase {
         peek(thread, in: app)
         XCTAssertEqual(preview(in: app).value as? String, "Read")
         XCTAssertTrue(app.staticTexts["· 3 messages"].exists)
+        XCTAssertTrue(app.staticTexts["2 earlier messages"].exists)
         let latest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Around 7?")).firstMatch
         XCTAssertTrue(latest.exists)
         for _ in 0..<4 where !preview(in: app).frame.contains(latest.frame) { preview(in: app).swipeUp() }
