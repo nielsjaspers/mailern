@@ -155,6 +155,7 @@ struct RichTextEditor: UIViewRepresentable {
     let state: RichTextState
     let attach: () -> Void
     let photos: () -> Void
+    var canAttach = true
 
     func makeCoordinator() -> Coordinator { Coordinator(state: state, attach: attach, photos: photos) }
     func makeUIView(context: Context) -> QuotedTextView {
@@ -176,6 +177,7 @@ struct RichTextEditor: UIViewRepresentable {
     }
     func updateUIView(_ view: QuotedTextView, context: Context) {
         view.isEditable = isEnabled
+        context.coordinator.attachmentButton?.isEnabled = isEnabled && canAttach
         if !view.attributedText.isEqual(to: state.text) {
             // UITextView changes selection while assigning content. Do not feed that temporary range back into the draft.
             let range = state.selection
@@ -205,6 +207,7 @@ struct RichTextEditor: UIViewRepresentable {
         let photos: () -> Void
         private var accessory: UIView?
         private var nativeFormat: NativeFormatting?
+        fileprivate weak var attachmentButton: UIButton?
         var updating = false
         init(state: RichTextState, attach: @escaping () -> Void, photos: @escaping () -> Void) {
             self.state = state; self.attach = attach; self.photos = photos
@@ -232,6 +235,7 @@ struct RichTextEditor: UIViewRepresentable {
             formatButton.accessibilityLabel = "Format"
             formatButton.addAction(UIAction { [weak state] _ in state?.showFormat() }, for: .touchUpInside)
             let attachment = UIButton(type: .system)
+            attachmentButton = attachment
             attachment.setImage(UIImage(systemName: "paperclip"), for: .normal)
             attachment.setPreferredSymbolConfiguration(.init(pointSize: 22), forImageIn: .normal)
             attachment.accessibilityLabel = "Attach"

@@ -22,8 +22,7 @@ struct ComposerView: View {
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
     @State private var contacts = false
-    @State private var importingPhotos = false
-    @State private var importingFiles = false
+    @State private var importsInFlight = 0
     @State private var error: String?
     @State private var savedInput: DraftInput?
     private struct DraftInput: Equatable {
@@ -44,6 +43,7 @@ struct ComposerView: View {
     private var title: String { draft.subject.isEmpty ? "New Message" : draft.subject }
     private var account: MailAccount { MailAccount.demo.first { $0.id == draft.accountID } ?? MailAccount.demo[1] }
     private let attachmentLimit = 25 * 1024 * 1024
+    private var importing: Bool { importsInFlight > 0 }
 
     var body: some View {
         NavigationStack {
@@ -80,7 +80,8 @@ struct ComposerView: View {
                         ComposerSubjectField(text: $draft.subject, isFocused: subjectFocused) { subjectFocused = $0 }
                     }.frame(minHeight: 48)
                     Divider()
-                    RichTextEditor(state: editor, attach: { filePicker = true }, photos: { photoPicker = true })
+                    RichTextEditor(state: editor, attach: { if !importing { filePicker = true } },
+                                   photos: { if !importing { photoPicker = true } }, canAttach: !importing)
                     if !draft.attachments.isEmpty {
                         AttachmentList(attachments: draft.attachments) { id in draft.attachments.removeAll { $0.id == id } }
                             .padding(.bottom, 20)
@@ -92,11 +93,11 @@ struct ComposerView: View {
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(title).navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importingPhotos || importingFiles || finishing) }
+                ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importing || finishing) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Send", systemImage: "arrow.up") { Task { await send() } }
                         .labelStyle(.iconOnly).tint(.blue)
-                        .foregroundStyle(draft.canSend ? Color.white : Color.secondary).disabled(!draft.canSend || !loaded || completed || finishing || importingPhotos || importingFiles)
+                        .foregroundStyle(draft.canSend ? Color.white : Color.secondary).disabled(!draft.canSend || !loaded || completed || finishing || importing)
                 }
             }
         }
@@ -104,7 +105,7 @@ struct ComposerView: View {
         .writingToolsBehavior(.disabled)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .interactiveDismissDisabled(importingPhotos || importingFiles || finishing || savesInFlight > 0 || (!completed && dirty && savedInput != input))
+        .interactiveDismissDisabled(importing || finishing || savesInFlight > 0 || (!completed && dirty && savedInput != input))
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear(perform: load)
         .onChange(of: input) { _, value in
@@ -125,9 +126,9 @@ struct ComposerView: View {
         .photosPicker(isPresented: $photoPicker, selection: $photos, maxSelectionCount: 10, matching: .images)
         .onChange(of: photos) { _, items in
             guard !items.isEmpty else { return }
-            importingPhotos = true
+            importsInFlight += 1
             Task { @MainActor in
-                defer { importingPhotos = false; photos = [] }
+                defer { importsInFlight -= 1; photos = [] }
                 for item in items {
                     do {
                         guard let data = try await item.loadTransferable(type: Data.self) else { continue }
@@ -162,7 +163,7 @@ struct ComposerView: View {
                 }
                 Button("Save Draft") { Task { await saveDraft(dismissAfter: true) } }
             } label: { Image(systemName: "xmark") }
-            .accessibilityLabel("Cancel").tint(.primary).disabled(importingPhotos)
+            .accessibilityLabel("Cancel").tint(.primary).disabled(importing)
         } else {
             Button("Cancel", systemImage: "xmark") { completed = true; dismiss() }
                 .labelStyle(.iconOnly).tint(.primary)
@@ -275,7 +276,7 @@ struct ComposerView: View {
         } catch { self.error = error.localizedDescription }
     }
     private func send() async {
-        guard draft.canSend, loaded, !completed, !finishing, !importingPhotos, !importingFiles else { return }
+        guard draft.canSend, loaded, !completed, !finishing, !importing else { return }
         let activity = DraftSaveActivity()
         defer { activity.end() }
         finishing = true
@@ -303,9 +304,9 @@ struct ComposerView: View {
         } catch { self.error = error.localizedDescription }
     }
     private func importFiles(_ result: Result<[URL], any Error>) {
-        importingFiles = true
+        importsInFlight += 1
         Task {
-            defer { importingFiles = false }
+            defer { importsInFlight -= 1 }
             do {
                 for url in try result.get() {
                     let remaining = attachmentLimit - draft.attachments.reduce(0) { $0 + $1.data.count }
