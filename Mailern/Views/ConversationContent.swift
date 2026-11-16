@@ -66,7 +66,6 @@ struct ConversationContent: View {
                     compose: compose.map { compose in { compose($0, message.id) } }
                 )
                 .padding(.horizontal, 16)
-                .id(message.id)
             }
         }
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
@@ -79,7 +78,7 @@ struct ConversationContent: View {
             HStack(spacing: 10) {
                 HStack(spacing: -8) {
                     ForEach(earlier.suffix(3)) {
-                        SenderAvatar(name: $0.sender, tint: $0.outgoing ? .teal : nil, size: 24).padding(1.5)
+                        SenderAvatar(message: $0, size: 24).padding(1.5)
                             .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     }
                 }
@@ -148,20 +147,38 @@ private struct MessageSection: View {
                 } label: { Image(systemName: "ellipsis").frame(height: 16) }
                     .accessibilityLabel("Message actions, \(message.sender), \(time)")
             }
-            .buttonStyle(.bordered).buttonBorderShape(.circle).tint(.secondary)
+            // The hidden copy and the live controls sit in different font environments.
+            .font(.body).buttonStyle(.bordered).buttonBorderShape(.circle).tint(.secondary)
+        }
+    }
+
+    private var sender: some View {
+        Text(message.sender).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
+    }
+    private var date: some View {
+        Text(expanded
+             ? message.date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+             : message.date.mailboxStamp).fixedSize()
+    }
+    @ViewBuilder private var foldIndicator: some View {
+        if toggle != nil {
+            Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(expanded ? 180 : 0))
+                .accessibilityHidden(true)
         }
     }
 
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
-            SenderAvatar(name: message.sender, tint: message.outgoing ? .teal : nil, size: 36)
+            SenderAvatar(message: message, size: 36)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(message.sender).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-                    Spacer(minLength: 8)
-                    Text(expanded
-                         ? message.date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
-                         : message.date.mailboxStamp).fixedSize()
+                // At large text sizes the date moves below the sender instead of squeezing it.
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline) { sender; Spacer(minLength: 8); date; foldIndicator }
+                    VStack(alignment: .leading, spacing: 2) {
+                        sender
+                        HStack(alignment: .firstTextBaseline) { date; Spacer(minLength: 8); foldIndicator }
+                    }
                 }
                 if expanded {
                     HStack(alignment: .bottom) {

@@ -9,7 +9,7 @@ struct SenderAvatar: View {
     var label: String?
     var size: CGFloat = 40
     // Teal and orange are reserved for `tint`. Each color must carry white text.
-    private static let palette: [Color] = [.indigo, .purple, .pink, .blue, .brown, .red]
+    private static let palette: [Color] = [.indigo, .purple, .pink, .blue, .red]
     private var color: Color {
         if let tint { return tint }
         // Hashable is seeded per launch; a sender must keep one color across launches.
@@ -31,6 +31,12 @@ struct SenderAvatar: View {
             }
             .accessibilityHidden(label == nil)
             .accessibilityLabel(label ?? "")
+    }
+}
+
+extension SenderAvatar {
+    init(message: MailMessage, size: CGFloat) {
+        self.init(name: message.sender, tint: message.outgoing ? .teal : nil, size: size)
     }
 }
 

@@ -567,15 +567,36 @@ final class MailernUITests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Morgan")).firstMatch.tap()
         waitForAbsence(ownReply)
 
-        // A new message opens, and the message it replaces stays folded after the reader
-        // folded it. Open messages are counted by their reply controls.
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera")).element(boundBy: 1).tap()
+        // The toolbar still targets the latest message after a per-message reply.
+        app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").contains("Around 7?"))
+        app.textViews["Message body"].typeText("One reply draft\n")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        XCTAssertTrue(app.buttons["Edit draft"].waitForExistence(timeout: 5))
+        // A conversation holds one reply draft, so a per-message reply resumes it.
+        caseyReplies.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        let resumed = app.textViews["Message body"].value as? String ?? ""
+        XCTAssertTrue(resumed.hasPrefix("One reply draft") && resumed.contains("Around 7?"))
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+        waitForAbsence(app.buttons["Edit draft"])
+
+        // A new message opens and the message it replaces folds, whether the reader left
+        // that message open or folded it. Open messages are counted by their reply controls.
+        let incoming = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Hi Morgan,"))
+        XCTAssertEqual(caseyReplies.count, 2)
+        app.buttons["More actions"].tap()
+        app.buttons["Simulate incoming reply"].tap()
+        XCTAssertTrue(incoming.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(caseyReplies.count, 2)
+        capture("Thread after an incoming reply", in: app)
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera")).element(boundBy: 2).tap()
         waitForAbsence(caseyReplies.element(boundBy: 1))
         app.buttons["More actions"].tap()
         app.buttons["Simulate incoming reply"].tap()
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Hi Morgan,")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(caseyReplies.element(boundBy: 1).waitForExistence(timeout: 5))
         XCTAssertEqual(caseyReplies.count, 2)
-        capture("Thread after an incoming reply", in: app)
     }
 
     @MainActor
