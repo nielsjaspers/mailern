@@ -4,6 +4,45 @@ import SwiftUI
 @testable import Mailern
 
 @MainActor final class ComposerEditorTests: XCTestCase {
+    func testAttachmentMenuNativeDismissal() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let host = UIViewController()
+        window.rootViewController = host
+        host.view.backgroundColor = .systemBackground
+        window.overrideUserInterfaceStyle = .dark
+        let view = UITextView(frame: CGRect(x: 16, y: 100, width: 300, height: 250))
+        host.view.addSubview(view)
+        let state = RichTextState()
+        state.view = view
+        let coordinator = RichTextEditor.Coordinator(state: state, attach: {}, photos: {})
+        coordinator.installKeyboard(on: view)
+        window.makeKeyAndVisible()
+        defer { view.resignFirstResponder(); window.isHidden = true }
+        view.becomeFirstResponder()
+        try await Task.sleep(for: .seconds(1))
+        let accessory = try XCTUnwrap(view.inputAccessoryView)
+        let panel = try XCTUnwrap(accessory.subviews.first as? UIVisualEffectView)
+        let stack = try XCTUnwrap(panel.contentView.subviews.first as? UIStackView)
+        let button = try XCTUnwrap(stack.arrangedSubviews.last as? UIButton)
+        button.performPrimaryAction()
+        try await Task.sleep(for: .seconds(1))
+        let interaction = try XCTUnwrap(button.contextMenuInteraction)
+        XCTAssertNotEqual(interaction.menuAppearance, .unknown, "The real attachment menu must open before checking dismissal")
+        func capture(_ name: String) {
+            let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        capture("Attachment menu open")
+        interaction.dismissMenu()
+        for index in 0..<12 {
+            try await Task.sleep(for: .milliseconds(50))
+            capture("Menu dismissal frame \(index)")
+        }
+    }
+
     func testDraftRecoverySurvivesErrorDismissal() async throws {
         let directory = URL.temporaryDirectory.appending(path: "draft-recovery-\(UUID())")
         let url = directory.appending(path: "drafts.json")
