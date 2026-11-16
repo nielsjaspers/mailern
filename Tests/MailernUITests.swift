@@ -3,6 +3,28 @@ import UIKit
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testComposeDefaultsToBottomRight() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        for arguments in [[], ["-bottomCompose", "NO"]] {
+            app.launchArguments = arguments
+            app.launch()
+            for mailbox in ["Inbox", "Snoozed", "Settled"] {
+                select(mailbox, in: app)
+                let compose = app.buttons["Compose"]
+                XCTAssertTrue(compose.isHittable)
+                XCTAssertGreaterThan(compose.frame.midY, app.frame.height * 0.7)
+                XCTAssertGreaterThan(compose.frame.midX, app.frame.width * 0.5)
+                compose.tap()
+                XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+                app.buttons["Cancel"].tap()
+                XCTAssertTrue(app.tabBars.buttons[mailbox].isSelected)
+            }
+            app.terminate()
+        }
+    }
+
+    @MainActor
     func testFilterToggleStaysAnchoredOnRepeatedChanges() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -62,16 +84,10 @@ final class MailernUITests: XCTestCase {
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
-        app.buttons["More"].tap()
-        app.buttons["Settings"].tap()
-        let bottomCompose = app.switches["Compose at bottom right"]
-        let previousBottomCompose = bottomCompose.value as? String == "1"
-        bottomCompose.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-        app.buttons["Done"].tap()
         filter.tap()
         XCTAssertTrue(summary.isHittable)
         XCTAssertTrue(app.buttons["Compose"].isHittable)
-        capture("Connected filter with alternate compose placement", in: app)
+        capture("Connected filter with bottom Compose", in: app)
         openFilterOptions(in: app)
         app.buttons["filter-read-all"].tap()
         app.buttons["filter-account-university"].tap()
@@ -82,11 +98,6 @@ final class MailernUITests: XCTestCase {
         capture("Long filter criteria", in: app)
         openFilterOptions(in: app)
         app.buttons["Reset filters"].tap()
-        app.buttons["Done"].tap()
-        app.buttons["More"].tap()
-        app.buttons["Settings"].tap()
-        XCTAssertEqual(bottomCompose.value as? String == "1", !previousBottomCompose)
-        bottomCompose.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
         app.buttons["Done"].tap()
     }
 
@@ -489,32 +500,23 @@ final class MailernUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
         resetDemo(in: app)
-        for bottomEnabled in [true, false] {
-            app.buttons["More"].tap()
-            app.buttons["Settings"].tap()
-            let bottom = app.switches["Compose at bottom right"]
-            if (bottom.value as? String == "1") != bottomEnabled {
-                bottom.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-            }
-            app.buttons["Done"].tap()
-            row("Course project feedback", in: app).tap()
-            XCTAssertTrue(app.buttons["More actions"].waitForExistence(timeout: 5))
-            capture("Thread actions without mailbox tabs, bottom Compose \(bottomEnabled)", in: app)
-            XCTAssertFalse(app.tabBars.buttons["Inbox"].isHittable)
-            XCTAssertFalse(app.buttons["Compose"].isHittable)
-            XCTAssertTrue(app.buttons["Settle"].isHittable)
-            XCTAssertTrue(app.buttons["Snooze"].isHittable)
-            app.buttons["Reply"].tap()
-            XCTAssertTrue(app.buttons["Reply All"].waitForExistence(timeout: 5))
-            app.buttons["Reply All"].tap()
-            XCTAssertTrue(app.navigationBars["Re: Course project feedback"].waitForExistence(timeout: 5))
-            app.textViews["Message body"].typeText("Thread action check\n")
-            app.buttons["Cancel"].tap()
-            app.buttons["Delete Draft"].tap()
-            app.navigationBars.buttons["Inbox"].tap()
-            XCTAssertTrue(app.tabBars.buttons["Inbox"].isHittable)
-            XCTAssertTrue(app.buttons["Compose"].isHittable)
-        }
+        row("Course project feedback", in: app).tap()
+        XCTAssertTrue(app.buttons["More actions"].waitForExistence(timeout: 5))
+        capture("Thread actions without mailbox tabs", in: app)
+        XCTAssertFalse(app.tabBars.buttons["Inbox"].isHittable)
+        XCTAssertFalse(app.buttons["Compose"].isHittable)
+        XCTAssertTrue(app.buttons["Settle"].isHittable)
+        XCTAssertTrue(app.buttons["Snooze"].isHittable)
+        app.buttons["Reply"].tap()
+        XCTAssertTrue(app.buttons["Reply All"].waitForExistence(timeout: 5))
+        app.buttons["Reply All"].tap()
+        XCTAssertTrue(app.navigationBars["Re: Course project feedback"].waitForExistence(timeout: 5))
+        app.textViews["Message body"].typeText("Thread action check\n")
+        app.buttons["Cancel"].tap()
+        app.buttons["Delete Draft"].tap()
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Inbox"].isHittable)
+        XCTAssertTrue(app.buttons["Compose"].isHittable)
     }
 
     @MainActor
@@ -588,11 +590,6 @@ final class MailernUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
         resetDemo(in: app)
-        app.buttons["More"].tap()
-        app.buttons["Settings"].tap()
-        let bottom = app.switches["Compose at bottom right"]
-        if bottom.value as? String != "1" { bottom.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap() }
-        app.buttons["Done"].tap()
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
@@ -917,11 +914,6 @@ final class MailernUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launch()
-        app.buttons["More"].tap()
-        app.buttons["Settings"].tap()
-        let bottom = app.switches["Compose at bottom right"]
-        if bottom.value as? String != "1" { bottom.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap() }
-        app.buttons["Done"].tap()
         XCTAssertTrue(app.tabBars.buttons["Compose"].exists)
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
@@ -937,10 +929,6 @@ final class MailernUITests: XCTestCase {
         app.buttons["Delete Draft"].tap()
         waitForAbsence(app.navigationBars["Swipe draft proof"])
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Swipe draft proof")).firstMatch.exists)
-        app.buttons["More"].tap()
-        app.buttons["Settings"].tap()
-        bottom.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-        app.buttons["Done"].tap()
     }
 
     @MainActor
@@ -1231,9 +1219,6 @@ final class MailernUITests: XCTestCase {
         app.buttons["Settings"].tap()
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Inbox pull-down")).firstMatch.tap()
         app.buttons["New email"].tap()
-        if app.switches["Compose at bottom right"].value as? String == "1" {
-            app.switches["Compose at bottom right"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-        }
         app.buttons["Done"].tap()
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
@@ -1315,10 +1300,6 @@ final class MailernUITests: XCTestCase {
 
         settings()
         choosePull("New email")
-        if app.switches["Compose at bottom right"].value as? String != "1" {
-            app.switches["Compose at bottom right"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-        }
-        XCTAssertEqual(app.switches["Compose at bottom right"].value as? String, "1")
         capture("Labs settings", in: app)
         app.buttons["Done"].tap()
         XCTAssertGreaterThan(app.buttons["Compose"].frame.midY, app.frame.height * 0.7)
@@ -1342,9 +1323,7 @@ final class MailernUITests: XCTestCase {
         app.launch()
         XCTAssertGreaterThan(app.buttons["Compose"].frame.midY, app.frame.height * 0.7)
         settings()
-        XCTAssertEqual(app.switches["Compose at bottom right"].value as? String, "1")
         choosePull("Off")
-        app.switches["Compose at bottom right"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
         app.buttons["Done"].tap()
         XCTAssertTrue(app.tabBars.firstMatch.exists)
     }

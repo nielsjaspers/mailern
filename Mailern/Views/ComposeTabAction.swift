@@ -3,19 +3,16 @@ import SwiftUI
 /// A prominent tab remains a native tab-bar item, but Compose must not select its empty content.
 @available(iOS 27, *)
 struct ComposeTabAction: UIViewControllerRepresentable {
-    var enabled: Bool
     var compose: () -> Void
 
     func makeUIViewController(context: Context) -> Controller { Controller() }
     func updateUIViewController(_ controller: Controller, context: Context) {
-        controller.enabled = enabled
         controller.compose = compose
         controller.install()
     }
     static func dismantleUIViewController(_ controller: Controller, coordinator: ()) { controller.detach() }
 
     final class Controller: UIViewController, UITabBarControllerDelegate {
-        var enabled = false
         var compose: () -> Void = {}
         private weak var tabs: UITabBarController?
         private weak var previous: (any UITabBarControllerDelegate)?
@@ -29,7 +26,6 @@ struct ComposeTabAction: UIViewControllerRepresentable {
         override func viewDidLayoutSubviews() { super.viewDidLayoutSubviews(); install() }
 
         func install() {
-            guard enabled else { detach(); return }
             func find(in controller: UIViewController) -> UITabBarController? {
                 (controller as? UITabBarController) ?? controller.children.lazy.compactMap { find(in: $0) }.first
             }
@@ -49,11 +45,11 @@ struct ComposeTabAction: UIViewControllerRepresentable {
             previous = nil
         }
         func tabBarController(_ tabBarController: UITabBarController, shouldSelectTab tab: UITab) -> Bool {
-            if enabled, tab.identifier == tabBarController.prominentTabIdentifier { compose(); return false }
+            if tab.identifier == tabBarController.prominentTabIdentifier { compose(); return false }
             return previous?.tabBarController?(tabBarController, shouldSelectTab: tab) ?? true
         }
         func tabBarController(_ tabBarController: UITabBarController, shouldSelect viewController: UIViewController) -> Bool {
-            if enabled, let tab = tabBarController.tabs.first(where: { $0.identifier == tabBarController.prominentTabIdentifier }),
+            if let tab = tabBarController.tabs.first(where: { $0.identifier == tabBarController.prominentTabIdentifier }),
                tab.viewController === viewController { compose(); return false }
             return previous?.tabBarController?(tabBarController, shouldSelect: viewController) ?? true
         }

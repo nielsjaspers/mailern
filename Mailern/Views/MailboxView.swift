@@ -19,7 +19,6 @@ struct MailboxView: View {
     @State private var toolbarBottom: CGFloat = 0
     @State private var overlayTop: CGFloat?
     @AppStorage("inboxPullAction") private var pullAction: InboxPullAction = .off
-    @AppStorage("bottomCompose") private var bottomCompose = false
     @AppStorage("leftSwipePrimary") private var leftPrimary: MailboxSwipeAction = .workflow
     @AppStorage("leftSwipeSecondary") private var leftSecondary: MailboxSwipeAction = .snooze
     @AppStorage("rightSwipePrimary") private var rightPrimary: MailboxSwipeAction = .read
@@ -91,7 +90,7 @@ struct MailboxView: View {
         }
         .modifier(DraftStorageAlert(active: composer == nil && paths[selection, default: []].isEmpty))
         .sheet(isPresented: $settings) {
-            NavigationStack { SettingsView(pullAction: $pullAction, bottomCompose: $bottomCompose) }
+            NavigationStack { SettingsView(pullAction: $pullAction) }
         }
         .sheet(isPresented: $demo) { DemoView() }
         .sheet(item: $filtering) { status in
@@ -131,16 +130,14 @@ struct MailboxView: View {
                     }
                     .badge(status == .inbox ? inboxUnreadCount : 0)
                 }
-                if bottomCompose {
-                    Tab(value: MailboxTab.compose, role: .prominent) {
-                        Color.clear
-                    } label: {
-                        Label("Compose", systemImage: "square.and.pencil")
-                            .modifier(ComposerSource(source: "compose-bottom", namespace: composeTransition))
-                    }
+                Tab(value: MailboxTab.compose, role: .prominent) {
+                    Color.clear
+                } label: {
+                    Label("Compose", systemImage: "square.and.pencil")
+                        .modifier(ComposerSource(source: "compose-bottom", namespace: composeTransition))
                 }
             }
-            .background(ComposeTabAction(enabled: bottomCompose) { openComposer(.new) })
+            .background(ComposeTabAction { openComposer(.new) })
         } else {
             TabView(selection: $selection) {
                 ForEach(Workflow.allCases) { status in
@@ -226,15 +223,6 @@ struct MailboxView: View {
                 }
             }
         }
-        if #available(iOS 26, *), !bottomCompose && !selecting {
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-            if !bottomCompose && !selecting {
-                Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
-                    .modifier(ComposerSource(source: "compose-\(status.rawValue)", namespace: composeTransition))
-            }
-        }
     }
     private func toggleFilter(_ status: Workflow) {
         withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
@@ -242,12 +230,12 @@ struct MailboxView: View {
         }
     }
     private var composerSourceID: String {
-        if #available(iOS 27, *), bottomCompose { return "compose-bottom" }
+        if #available(iOS 27, *) { return "compose-bottom" }
         return "compose-\(selection.rawValue)"
     }
     private var legacyBottomCompose: Bool {
         if #available(iOS 27, *) { return false }
-        return bottomCompose
+        return true
     }
 
     @ViewBuilder private var undoBanner: some View {
