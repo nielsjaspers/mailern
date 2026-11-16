@@ -226,7 +226,8 @@ struct RichTextEditor: UIViewRepresentable {
             } else { effect = UIBlurEffect(style: .systemMaterial) }
             let panel = UIVisualEffectView(effect: effect)
             panel.translatesAutoresizingMaskIntoConstraints = false
-            panel.layer.cornerRadius = 23
+            if #available(iOS 26, *) { panel.cornerConfiguration = .capsule() }
+            else { panel.layer.cornerRadius = 23 }
             panel.clipsToBounds = true
             accessory.addSubview(panel)
             let formatButton = UIButton(type: .system)

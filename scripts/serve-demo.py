@@ -31,6 +31,6 @@ page_temp.write_text(f'''<!doctype html><html lang="en"><meta charset="utf-8"><m
 <h1>Mailern</h1><p>Version {html.escape(info["CFBundleShortVersionString"])} · Build {html.escape(info["CFBundleVersion"])}</p><p>Native iOS email workflow prototype. Fictional mail, local state.</p><a href="{html.escape(install)}">Install on iPhone</a>
 <p>Open in Safari with Tailscale connected. This development build requires an iPhone registered in the signing profile and Developer Mode enabled in Settings → Privacy &amp; Security.</p>
 <p>If iOS asks you to trust the developer, open Settings → General → VPN &amp; Device Management. Return to the Home Screen after accepting the install prompt.</p>
-<p>In the app, use More → Drafts to reopen saved messages, Demo to simulate replies, and Settings to adjust snooze times and Labs.</p></html>''')
+<p>In the app, open drafts from Inbox. Use More → Demo to simulate replies, and More → Settings to adjust snooze times and Labs.</p></html>''')
 page_temp.replace(out / 'index.html')
 print(base+'/')
