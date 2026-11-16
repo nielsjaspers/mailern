@@ -44,10 +44,15 @@ final class MailStore {
     func reload() -> Bool {
         do {
             let loaded = try persistence.load() ?? DemoData.conversations()
-            conversations = loaded
+            conversations = loaded.map { conversation in
+                var normalized = conversation
+                if normalized.workflow == .settled { normalized.unread = false }
+                return normalized
+            }
             loadFailure = nil
             error = nil
             clearNotice()
+            if conversations != loaded { save() }
             wakeDue()
             return true
         } catch {
@@ -84,6 +89,7 @@ final class MailStore {
         action(&conversations[index]); save()
     }
     func markRead(_ id: UUID, unread: Bool = false) {
+        guard conversation(id)?.workflow != .settled else { return }
         if case .read = undoAction { clearNotice() }
         update(id) { $0.unread = unread }
     }
@@ -96,11 +102,16 @@ final class MailStore {
     }
     func apply(ids: Set<UUID>, action: ConversationAction) {
         if case .move(.snoozed, let until) = action, (until ?? .distantPast) <= .now { return }
-        let before = conversations.filter { ids.contains($0.id) }
+        let before = conversations.filter {
+            guard ids.contains($0.id) else { return false }
+            if case .read = action { return $0.workflow != .settled }
+            return true
+        }
         guard !before.isEmpty else { return }
         undoSnapshot = before
         undoAction = action
-        for i in conversations.indices where ids.contains(conversations[i].id) {
+        let affectedIDs = Set(before.map(\.id))
+        for i in conversations.indices where affectedIDs.contains(conversations[i].id) {
             switch action {
             case .move(let status, let until): conversations[i].move(to: status, until: until)
             case .read(let unread): conversations[i].unread = unread
@@ -124,7 +135,9 @@ final class MailStore {
         for old in undoSnapshot {
             guard let i = conversations.firstIndex(where: { $0.id == old.id }) else { continue }
             switch action {
-            case .move:
+            case .move(let status, _):
+                if status == .settled { conversations[i].unread = old.unread }
+                if old.workflow == .settled { conversations[i].unread = false }
                 conversations[i].workflow = old.workflow
                 conversations[i].snoozedUntil = old.snoozedUntil
             case .read: conversations[i].unread = old.unread

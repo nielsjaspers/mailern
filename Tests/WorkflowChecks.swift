@@ -7,6 +7,7 @@ import Foundation
         try await checkDraftWriteOrdering()
         try await checkInboxDrafts()
         try await checkAttachmentStorage()
+        try checkSettledRead()
         try checkBulkActions()
         checkDeliberatePull()
         try checkInboxOrder()
@@ -26,7 +27,7 @@ import Foundation
         assert(store.conversation(id)!.workflow == .inbox)
         store.markRead(id, unread: true)
         store.move(id, to: .settled)
-        assert(store.conversation(id)!.unread)
+        assert(!store.conversation(id)!.unread)
         store.receiveReply(id)
         assert(store.conversation(id)!.workflow == .inbox && store.conversation(id)!.unread)
         assert(store.conversation(id)!.pinned == pin)
@@ -60,7 +61,45 @@ import Foundation
         assert(store.conversations.count == 9)
         assert(store.list(.inbox)[0].pinned)
         assert(store.error == nil)
-        print("PASS: read/workflow independence, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
+        print("PASS: settled mail is read, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
+    }
+
+    @MainActor static func checkSettledRead() throws {
+        let disk = JSONPersistence(url: URL.temporaryDirectory.appending(path: "mailern-settled-\(UUID())/demo.json"))
+        var legacy = DemoData.conversations()
+        let settledIndex = legacy.firstIndex { $0.workflow == .settled }!
+        legacy[settledIndex].unread = true
+        try disk.save(legacy)
+        let store = MailStore(persistence: disk)
+        assert(store.list(.settled).allSatisfy { !$0.unread }, "Loaded settled mail must be read")
+        let ids = Set(store.list(.inbox).prefix(2).map(\.id))
+        let first = ids.first!
+        store.markRead(first)
+        let before = store.conversations.filter { ids.contains($0.id) }
+        store.apply(ids: ids, action: .move(.settled))
+        assert(ids.allSatisfy { store.conversation($0)!.workflow == .settled && !store.conversation($0)!.unread })
+        store.undo()
+        assert(store.conversations.filter { ids.contains($0.id) } == before)
+        store.apply(ids: ids, action: .move(.settled))
+        store.markRead(first, unread: true)
+        assert(!store.conversation(first)!.unread)
+        store.apply(ids: ids, action: .read(unread: true))
+        assert(ids.allSatisfy { !store.conversation($0)!.unread })
+        store.move(first, to: .inbox)
+        store.markRead(first, unread: true)
+        store.undo()
+        assert(store.conversation(first)!.workflow == .settled && !store.conversation(first)!.unread)
+        store.move(first, to: .inbox)
+        store.markRead(first, unread: true)
+        let source = store.conversation(first)!
+        assert(store.send(threadID: first, account: source.account, to: [source.correspondent.address], cc: [], subject: source.subject, body: "Reply"))
+        assert(!store.conversation(first)!.unread)
+        assert(MailStore(persistence: disk).list(.settled).allSatisfy { !$0.unread })
+        store.receiveReply(first)
+        assert(store.conversation(first)!.workflow == .inbox && store.conversation(first)!.unread)
+        store.reset()
+        assert(store.list(.settled).allSatisfy { !$0.unread })
+        print("PASS: settled load normalization, bulk settle/undo, unread guards, restore/undo, outgoing reply, reload, incoming reply, reset")
     }
 
     @MainActor static func checkInboxDrafts() async throws {
@@ -105,7 +144,7 @@ import Foundation
         mail.apply(ids: [source.id], action: .read(unread: false))
         mail.clearWorkflowUndo(involving: [source.id])
         mail.undo()
-        assert(mail.conversation(source.id)!.unread == source.unread)
+        assert(!mail.conversation(source.id)!.unread)
         assert(saved && items(.inbox).contains { $0.id == source.id } && !items(.settled).contains { $0.id == source.id })
         assert(mail.send(threadID: source.id, account: source.account, to: [reply.to], cc: [], subject: reply.subject, body: reply.text))
         let sent = await drafts.delete(reply.id)

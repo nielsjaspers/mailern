@@ -269,7 +269,21 @@ struct MailboxView: View {
                 Section {
                     ForEach(items) { item in
                         if let conversation = item.conversation {
-                            NavigationLink(value: conversation.id) { ConversationRow(conversation: conversation, hasDraft: item.hasDraft) }
+                            Button {
+                                if selecting {
+                                    if selectedIDs.contains(conversation.id) { selectedIDs.remove(conversation.id) }
+                                    else { selectedIDs.insert(conversation.id) }
+                                } else if peeking == nil { paths[status, default: []].append(conversation.id) }
+                            } label: {
+                                HStack {
+                                    ConversationRow(conversation: conversation, hasDraft: item.hasDraft)
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                                .buttonStyle(.plain)
                                 .listRowBackground(item.hasDraft ? Color.orange.opacity(0.07) : Color.clear)
                                 .tag(conversation.id)
                                 .listRowInsets(EdgeInsets(top: 15, leading: 18, bottom: 15, trailing: 16))
@@ -279,11 +293,10 @@ struct MailboxView: View {
                                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                                     swipeButtons(primary: rightPrimary, secondary: rightSecondary, conversation: conversation, hasDraft: item.hasDraft)
                                 }
-                                // Without a swipe action, NavigationLink can treat a horizontal drag as a tap.
-                                .simultaneousGesture(
-                                    DragGesture(minimumDistance: 10).onChanged { _ in },
-                                    including: leftPrimary == .none || rightPrimary == .none ? .all : .none
-                                )
+                                .gesture(EmptySwipeGuard(
+                                    left: !hasSwipeActions(primary: leftPrimary, secondary: leftSecondary, conversation: conversation),
+                                    right: !hasSwipeActions(primary: rightPrimary, secondary: rightSecondary, conversation: conversation)
+                                ))
                                 .simultaneousGesture(
                                     LongPressGesture().onEnded { _ in
                                         guard !selecting else { return }
@@ -324,6 +337,10 @@ struct MailboxView: View {
             .modifier(InboxPullModifier(mode: status == .inbox && !selecting ? pullAction : .off, interaction: pull))
         }
     }
+    private func hasSwipeActions(primary: MailboxSwipeAction, secondary: MailboxSwipeAction, conversation: Conversation) -> Bool {
+        primary != .none && (primary != .read || conversation.workflow != .settled || (secondary != .none && secondary != .read))
+    }
+
     @ViewBuilder private func swipeButtons(
         primary: MailboxSwipeAction, secondary: MailboxSwipeAction, conversation: Conversation, hasDraft: Bool
     ) -> some View {
@@ -343,10 +360,12 @@ struct MailboxView: View {
                 act { store.move(conversation.id, to: conversation.workflow == .settled ? .inbox : .settled) }
             }.tint(conversation.workflow == .settled ? .blue : .teal).disabled(hasDraft)
         case .read:
-            Button(conversation.unread ? "Read" : "Unread",
-                   systemImage: conversation.unread ? "envelope.open" : "envelope.badge") {
-                act { store.markRead(conversation.id, unread: !conversation.unread) }
-            }.tint(.blue)
+            if conversation.workflow != .settled {
+                Button(conversation.unread ? "Read" : "Unread",
+                       systemImage: conversation.unread ? "envelope.open" : "envelope.badge") {
+                    act { store.markRead(conversation.id, unread: !conversation.unread) }
+                }.tint(.blue)
+            }
         case .snooze:
             Button("Snooze", systemImage: "clock") { snoozing = conversation }.tint(.orange).disabled(hasDraft)
         case .pin:
@@ -418,9 +437,11 @@ struct BulkSelectionToolbar: ToolbarContent {
                 Button("Snooze", systemImage: "clock", action: snooze).disabled(count == 0 || hasDrafts)
                 Spacer()
                 Menu {
-                    Button(hasUnread ? "Mark read" : "Mark unread",
-                           systemImage: hasUnread ? "envelope.open" : "envelope.badge") {
-                        apply(.read(unread: !hasUnread))
+                    if status != .settled {
+                        Button(hasUnread ? "Mark read" : "Mark unread",
+                               systemImage: hasUnread ? "envelope.open" : "envelope.badge") {
+                            apply(.read(unread: !hasUnread))
+                        }
                     }
                     if status == .snoozed {
                         Button("Restore to Inbox", systemImage: "tray") { apply(.move(.inbox)) }
@@ -465,5 +486,32 @@ struct ConversationRow: View {
         }.padding(.vertical, 1)
         .accessibilityElement(children: .combine)
         .accessibilityValue(conversation.unread ? "Unread" : "Read")
+    }
+}
+
+// Cancel row activation only for horizontal drags with no available swipe action.
+private struct EmptySwipeGuard: UIGestureRecognizerRepresentable {
+    let left: Bool
+    let right: Bool
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let recognizer = UIPanGestureRecognizer()
+        recognizer.delegate = context.coordinator
+        return recognizer
+    }
+    func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        context.coordinator.left = left
+        context.coordinator.right = right
+    }
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var left = false
+        var right = false
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            guard abs(velocity.x) > abs(velocity.y) else { return false }
+            return velocity.x > 0 ? right : left
+        }
     }
 }

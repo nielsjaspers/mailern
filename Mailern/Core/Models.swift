@@ -51,6 +51,7 @@ struct Conversation: Codable, Identifiable, Equatable {
     var account: MailAccount { MailAccount.demo.first(where: { $0.id == accountID }) ?? MailAccount.demo[0] }
 
     mutating func move(to status: Workflow, until: Date? = nil) {
+        if status == .settled { unread = false }
         workflow = status
         snoozedUntil = status == .snoozed ? until : nil
     }
