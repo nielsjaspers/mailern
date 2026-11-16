@@ -53,7 +53,10 @@ struct ThreadView: View {
         }
         .toolbar(.hidden, for: .tabBar)
         .onAppear { store.markRead(id) }
-        .sheet(item: $mode) { ComposerView(mode: $0).modifier(ComposerTransition(source: "reply", namespace: composeTransition)) }
+        .sheet(item: $mode) { mode in
+            if case .draft = mode { ComposerView(mode: mode) }
+            else { ComposerView(mode: mode).modifier(ComposerTransition(source: "reply", namespace: composeTransition)) }
+        }
         .modifier(DraftStorageAlert(active: mode == nil))
         .sheet(isPresented: $snooze) { SnoozeView(ids: [id], onSnooze: { dismiss() }) }
     }

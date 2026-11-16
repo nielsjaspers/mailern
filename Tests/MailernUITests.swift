@@ -3,6 +3,33 @@ import UIKit
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testComposerSelectionHandleDragKeepsEditing() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        let body = app.textViews["Message body"]
+        body.tap()
+        body.typeText("Select this text.\nExtend the selection here.\nKeep this final line.")
+        body.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.075)).doubleTap()
+        capture("Native selection handles before dragging", in: app)
+        let handle = body.otherElements["com.apple.text.grabber.trailing"]
+        XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        let grabber = handle.children(matching: .other).element(boundBy: 1)
+        let initialY = grabber.frame.midY
+        let knob = grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        knob.press(forDuration: 0.05, thenDragTo: knob.withOffset(CGVector(dx: 80, dy: 72)))
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        XCTAssertTrue(handle.exists)
+        capture("Native selection extended to the next line", in: app)
+        XCTAssertGreaterThan(grabber.frame.midY, initialY + 10)
+        body.typeText("Replacement ")
+        XCTAssertTrue((body.value as? String ?? "").hasPrefix("Replacement "))
+        app.buttons["Cancel"].tap()
+        app.buttons["Delete Draft"].tap()
+    }
+
+    @MainActor
     func testAttachmentMenuDismissalKeepsEditorUsable() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -54,6 +81,7 @@ final class MailernUITests: XCTestCase {
             XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
             dismissKeyboardByDragging()
         }
+        capture("Keyboard hidden with content intact", in: app)
     }
 
     @MainActor
@@ -78,9 +106,11 @@ final class MailernUITests: XCTestCase {
         capture("After - standalone draft reader", in: app)
         app.buttons["Edit draft"].tap()
         XCTAssertEqual(app.textViews["Message body"].value as? String, "An unfinished new message")
+        app.textViews["Message body"].tap()
         app.textViews["Message body"].typeText(" with an edit")
         app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
         XCTAssertTrue(app.buttons["Discard draft"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "with an edit")).firstMatch.waitForExistence(timeout: 5))
         app.buttons["Discard draft"].tap()
         XCTAssertTrue(app.buttons["Compose"].waitForExistence(timeout: 5))
         XCTAssertFalse(row(subject, in: app).exists)
@@ -125,6 +155,11 @@ final class MailernUITests: XCTestCase {
         XCTAssertFalse(row(subject, in: app).exists)
         select("Inbox", in: app)
         XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
+        peek(subject, in: app)
+        XCTAssertTrue(preview(in: app).staticTexts["Inbox"].waitForExistence(timeout: 5))
+        XCTAssertFalse(preview(in: app).staticTexts["Settled"].exists)
+        capture("Reply draft Peek uses Inbox status", in: app)
+        app.buttons["Dismiss peek"].coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.98)).tap()
         row(subject, in: app).tap()
         app.buttons["Edit draft"].tap()
         XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").hasPrefix("Reply draft send proof"))

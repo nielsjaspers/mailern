@@ -14,6 +14,8 @@ struct ConversationPeekView: View {
     @State private var dragOrigin: CGFloat?
     @AccessibilityFocusState private var previewFocused: Bool
 
+    private var hasDraft: Bool { drafts.drafts.contains { $0.mode.replyID == conversation.id } }
+
     var body: some View {
         GeometryReader { geometry in
             let width = min(geometry.size.width - 32, 440)
@@ -36,7 +38,7 @@ struct ConversationPeekView: View {
                 .accessibilitySortPriority(-1)
 
                 VStack(alignment: .leading, spacing: 16) {
-                    ConversationContent(conversation: conversation, isPreview: true)
+                    ConversationContent(conversation: conversation, isPreview: true, hasDraft: hasDraft)
                         .frame(height: previewHeight)
                         .clipShape(RoundedRectangle(cornerRadius: 26))
                         .overlay {
@@ -60,7 +62,7 @@ struct ConversationPeekView: View {
 
                     PeekToolsView(
                         conversation: conversation,
-                        hasDraft: drafts.drafts.contains { $0.mode.replyID == conversation.id },
+                        hasDraft: hasDraft,
                         offset: max(0, position - travel),
                         onResize: { translation in
                             if dragOrigin == nil { dragOrigin = position }

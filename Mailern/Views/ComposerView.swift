@@ -18,6 +18,7 @@ struct ComposerView: View {
     @State private var autosave: Task<Void, Never>?
     @State private var subjectFocused = false
     @State private var expanded = false
+    @GestureState private var draggingContent = false
     @State private var filePicker = false
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
@@ -91,6 +92,15 @@ struct ComposerView: View {
             .disabled(completed || finishing)
             .scrollDismissesKeyboard(.immediately)
             .scrollBounceBehavior(.always)
+            // A body drag must dismiss editing without also dismissing the sheet.
+            .simultaneousGesture(DragGesture(minimumDistance: 10).updating($draggingContent) { value, state, _ in
+                state = abs(value.translation.height) > abs(value.translation.width)
+            }.onChanged { value in
+                guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                focus = nil
+                subjectFocused = false
+                editor.view?.window?.endEditing(true)
+            })
             .background(Color(uiColor: .systemBackground))
             .navigationTitle(title).navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -106,7 +116,7 @@ struct ComposerView: View {
         .writingToolsBehavior(.disabled)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .interactiveDismissDisabled(importing || finishing || savesInFlight > 0 || (!completed && dirty && savedInput != input))
+        .interactiveDismissDisabled(draggingContent || importing || finishing || savesInFlight > 0 || (!completed && dirty && savedInput != input))
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear(perform: load)
         .onChange(of: input) { _, value in

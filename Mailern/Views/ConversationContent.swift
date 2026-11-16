@@ -3,10 +3,12 @@ import SwiftUI
 struct ConversationContent: View {
     let conversation: Conversation
     var isPreview = false
+    var hasDraft = false
     var drafts: [ComposerDraft] = []
     var editDraft: (UUID) -> Void = { _ in }
     var discardDraft: (UUID) -> Void = { _ in }
     var deletingDraft = false
+    private var workflow: Workflow { hasDraft || !drafts.isEmpty ? .inbox : conversation.workflow }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -15,13 +17,13 @@ struct ConversationContent: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(conversation.subject).font(.title2.bold()).textSelection(.enabled)
                         HStack {
-                            Label(drafts.isEmpty ? conversation.workflow.title : "Inbox", systemImage: drafts.isEmpty ? conversation.workflow.symbol : "tray")
+                            Label(workflow.title, systemImage: workflow.symbol)
                             Text("· \(conversation.account.name)")
                             if conversation.messages.count > 1 {
                                 Text("· \(conversation.messages.count) messages")
                             }
                         }.font(.caption).foregroundStyle(.secondary)
-                        if drafts.isEmpty, let date = conversation.snoozedUntil {
+                        if workflow == .snoozed, let date = conversation.snoozedUntil {
                             Label(
                                 "Returns \(date.formatted(date: .abbreviated, time: .shortened))",
                                 systemImage: "clock"
