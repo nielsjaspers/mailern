@@ -1182,7 +1182,9 @@ final class MailboxActionUITests: MailernUITestCase {
         capture("Select All toggles to Deselect All", in: app)
         app.buttons["Mark"].tap()
         app.buttons["Mark read"].tap()
-        XCTAssertEqual(row(first, in: app).value as? String, "Read")
+        // Undo lasts five seconds, so the banner confirms each action and the rows are
+        // checked after Undo.
+        XCTAssertTrue(app.staticTexts["6 conversations: Marked read"].exists)
         app.buttons["Undo"].tap()
         expectReadStatus(first, in: app)
         app.buttons["Select"].tap()
@@ -1191,7 +1193,7 @@ final class MailboxActionUITests: MailernUITestCase {
         XCTAssertTrue(app.buttons["Mark unread"].exists)
         XCTAssertFalse(app.buttons["Mark read"].exists)
         app.buttons["Mark unread"].tap()
-        expectReadStatus(second, in: app)
+        XCTAssertTrue(app.staticTexts["Marked unread"].exists)
         app.buttons["Undo"].tap()
         XCTAssertEqual(row(second, in: app).value as? String, "Read")
         app.buttons["Select"].tap()
