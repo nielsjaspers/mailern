@@ -3,6 +3,94 @@ import UIKit
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testFilterToggleStaysAnchoredOnRepeatedChanges() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let filter = app.buttons["Filter"]
+        XCTAssertTrue(filter.waitForExistence(timeout: 5))
+        if filter.value as? String != "Off" { filter.tap() }
+        let center = filter.frame.midX
+        for _ in 0..<3 {
+            filter.tap()
+            let summary = app.buttons["Filter options"]
+            XCTAssertTrue(summary.waitForExistence(timeout: 3))
+            XCTAssertEqual(filter.frame.midX, center, accuracy: 1,
+                           "The top-right toggle must stay under the user's finger")
+            XCTAssertLessThanOrEqual(summary.frame.maxX, filter.frame.minX,
+                                     "Criteria must expand to the left of the toggle")
+            filter.tap()
+            XCTAssertFalse(summary.exists)
+            XCTAssertEqual(filter.frame.midX, center, accuracy: 1)
+        }
+    }
+
+    @MainActor
+    func testMailFilterBarLayoutAndSearch() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        openFilterOptions(in: app)
+        app.buttons["Reset filters"].tap()
+        app.buttons["Done"].tap()
+        resetDemo(in: app)
+        let filter = app.buttons["Filter"]
+        filter.tap()
+        capture("Filter enabled - connected toolbar capsule", in: app)
+        let summary = app.buttons["Filter options"]
+        XCTAssertGreaterThan(summary.frame.width, 70,
+                             "The active filter must show its criteria beside the toggle")
+        XCTAssertEqual(summary.value as? String, "Unread")
+        XCTAssertLessThan(abs(summary.frame.midY - filter.frame.midY), 10)
+        XCTAssertLessThan(filter.frame.minX - summary.frame.maxX, 20)
+        for title in ["Inbox", "Snoozed", "Settled"] {
+            XCTAssertTrue(app.tabBars.buttons[title].exists)
+        }
+        XCTAssertTrue(app.buttons["Select"].isHittable)
+        XCTAssertTrue(app.buttons["Compose"].isHittable)
+        filter.tap()
+        XCTAssertFalse(summary.exists)
+        XCTAssertEqual(filter.value as? String, "Off")
+        capture("Filter off - compact toggle", in: app)
+        let search = app.searchFields.firstMatch
+        if !search.isHittable { app.swipeDown() }
+        search.tap()
+        search.typeText("Dinner")
+        XCTAssertTrue(row("Dinner on Saturday?", in: app).exists)
+        XCTAssertFalse(row("Course project feedback", in: app).exists)
+        app.buttons["Close"].tap()
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        let bottomCompose = app.switches["Compose at bottom right"]
+        let previousBottomCompose = bottomCompose.value as? String == "1"
+        bottomCompose.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        app.buttons["Done"].tap()
+        filter.tap()
+        XCTAssertTrue(summary.isHittable)
+        XCTAssertTrue(app.buttons["Compose"].isHittable)
+        capture("Connected filter with alternate compose placement", in: app)
+        openFilterOptions(in: app)
+        app.buttons["filter-read-all"].tap()
+        app.buttons["filter-account-university"].tap()
+        app.switches["Only drafts"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        app.buttons["Done"].tap()
+        XCTAssertEqual(summary.value as? String, "Drafts, 3 accounts")
+        XCTAssertTrue(summary.isHittable)
+        capture("Long filter criteria", in: app)
+        openFilterOptions(in: app)
+        app.buttons["Reset filters"].tap()
+        app.buttons["Done"].tap()
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        XCTAssertEqual(bottomCompose.value as? String == "1", !previousBottomCompose)
+        bottomCompose.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        app.buttons["Done"].tap()
+    }
+
+    @MainActor
     func testSnoozeExpiryKeepsComposerSwipeDismissal() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -50,13 +138,13 @@ final class MailernUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars.buttons["Inbox"].waitForExistence(timeout: 5))
         app.navigationBars.buttons["Inbox"].tap()
         XCTAssertFalse(row("A little less, but better", in: app).exists)
-        app.buttons["Filter options"].tap()
+        openFilterOptions(in: app)
         capture("After - native filter sheet", in: app)
         app.buttons["filter-read-read"].tap()
         app.buttons["Done"].tap()
         XCTAssertTrue(row("Dinner on Saturday?", in: app).exists)
         XCTAssertFalse(row("Course project feedback", in: app).exists)
-        app.buttons["Filter options"].tap()
+        openFilterOptions(in: app)
         app.buttons["filter-read-all"].tap()
         for id in ["icloud", "gmail", "proton"] { app.buttons["filter-account-\(id)"].tap() }
         app.buttons["Done"].tap()
@@ -64,14 +152,15 @@ final class MailernUITests: XCTestCase {
         XCTAssertFalse(row("Dinner on Saturday?", in: app).exists)
         capture("After - University account filter", in: app)
         app.terminate(); app.launch()
-        XCTAssertTrue(app.staticTexts["Filtered by University"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Filter options"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["Filter options"].value as? String, "University")
         XCTAssertFalse(row("Dinner on Saturday?", in: app).exists)
         app.buttons["Select"].tap(); app.buttons["Select All"].tap()
         XCTAssertTrue(app.staticTexts["2 selected"].exists)
         app.buttons["Cancel"].tap()
         select("Snoozed", in: app)
         XCTAssertTrue(row("Tickets go on sale next week", in: app).exists)
-        app.buttons["Filter options"].tap()
+        openFilterOptions(in: app)
         XCTAssertTrue(app.switches["Only drafts"].exists)
         app.buttons["Done"].tap()
         select("Inbox", in: app)
@@ -79,7 +168,7 @@ final class MailernUITests: XCTestCase {
         row("Dinner on Saturday?", in: app).tap()
         app.buttons["Settle"].tap()
         select("Settled", in: app)
-        app.buttons["Filter options"].tap()
+        openFilterOptions(in: app)
         XCTAssertTrue(app.switches["Only sent"].exists)
         XCTAssertFalse(app.buttons["filter-read-unread"].exists)
         app.switches["Only sent"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
@@ -87,7 +176,7 @@ final class MailernUITests: XCTestCase {
         app.buttons["Done"].tap()
         XCTAssertTrue(row("Dinner on Saturday?", in: app).exists)
         XCTAssertFalse(row("The photos from our trip", in: app).exists)
-        app.buttons["Filter options"].tap()
+        openFilterOptions(in: app)
         app.buttons["filter-account-icloud"].tap()
         app.buttons["Done"].tap()
         XCTAssertTrue(app.staticTexts["No matching mail"].exists)
@@ -125,7 +214,7 @@ final class MailernUITests: XCTestCase {
         XCTAssertFalse(row(subject, in: app).exists)
         select("Snoozed", in: app)
         XCTAssertTrue(row(subject, in: app).label.contains("Pinned"))
-        app.buttons["Filter options"].tap()
+        openFilterOptions(in: app)
         app.buttons["filter-read-all"].tap()
         app.switches["Only drafts"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
         XCTAssertEqual(app.switches["Only drafts"].value as? String, "1")
@@ -1550,10 +1639,16 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
+    private func openFilterOptions(in app: XCUIApplication) {
+        if !app.buttons["Filter options"].exists { app.buttons["Filter"].tap() }
+        app.buttons["Filter options"].tap()
+    }
+
+    @MainActor
     private func resetMailboxFilters(in app: XCUIApplication) {
         for status in ["Inbox", "Snoozed", "Settled"] {
             select(status, in: app)
-            app.buttons["Filter options"].tap()
+            openFilterOptions(in: app)
             app.buttons["Reset filters"].tap()
             app.buttons["Done"].tap()
         }

@@ -205,36 +205,40 @@ struct MailboxView: View {
                 } label: { Label("More", systemImage: "ellipsis.circle") }
             }
         }
-        ToolbarItem(placement: .topBarTrailing) {
-            Button(selecting ? "Cancel" : "Select") {
-                if selecting { endSelection() }
-                else { peeking = nil; pull.cancel(); selecting = true }
-            }
-        }
         if #available(iOS 26, *), !selecting {
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
-        }
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            if !selecting {
-                let filter = filters[status]
-                Button { withAnimation { filterBinding(status).wrappedValue.enabled.toggle() } } label: {
-                    Label("Filter", systemImage: filter.enabled
-                          ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-                }
-                .accessibilityValue(filter.enabled ? filter.summary(for: status) : "Off")
-                .accessibilityAddTraits(filter.enabled ? .isSelected : [])
-                Button { filtering = status } label: {
-                    Image(systemName: "chevron.down")
-                }
-                .accessibilityLabel("Filter options")
-                .accessibilityValue(filter.summary(for: status))
+            ToolbarItem(placement: .topBarTrailing) {
+                MailboxFilterToolbar(filter: filters[status], status: status,
+                                     select: { peeking = nil; pull.cancel(); selecting = true },
+                                     toggle: { toggleFilter(status) }, options: { filtering = status })
             }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(selecting ? "Cancel" : "Select") {
+                    if selecting { endSelection() }
+                    else { peeking = nil; pull.cancel(); selecting = true }
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                if !selecting {
+                    MailboxFilterControl(filter: filters[status], status: status,
+                                         toggle: { toggleFilter(status) }, options: { filtering = status })
+                }
+            }
+        }
+        if #available(iOS 26, *), !bottomCompose && !selecting {
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
         }
         ToolbarItem(placement: .topBarTrailing) {
             if !bottomCompose && !selecting {
                 Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
                     .modifier(ComposerSource(source: "compose-\(status.rawValue)", namespace: composeTransition))
             }
+        }
+    }
+    private func toggleFilter(_ status: Workflow) {
+        withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
+            filterBinding(status).wrappedValue.enabled.toggle()
         }
     }
     private var composerSourceID: String {
@@ -353,10 +357,6 @@ struct MailboxView: View {
                             Text(unreadCount > 0 ? "\(unreadCount) unread" : "All read").textCase(nil)
                         } else {
                             Text(items.count == 1 ? "1 item" : "\(items.count) items").textCase(nil)
-                        }
-                        if !selecting && filters[status].enabled {
-                            Text("Filtered by \(filters[status].summary(for: status))").textCase(nil)
-                                .font(.caption).padding(.top, 4)
                         }
                         Color.clear.frame(height: 0)
                     }
