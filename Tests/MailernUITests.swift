@@ -3,6 +3,35 @@ import UIKit
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testComposerDragDismissesKeyboardAndKeepsContent() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let body = app.textViews["Message body"]
+        func dismissKeyboardByDragging() {
+            let start = body.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 70)))
+            waitForAbsence(app.keyboards.firstMatch)
+            XCTAssertTrue(app.buttons["Send"].exists)
+        }
+        dismissKeyboardByDragging()
+        for (label, text) in [("To", "recipient@example.com"), ("Subject", "Drag check"), ("Message body", "Keep this body")] {
+            let field = app.descendants(matching: .any).matching(identifier: label).firstMatch
+            field.tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+            field.typeText(text)
+            dismissKeyboardByDragging()
+            XCTAssertEqual(field.value as? String, text)
+            field.tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+            dismissKeyboardByDragging()
+        }
+    }
+
+    @MainActor
     func testThreadActionsReplaceMailboxTabs() {
         continueAfterFailure = false
         let app = XCUIApplication()
