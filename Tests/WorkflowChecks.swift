@@ -2,6 +2,7 @@ import Foundation
 
 @main struct WorkflowChecks {
     @MainActor static func main() async throws {
+        try await checkUndoExpiry()
         try mailboxLoadFailurePreservesStoredMail()
         try await checkComposerData()
         try await checkDraftWriteOrdering()
@@ -62,6 +63,27 @@ import Foundation
         assert(store.list(.inbox)[0].pinned)
         assert(store.error == nil)
         print("PASS: settled mail is read, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
+    }
+
+    @MainActor static func checkUndoExpiry() async throws {
+        let disk = JSONPersistence(url: URL.temporaryDirectory.appending(path: "mailern-undo-\(UUID())/demo.json"))
+        let store = MailStore(persistence: disk)
+        let ids = store.list(.inbox).prefix(2).map(\.id)
+        store.move(ids[0], to: .settled)
+        assert(store.notice != nil)
+        try await Task.sleep(for: .seconds(3))
+        assert(store.notice != nil, "Undo must remain available before five seconds")
+        store.move(ids[1], to: .settled)
+        try await Task.sleep(for: .seconds(2.5))
+        assert(store.notice != nil, "A repeated action must get a fresh five-second window")
+        try await Task.sleep(for: .seconds(3))
+        assert(store.notice == nil, "Undo notice must expire after five seconds")
+        store.undo()
+        assert(ids.allSatisfy { store.conversation($0)!.workflow == .settled }, "Expired Undo must not change mail")
+        store.move(ids[0], to: .inbox)
+        store.undo()
+        assert(store.notice == nil && store.conversation(ids[0])!.workflow == .settled)
+        print("PASS: five-second Undo expiry, repeated action resets timer, Undo before and after expiry")
     }
 
     @MainActor static func checkSettledRead() throws {
