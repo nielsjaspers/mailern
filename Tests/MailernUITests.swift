@@ -32,6 +32,89 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
+    func testInboxDraftPreviewEditAndDiscard() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        let subject = "Inbox draft proof"
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].waitForExistence(timeout: 5))
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(subject)
+        app.textViews["Message body"].tap(); app.textViews["Message body"].typeText("An unfinished new message")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        XCTAssertTrue(row(subject, in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
+        capture("After - new draft in Inbox", in: app)
+        app.terminate(); app.launch()
+        row(subject, in: app).tap()
+        XCTAssertTrue(app.buttons["Edit draft"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.textViews["Message body"].exists)
+        capture("After - standalone draft reader", in: app)
+        app.buttons["Edit draft"].tap()
+        XCTAssertEqual(app.textViews["Message body"].value as? String, "An unfinished new message")
+        app.textViews["Message body"].typeText(" with an edit")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        XCTAssertTrue(app.buttons["Discard draft"].waitForExistence(timeout: 5))
+        app.buttons["Discard draft"].tap()
+        XCTAssertTrue(app.buttons["Compose"].waitForExistence(timeout: 5))
+        XCTAssertFalse(row(subject, in: app).exists)
+
+        let source = "Course project feedback"
+        row(source, in: app).tap()
+        app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
+        XCTAssertTrue(app.navigationBars["Re: \(source)"].waitForExistence(timeout: 5))
+        app.textViews["Message body"].typeText("An unfinished reply\n")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        XCTAssertTrue(app.buttons["Edit draft"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Edit draft"].isHittable)
+        capture("After - reply draft at bottom of thread", in: app)
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertTrue(row(source, in: app).label.contains("Draft"))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", source)).count, 1)
+        capture("After - reply draft attached to Inbox row", in: app)
+        row(source, in: app).tap()
+        XCTAssertTrue(app.buttons["Edit draft"].waitForExistence(timeout: 5))
+        app.buttons["Discard draft"].tap()
+        waitForAbsence(app.buttons["Edit draft"])
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertFalse(row(source, in: app).label.contains("Draft"))
+    }
+
+    @MainActor
+    func testSettledReplyDraftReturnsToInboxAndSends() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        let subject = "Course project feedback"
+        row(subject, in: app).tap(); app.buttons["Settle"].tap()
+        select("Settled", in: app)
+        row(subject, in: app).tap()
+        app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        app.textViews["Message body"].typeText("Reply draft send proof\n")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        app.navigationBars.buttons["Settled"].tap()
+        XCTAssertFalse(app.buttons["Undo"].exists)
+        XCTAssertFalse(row(subject, in: app).exists)
+        select("Inbox", in: app)
+        XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
+        row(subject, in: app).tap()
+        app.buttons["Edit draft"].tap()
+        XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").hasPrefix("Reply draft send proof"))
+        app.buttons["Send"].tap()
+        waitForAbsence(app.navigationBars["Re: \(subject)"])
+        XCTAssertFalse(app.buttons["Edit draft"].exists)
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertFalse(row(subject, in: app).exists)
+        select("Settled", in: app)
+        XCTAssertTrue(row(subject, in: app).exists)
+        XCTAssertFalse(row(subject, in: app).label.contains("Draft"))
+        capture("After - sent reply in Settled", in: app)
+    }
+
+    @MainActor
     func testThreadActionsReplaceMailboxTabs() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -193,8 +276,7 @@ final class MailernUITests: XCTestCase {
             app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(original)
             capture("Native subject field", in: app)
             app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
-            app.buttons["More"].tap(); app.buttons["Drafts"].tap()
-            app.buttons.matching(NSPredicate(format: "label CONTAINS %@", original)).firstMatch.tap()
+            openDraft(original, in: app)
             XCTAssertTrue(app.navigationBars[original].waitForExistence(timeout: 5))
             let subject = app.textFields["Subject"]
             subject.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
@@ -216,12 +298,11 @@ final class MailernUITests: XCTestCase {
                 app.terminate()
                 app.launchEnvironment = [:]
                 app.launch()
-                app.buttons["More"].tap(); app.buttons["Drafts"].tap()
-                app.buttons.matching(NSPredicate(format: "label CONTAINS %@", original + " changed")).firstMatch.tap()
+                openDraft(original + " changed", in: app)
                 XCTAssertTrue(app.navigationBars[original + " changed"].waitForExistence(timeout: 5))
             } else {
                 waitForAbsence(app.navigationBars[original])
-                app.buttons.matching(NSPredicate(format: "label CONTAINS %@", original)).firstMatch.tap()
+                app.buttons["Edit draft"].tap()
                 XCTAssertTrue(app.navigationBars[original].waitForExistence(timeout: 5))
                 XCTAssertEqual(app.textFields["Subject"].value as? String, original)
             }
@@ -255,8 +336,7 @@ final class MailernUITests: XCTestCase {
         app.terminate()
         app.launchEnvironment = [:]
         app.launch()
-        app.buttons["More"].tap(); app.buttons["Drafts"].tap()
-        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", subject)).firstMatch.tap()
+        openDraft(subject, in: app)
         XCTAssertTrue(app.navigationBars[subject].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
     }
@@ -295,8 +375,7 @@ final class MailernUITests: XCTestCase {
         app.textViews["Message body"].tap(); app.textViews["Message body"].typeText("Keep these new edits")
         blockedSwipe(title: "Unsaved failure proof")
         app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
-        app.buttons["More"].tap(); app.buttons["Drafts"].tap()
-        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", subject)).firstMatch.tap()
+        openDraft(subject, in: app)
         XCTAssertTrue(app.navigationBars[subject].waitForExistence(timeout: 5))
         app.textViews["Message body"].tap()
         app.textViews["Message body"].typeText("Changed ")
@@ -304,8 +383,7 @@ final class MailernUITests: XCTestCase {
         app.terminate()
         app.launchEnvironment = [:]
         app.launch()
-        app.buttons["More"].tap(); app.buttons["Drafts"].tap()
-        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", subject)).firstMatch.tap()
+        openDraft(subject, in: app)
         XCTAssertTrue(app.navigationBars[subject].waitForExistence(timeout: 5))
         XCTAssertEqual(app.textViews["Message body"].value as? String, "Original text")
         app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
@@ -418,14 +496,11 @@ final class MailernUITests: XCTestCase {
         app.buttons["Save Draft"].tap()
         app.terminate()
         app.launch()
-        app.buttons["More"].tap()
-        app.buttons["Drafts"].tap()
-        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Composer proof")).firstMatch.tap()
+        openDraft("Composer proof", in: app)
         XCTAssertTrue(app.navigationBars["Composer proof"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.textViews["Message body"].value as? String, "Hello formatted world")
         app.buttons["Send"].tap()
         waitForAbsence(app.navigationBars["Composer proof"])
-        app.buttons["Done"].tap()
         select("Settled", in: app)
         XCTAssertTrue(row("Composer proof", in: app).exists)
         row("Composer proof", in: app).tap()
@@ -487,15 +562,12 @@ final class MailernUITests: XCTestCase {
         XCTAssertTrue(grabber.exists)
         grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)), withVelocity: .slow, thenHoldForDuration: 0.1)
         waitForAbsence(app.navigationBars["Swipe draft proof"])
-        app.buttons["More"].tap()
-        app.buttons["Drafts"].tap()
-        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Swipe draft proof")).firstMatch.tap()
+        openDraft("Swipe draft proof", in: app)
         XCTAssertTrue(app.navigationBars["Swipe draft proof"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
         app.buttons["Delete Draft"].tap()
         waitForAbsence(app.navigationBars["Swipe draft proof"])
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Swipe draft proof")).firstMatch.exists)
-        app.buttons["Done"].tap()
         app.buttons["More"].tap()
         app.buttons["Settings"].tap()
         bottom.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
@@ -1104,6 +1176,14 @@ final class MailernUITests: XCTestCase {
         let confirmations = app.buttons.matching(identifier: "Reset Demo Data")
         confirmations.element(boundBy: confirmations.count - 1).tap()
         XCTAssertTrue(row("Course project feedback", in: app).waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    private func openDraft(_ subject: String, in app: XCUIApplication) {
+        select("Inbox", in: app)
+        row(subject, in: app).tap()
+        XCTAssertTrue(app.buttons["Edit draft"].waitForExistence(timeout: 5))
+        app.buttons["Edit draft"].tap()
     }
 
     @MainActor

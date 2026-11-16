@@ -216,11 +216,13 @@ struct ComposerView: View {
                 return
             }
             draft = saved
+        } else if let replyID = mode.replyID, let existing = drafts.drafts.first(where: { $0.mode.replyID == replyID }) {
+            draft = existing
         } else {
             draft = ComposerDraft.make(mode: mode, conversation: mode.sourceID.flatMap(store.conversation))
         }
         let text = NSMutableAttributedString(attributedString: RichText.decode(draft.richText, fallback: draft.text))
-        if draft.richText == nil, let sourceID = draft.mode.sourceID, let source = store.conversation(sourceID), text.length > 2 {
+        if !saved, draft.richText == nil, let sourceID = draft.mode.sourceID, let source = store.conversation(sourceID), text.length > 2 {
             // Retain the original formatting inside the editable reply or forward quote.
             let original = source.latest.body as NSString
             let bodyRange = NSRange(location: text.length - original.length, length: original.length)
@@ -297,7 +299,7 @@ struct ComposerView: View {
             editor.view?.resignFirstResponder()
             if !(await drafts.delete(draft.id)) {
                 drafts.error = nil
-                error = "Message saved, but the draft could not be removed. You can retry deleting it from Drafts."
+                error = "Message saved, but the draft could not be removed. You can discard it from its Inbox thread."
                 return
             }
             UINotificationFeedbackGenerator().notificationOccurred(.success)

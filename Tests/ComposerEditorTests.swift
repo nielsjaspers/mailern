@@ -4,6 +4,43 @@ import SwiftUI
 @testable import Mailern
 
 @MainActor final class ComposerEditorTests: XCTestCase {
+    func testReplyActionsResumePlainSavedDraftAfterIncomingMail() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "reply-draft-resume-\(UUID())")
+        let store = MailStore(persistence: JSONPersistence(url: directory.appending(path: "mail.json")))
+        let drafts = DraftStore(url: directory.appending(path: "drafts.json"))
+        let source = try XCTUnwrap(store.list(.inbox).first)
+        var draft = ComposerDraft.make(mode: .replyAll(source.id), conversation: source)
+        draft.text = "My saved text"
+        draft.richText = nil
+        store.receiveReply(source.id)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        func editor(in view: UIView) -> UITextView? {
+            if let text = view as? UITextView, text.accessibilityLabel == "Message body" { return text }
+            return view.subviews.lazy.compactMap { editor(in: $0) }.first
+        }
+        for mode in [ComposeMode.reply(source.id), .replyAll(source.id), .draft(draft.id)] {
+            let saved = await drafts.save(draft)
+            XCTAssertTrue(saved)
+            let window = UIWindow(windowScene: scene)
+            let host = UIHostingController(rootView: ComposerView(mode: mode).environment(store).environment(drafts))
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            defer { host.view.endEditing(true); window.isHidden = true }
+            try await Task.sleep(for: .milliseconds(500))
+            let text = try XCTUnwrap(editor(in: host.view))
+            XCTAssertEqual(text.text, "My saved text")
+            text.insertText("Saved edit ")
+            let expected = text.text
+            for _ in 0..<100 {
+                if drafts.drafts.first?.text == expected { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertEqual(drafts.drafts.count, 1)
+            XCTAssertEqual(drafts.drafts.first?.id, draft.id)
+            XCTAssertEqual(drafts.drafts.first?.text, expected)
+        }
+    }
+
     func testDraftRecoverySurvivesErrorDismissal() async throws {
         let directory = URL.temporaryDirectory.appending(path: "draft-recovery-\(UUID())")
         let url = directory.appending(path: "drafts.json")
@@ -17,7 +54,9 @@ import SwiftUI
         XCTAssertTrue(drafts.needsReload)
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)
-        let host = UIHostingController(rootView: DraftsView().environment(drafts))
+        let host = UIHostingController(rootView: MailboxView().environment(drafts)
+            .environment(MailStore(persistence: JSONPersistence(url: directory.appending(path: "mail.json"))))
+            .environment(SnoozePreferences()))
         window.rootViewController = host
         window.makeKeyAndVisible()
         defer { window.isHidden = true }
@@ -33,7 +72,7 @@ import SwiftUI
         XCTAssertEqual(drafts.drafts, [original])
         try await Task.sleep(for: .milliseconds(300))
         let recovered = XCTAttachment(image: renderer.image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) })
-        recovered.name = "Recovered draft list"
+        recovered.name = "Recovered Inbox draft"
         recovered.lifetime = .keepAlways
         add(recovered)
     }

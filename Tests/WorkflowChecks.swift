@@ -5,6 +5,7 @@ import Foundation
         try mailboxLoadFailurePreservesStoredMail()
         try await checkComposerData()
         try await checkDraftWriteOrdering()
+        try await checkInboxDrafts()
         try await checkAttachmentStorage()
         try checkBulkActions()
         checkDeliberatePull()
@@ -60,6 +61,61 @@ import Foundation
         assert(store.list(.inbox)[0].pinned)
         assert(store.error == nil)
         print("PASS: read/workflow independence, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
+    }
+
+    @MainActor static func checkInboxDrafts() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-inbox-drafts-\(UUID())")
+        let disk = JSONPersistence(url: directory.appending(path: "mail.json"))
+        let mail = MailStore(persistence: disk)
+        let draftsURL = directory.appending(path: "drafts.json")
+        let drafts = DraftStore(url: draftsURL)
+        let source = mail.list(.inbox).first { !$0.pinned }!
+        mail.move(source.id, to: .snoozed, until: .now.addingTimeInterval(3600))
+        var reply = ComposerDraft.make(mode: .replyAll(source.id), conversation: source)
+        reply.text = "Unsent reply search proof"
+        reply.updatedAt = .now.addingTimeInterval(10)
+        let new = ComposerDraft(to: "new@example.com", subject: "Standalone draft", text: "New message")
+        let forward = ComposerDraft.make(mode: .forward(source.id), conversation: source)
+        let orphan = ComposerDraft(mode: .reply(UUID()), subject: "Missing source")
+        for draft in [reply, new, forward, orphan] { let saved = await drafts.save(draft); assert(saved) }
+        func items(_ status: Workflow, search: String = "") -> [MailboxItem] {
+            MailboxItem.list(conversations: mail.conversations, drafts: DraftStore(url: draftsURL).drafts, status: status, search: search)
+        }
+        let inbox = items(.inbox)
+        let attached = inbox.first { $0.id == source.id }!
+        assert(attached.drafts == [reply] && attached.conversation?.messages == source.messages)
+        assert(inbox.filter { $0.id == source.id }.count == 1)
+        assert(!inbox.contains { $0.id == reply.id })
+        assert([new, forward, orphan].allSatisfy { draft in inbox.contains { $0.id == draft.id && $0.conversation == nil } })
+        assert(!items(.snoozed).contains { $0.id == source.id })
+        assert(items(.inbox, search: "Unsent reply search proof").map(\.id) == [source.id])
+        assert(items(.inbox, search: "new@example.com").map(\.id) == [new.id])
+        let deleted = await drafts.delete(reply.id)
+        assert(deleted && items(.snoozed).contains { $0.id == source.id })
+        mail.move(source.id, to: .settled)
+        let saved = await drafts.save(reply)
+        mail.clearWorkflowUndo(involving: Set(drafts.drafts.compactMap { $0.mode.replyID }))
+        assert(mail.notice == nil)
+        mail.undo()
+        assert(mail.conversation(source.id)!.workflow == .settled)
+        mail.apply(ids: [source.id], action: .pin(true))
+        mail.clearWorkflowUndo(involving: [source.id])
+        mail.undo()
+        assert(!mail.conversation(source.id)!.pinned)
+        mail.apply(ids: [source.id], action: .read(unread: false))
+        mail.clearWorkflowUndo(involving: [source.id])
+        mail.undo()
+        assert(mail.conversation(source.id)!.unread == source.unread)
+        assert(saved && items(.inbox).contains { $0.id == source.id } && !items(.settled).contains { $0.id == source.id })
+        assert(mail.send(threadID: source.id, account: source.account, to: [reply.to], cc: [], subject: reply.subject, body: reply.text))
+        let sent = await drafts.delete(reply.id)
+        assert(sent && !items(.inbox).contains { $0.id == source.id } && items(.settled).contains { $0.id == source.id && !$0.hasDraft })
+        assert(mail.send(threadID: nil, account: new.account, to: [new.to], cc: [], subject: new.subject, body: new.text))
+        let newSent = await drafts.delete(new.id)
+        assert(newSent && !items(.inbox).contains { $0.id == new.id })
+        assert(items(.settled).contains { $0.conversation?.subject == new.subject && !$0.hasDraft })
+        assert(MailStore(persistence: disk).conversations == mail.conversations)
+        print("PASS: persisted Inbox drafts, attached replies, standalone new/forward/orphan drafts, draft search, discard restores prior section, and sent drafts settle")
     }
 
     @MainActor static func mailboxLoadFailurePreservesStoredMail() throws {

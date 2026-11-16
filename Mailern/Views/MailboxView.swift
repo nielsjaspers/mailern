@@ -6,7 +6,7 @@ struct MailboxView: View {
     @State private var search = ""
     @AppStorage("inboxUnreadFirst") private var unreadFirst = false
     @Namespace private var composeTransition
-    @State private var showDrafts = false
+    @Environment(DraftStore.self) private var drafts
     @State private var selecting = false
     @State private var selectedIDs: Set<UUID> = []
     @State private var bulkSnooze = false
@@ -72,6 +72,10 @@ struct MailboxView: View {
         .animation(.easeOut(duration: reduceMotion ? 0 : 0.18), value: peeking)
         .onChange(of: selection) { _, _ in peeking = nil; searching = false; endSelection() }
         .onChange(of: search) { _, _ in pruneSelection() }
+        .onChange(of: drafts.drafts) { _, saved in
+            store.clearWorkflowUndo(involving: Set(saved.compactMap { $0.mode.replyID }))
+            pruneSelection()
+        }
         .onChange(of: store.conversations) { _, conversations in
             pruneSelection()
             if let id = peeking, !conversations.contains(where: { $0.id == id && $0.workflow == selection }) {
@@ -81,7 +85,7 @@ struct MailboxView: View {
         .sheet(item: $composer) {
             ComposerView(mode: $0).modifier(ComposerTransition(source: composerSourceID, namespace: composeTransition))
         }
-        .sheet(isPresented: $showDrafts) { DraftsView() }
+        .modifier(DraftStorageAlert(active: composer == nil && paths[selection, default: []].isEmpty))
         .sheet(isPresented: $settings) {
             NavigationStack { SettingsView(pullAction: $pullAction, bottomCompose: $bottomCompose) }
         }
@@ -116,7 +120,7 @@ struct MailboxView: View {
                     Tab(status.title, systemImage: status.symbol, value: MailboxTab.workflow(status)) {
                         section(status)
                     }
-                    .badge(status == .inbox ? store.list(.inbox).filter(\.unread).count : 0)
+                    .badge(status == .inbox ? items(.inbox, search: "").filter(\.unread).count : 0)
                 }
                 if bottomCompose {
                     Tab(value: MailboxTab.compose, role: .prominent) {
@@ -134,7 +138,7 @@ struct MailboxView: View {
                     section(status)
                         .tabItem { Label(status.title, systemImage: status.symbol) }
                         .tag(status)
-                        .badge(status == .inbox ? store.list(.inbox).filter(\.unread).count : 0)
+                        .badge(status == .inbox ? items(.inbox, search: "").filter(\.unread).count : 0)
                 }
             }
         }
@@ -163,18 +167,22 @@ struct MailboxView: View {
                 }
                 .toolbar {
                     BulkSelectionToolbar(active: selecting, status: status, count: selectedIDs.count,
+                                         hasDrafts: drafts.drafts.contains { $0.mode.replyID.map(selectedIDs.contains) ?? false },
                                          hasUnread: selectedConversations.contains { $0.unread },
                                          allPinned: !selectedIDs.isEmpty && selectedConversations.allSatisfy { $0.pinned },
                                          apply: applySelection, snooze: { bulkSnooze = true })
                 }
                 .toolbar(selecting || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
-                .navigationDestination(for: UUID.self) { ThreadView(id: $0) }
+                .navigationDestination(for: UUID.self) { id in
+                    if store.conversation(id) != nil { ThreadView(id: id) }
+                    else { DraftThreadView(id: id) }
+                }
         }
     }
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             if selecting {
-                let visibleIDs = Set(store.list(status, search: search).map(\.id))
+                let visibleIDs = Set(items(status).filter { $0.conversation != nil }.map(\.id))
                 let allSelected = !visibleIDs.isEmpty && visibleIDs.isSubset(of: selectedIDs)
                 Button(allSelected ? "Deselect All" : "Select All") {
                     selectedIDs = allSelected ? [] : visibleIDs
@@ -183,7 +191,7 @@ struct MailboxView: View {
             } else {
                 Menu {
                     Button("Demo", systemImage: "play.circle") { demo = true }
-                    Button("Drafts", systemImage: "doc") { showDrafts = true }
+                    if drafts.needsReload { Button("Retry loading drafts", systemImage: "arrow.clockwise") { Task { await drafts.reload() } } }
                     Button("Settings", systemImage: "gearshape") { settings = true }
                     if store.needsReload { Button("Retry loading mail", systemImage: "arrow.clockwise") { store.reload() } }
                 } label: { Label("More", systemImage: "ellipsis.circle") }
@@ -237,7 +245,7 @@ struct MailboxView: View {
         }
     }
     @ViewBuilder private func mailbox(_ status: Workflow) -> some View {
-        let items = store.list(status, search: search, unreadFirst: unreadFirst)
+        let items = items(status)
         if items.isEmpty {
             if status == .inbox && pullAction != .off && search.isEmpty && !selecting {
                 ScrollView {
@@ -259,29 +267,38 @@ struct MailboxView: View {
         } else {
             List(selection: selecting ? $selectedIDs : nil) {
                 Section {
-                    ForEach(items) { conversation in
-                        NavigationLink(value: conversation.id) { ConversationRow(conversation: conversation) }
-                            .tag(conversation.id)
-                            .listRowInsets(EdgeInsets(top: 15, leading: 18, bottom: 15, trailing: 16))
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                swipeButtons(primary: leftPrimary, secondary: leftSecondary, conversation: conversation)
-                            }
-                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                swipeButtons(primary: rightPrimary, secondary: rightSecondary, conversation: conversation)
-                            }
-                            // Without a swipe action, NavigationLink can treat a horizontal drag as a tap.
-                            .simultaneousGesture(
-                                DragGesture(minimumDistance: 10).onChanged { _ in },
-                                including: leftPrimary == .none || rightPrimary == .none ? .all : .none
-                            )
-                            .simultaneousGesture(
-                                LongPressGesture().onEnded { _ in
-                                    guard !selecting else { return }
-                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                    peeking = conversation.id
+                    ForEach(items) { item in
+                        if let conversation = item.conversation {
+                            NavigationLink(value: conversation.id) { ConversationRow(conversation: conversation, hasDraft: item.hasDraft) }
+                                .listRowBackground(item.hasDraft ? Color.orange.opacity(0.07) : Color.clear)
+                                .tag(conversation.id)
+                                .listRowInsets(EdgeInsets(top: 15, leading: 18, bottom: 15, trailing: 16))
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    swipeButtons(primary: leftPrimary, secondary: leftSecondary, conversation: conversation, hasDraft: item.hasDraft)
                                 }
-                            )
-                            .accessibilityAction(named: "Peek") { if !selecting { peeking = conversation.id } }
+                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                    swipeButtons(primary: rightPrimary, secondary: rightSecondary, conversation: conversation, hasDraft: item.hasDraft)
+                                }
+                                // Without a swipe action, NavigationLink can treat a horizontal drag as a tap.
+                                .simultaneousGesture(
+                                    DragGesture(minimumDistance: 10).onChanged { _ in },
+                                    including: leftPrimary == .none || rightPrimary == .none ? .all : .none
+                                )
+                                .simultaneousGesture(
+                                    LongPressGesture().onEnded { _ in
+                                        guard !selecting else { return }
+                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                        peeking = conversation.id
+                                    }
+                                )
+                                .accessibilityAction(named: "Peek") { if !selecting { peeking = conversation.id } }
+                        } else if let draft = item.drafts.first {
+                            NavigationLink(value: draft.id) { DraftRow(draft: draft) }
+                                .selectionDisabled()
+                                .disabled(selecting)
+                                .listRowInsets(EdgeInsets(top: 15, leading: 18, bottom: 15, trailing: 16))
+                                .listRowBackground(Color.orange.opacity(0.07))
+                        }
                     }
                 } header: {
                     VStack(alignment: .leading, spacing: 0) {
@@ -308,30 +325,30 @@ struct MailboxView: View {
         }
     }
     @ViewBuilder private func swipeButtons(
-        primary: MailboxSwipeAction, secondary: MailboxSwipeAction, conversation: Conversation
+        primary: MailboxSwipeAction, secondary: MailboxSwipeAction, conversation: Conversation, hasDraft: Bool
     ) -> some View {
         if primary != .none && !selecting {
-            swipeButton(primary, conversation: conversation)
+            swipeButton(primary, conversation: conversation, hasDraft: hasDraft)
             if secondary != .none && secondary != primary {
-                swipeButton(secondary, conversation: conversation)
+                swipeButton(secondary, conversation: conversation, hasDraft: hasDraft)
             }
         }
     }
 
-    @ViewBuilder private func swipeButton(_ action: MailboxSwipeAction, conversation: Conversation) -> some View {
+    @ViewBuilder private func swipeButton(_ action: MailboxSwipeAction, conversation: Conversation, hasDraft: Bool) -> some View {
         switch action {
         case .workflow:
             Button(conversation.workflow == .settled ? "Restore" : "Settle",
                    systemImage: conversation.workflow == .settled ? "tray" : "checkmark") {
                 act { store.move(conversation.id, to: conversation.workflow == .settled ? .inbox : .settled) }
-            }.tint(conversation.workflow == .settled ? .blue : .teal)
+            }.tint(conversation.workflow == .settled ? .blue : .teal).disabled(hasDraft)
         case .read:
             Button(conversation.unread ? "Read" : "Unread",
                    systemImage: conversation.unread ? "envelope.open" : "envelope.badge") {
                 act { store.markRead(conversation.id, unread: !conversation.unread) }
             }.tint(.blue)
         case .snooze:
-            Button("Snooze", systemImage: "clock") { snoozing = conversation }.tint(.orange)
+            Button("Snooze", systemImage: "clock") { snoozing = conversation }.tint(.orange).disabled(hasDraft)
         case .pin:
             Button(conversation.pinned ? "Unpin" : "Pin",
                    systemImage: conversation.pinned ? "pin.slash" : "pin") {
@@ -342,12 +359,15 @@ struct MailboxView: View {
         }
     }
 
+    private func items(_ status: Workflow, search: String? = nil) -> [MailboxItem] {
+        MailboxItem.list(conversations: store.conversations, drafts: drafts.drafts, status: status, search: search ?? self.search, unreadFirst: unreadFirst)
+    }
     private var selectedConversations: [Conversation] {
         store.conversations.filter { selectedIDs.contains($0.id) }
     }
     private func endSelection() { selecting = false; selectedIDs = [] }
     private func pruneSelection() {
-        selectedIDs.formIntersection(store.list(selection, search: search).map(\.id))
+        selectedIDs.formIntersection(items(selection).filter { $0.conversation != nil }.map(\.id))
     }
     private func applySelection(_ action: ConversationAction) {
         let ids = selectedIDs
@@ -382,6 +402,7 @@ struct BulkSelectionToolbar: ToolbarContent {
     let active: Bool
     let status: Workflow
     let count: Int
+    var hasDrafts = false
     let hasUnread: Bool
     let allPinned: Bool
     let apply: (ConversationAction) -> Void
@@ -392,9 +413,9 @@ struct BulkSelectionToolbar: ToolbarContent {
             ToolbarItemGroup(placement: .bottomBar) {
                 Button(status == .settled ? "Restore" : "Settle", systemImage: status == .settled ? "tray" : "checkmark") {
                     apply(.move(status == .settled ? .inbox : .settled))
-                }.disabled(count == 0)
+                }.disabled(count == 0 || hasDrafts)
                 Spacer()
-                Button("Snooze", systemImage: "clock", action: snooze).disabled(count == 0)
+                Button("Snooze", systemImage: "clock", action: snooze).disabled(count == 0 || hasDrafts)
                 Spacer()
                 Menu {
                     Button(hasUnread ? "Mark read" : "Mark unread",
@@ -416,11 +437,13 @@ struct BulkSelectionToolbar: ToolbarContent {
 
 struct ConversationRow: View {
     let conversation: Conversation
+    var hasDraft = false
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Circle().fill(conversation.unread ? Color.teal : .clear).frame(width: 7, height: 7).padding(.top, 7)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline) {
+                    if hasDraft { Image(systemName: "square.and.pencil").foregroundStyle(.orange).accessibilityLabel("Draft") }
                     Text(conversation.correspondent.sender).font(.subheadline).fontWeight(conversation.unread ? .bold : .medium).lineLimit(1)
                     if conversation.messages.count > 1 {
                         Text("\(conversation.messages.count)").font(.caption2).foregroundStyle(.secondary)
@@ -433,7 +456,7 @@ struct ConversationRow: View {
                 HStack(spacing: 6) {
                     Text(conversation.account.name).font(.caption2).foregroundStyle(.secondary)
                     if conversation.pinned { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.orange).accessibilityLabel("Pinned") }
-                    if let date = conversation.snoozedUntil {
+                    if !hasDraft, let date = conversation.snoozedUntil {
                         Image(systemName: "clock").font(.caption2)
                         Text(date, format: .dateTime.weekday(.abbreviated).hour().minute()).font(.caption2)
                     }
