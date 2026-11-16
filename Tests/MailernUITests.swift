@@ -3,6 +3,31 @@ import UIKit
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testAllReadStatusKeepsRowsInPlace() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        app.buttons["Select"].tap()
+        app.buttons["Select All"].tap()
+        app.buttons["Mark"].tap()
+        app.buttons["Mark read"].tap()
+        XCTAssertTrue(app.staticTexts["All read"].waitForExistence(timeout: 5))
+        let subject = "Course project feedback"
+        let before = row(subject, in: app).frame.minY
+        capture("All read keeps the status row", in: app)
+        peek(subject, in: app)
+        app.buttons["Mark unread"].tap()
+        XCTAssertTrue(app.staticTexts["1 unread"].waitForExistence(timeout: 5))
+        XCTAssertEqual(row(subject, in: app).frame.minY, before, accuracy: 2)
+        peek(subject, in: app)
+        app.buttons["Mark read"].tap()
+        XCTAssertTrue(app.staticTexts["All read"].waitForExistence(timeout: 5))
+        XCTAssertEqual(row(subject, in: app).frame.minY, before, accuracy: 2)
+        capture("Last unread toggle preserves row position", in: app)
+    }
+
+    @MainActor
     func testFormattingKeepsSelectionAbovePanel() {
         continueAfterFailure = false
         let app = XCUIApplication()

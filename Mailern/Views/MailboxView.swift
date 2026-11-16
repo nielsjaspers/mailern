@@ -289,7 +289,7 @@ struct MailboxView: View {
                             Text("\(selectedIDs.count) selected").textCase(nil)
                         } else if status == .inbox {
                             let unreadCount = items.filter(\.unread).count
-                            if unreadCount > 0 { Text("\(unreadCount) unread").textCase(nil) }
+                            Text(unreadCount > 0 ? "\(unreadCount) unread" : "All read").textCase(nil)
                         } else {
                             Text("\(items.count) conversations").textCase(nil)
                         }
