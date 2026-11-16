@@ -609,19 +609,28 @@ final class MailernUITests: XCTestCase {
         XCTAssertTrue(caseyReplies.element(boundBy: 1).waitForExistence(timeout: 5))
         XCTAssertEqual(caseyReplies.count, 2)
 
-        // The thread is now longer than the screen. A new message scrolls into view, and
-        // reopening the thread lands on the latest message.
-        let newest = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera")).element(boundBy: 4)
-        app.buttons["More actions"].tap()
-        app.buttons["Simulate incoming reply"].tap()
-        XCTAssertTrue(newest.waitForExistence(timeout: 5))
+        // Grow the thread until its folded headers alone fill the screen, so the latest
+        // message is on screen only if the reader scrolled to it.
+        let headers = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera"))
+        for index in 4...13 {
+            if index == 13 { app.swipeDown(); app.swipeDown() }
+            app.buttons["More actions"].tap()
+            app.buttons["Simulate incoming reply"].tap()
+            XCTAssertTrue(headers.element(boundBy: index).waitForExistence(timeout: 5))
+        }
+        let newest = headers.element(boundBy: 13)
+        XCTAssertGreaterThan(newest.frame.minY - headers.element(boundBy: 0).frame.minY, app.frame.height)
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: newest)
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
+        XCTAssertTrue(caseyReplies.element(boundBy: caseyReplies.count - 1).isHittable)
         capture("Long thread after an incoming reply", in: app)
         app.navigationBars.buttons["Inbox"].tap()
         row(subject, in: app).tap()
         XCTAssertTrue(newest.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(newest.frame.minY - headers.element(boundBy: 0).frame.minY, app.frame.height)
         XCTAssertTrue(newest.isHittable)
+        XCTAssertEqual(caseyReplies.count, 1)
+        XCTAssertTrue(caseyReplies.firstMatch.isHittable)
         capture("Long thread opens on the latest message", in: app)
     }
 

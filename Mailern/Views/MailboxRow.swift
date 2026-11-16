@@ -88,7 +88,7 @@ struct MailboxRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(snippet).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 4)
-                    Text(account).font(.caption2).foregroundStyle(.tertiary).fixedSize()
+                    Text(account).font(.caption2).foregroundStyle(.secondary).fixedSize()
                 }
             }
         }

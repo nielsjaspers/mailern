@@ -57,8 +57,10 @@ struct Conversation: Codable, Identifiable, Equatable {
     /// Everyone who wrote in the thread, in order of first appearance. Sent-only threads show their recipients.
     var participants: String {
         guard messages.contains(where: { !$0.outgoing }) else { return "To: \(latest.to.joined(separator: ", "))" }
+        // The address identifies a sender. Two people can share a display name.
         var seen = Set<String>()
-        return messages.map { $0.outgoing ? "Me" : $0.sender }.filter { seen.insert($0).inserted }.joined(separator: ", ")
+        return messages.filter { seen.insert($0.outgoing ? "" : $0.address.lowercased()).inserted }
+            .map { $0.outgoing ? "Me" : $0.sender }.joined(separator: ", ")
     }
     var avatarName: String {
         messages.contains(where: { !$0.outgoing }) ? correspondent.sender : latest.to.first ?? latest.sender
