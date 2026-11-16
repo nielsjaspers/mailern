@@ -205,22 +205,25 @@ struct MailboxView: View {
                 } label: { Label("More", systemImage: "ellipsis.circle") }
             }
         }
-        ToolbarItem(placement: .topBarTrailing) {
-            Button(selecting ? "Cancel" : "Select") {
-                if selecting { endSelection() }
-                else { peeking = nil; pull.cancel(); selecting = true }
-            }
-        }
         if #available(iOS 26, *), !selecting {
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-            if !selecting {
-                MailboxFilterControl(filter: filters[status], status: status,
-                                     toggle: { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                                         filterBinding(status).wrappedValue.enabled.toggle()
-                                     } },
-                                     options: { filtering = status })
+            ToolbarItem(placement: .topBarTrailing) {
+                MailboxFilterToolbar(filter: filters[status], status: status,
+                                     select: { peeking = nil; pull.cancel(); selecting = true },
+                                     toggle: { toggleFilter(status) }, options: { filtering = status })
+            }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(selecting ? "Cancel" : "Select") {
+                    if selecting { endSelection() }
+                    else { peeking = nil; pull.cancel(); selecting = true }
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                if !selecting {
+                    MailboxFilterControl(filter: filters[status], status: status,
+                                         toggle: { toggleFilter(status) }, options: { filtering = status })
+                }
             }
         }
         if #available(iOS 26, *), !bottomCompose && !selecting {
@@ -231,6 +234,11 @@ struct MailboxView: View {
                 Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
                     .modifier(ComposerSource(source: "compose-\(status.rawValue)", namespace: composeTransition))
             }
+        }
+    }
+    private func toggleFilter(_ status: Workflow) {
+        withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
+            filterBinding(status).wrappedValue.enabled.toggle()
         }
     }
     private var composerSourceID: String {

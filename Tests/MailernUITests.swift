@@ -3,6 +3,29 @@ import UIKit
 
 final class MailernUITests: XCTestCase {
     @MainActor
+    func testFilterToggleStaysAnchoredOnRepeatedChanges() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let filter = app.buttons["Filter"]
+        XCTAssertTrue(filter.waitForExistence(timeout: 5))
+        if filter.value as? String != "Off" { filter.tap() }
+        let center = filter.frame.midX
+        for _ in 0..<3 {
+            filter.tap()
+            let summary = app.buttons["Filter options"]
+            XCTAssertTrue(summary.waitForExistence(timeout: 3))
+            XCTAssertEqual(filter.frame.midX, center, accuracy: 1,
+                           "The top-right toggle must stay under the user's finger")
+            XCTAssertLessThanOrEqual(summary.frame.maxX, filter.frame.minX,
+                                     "Criteria must expand to the left of the toggle")
+            filter.tap()
+            XCTAssertFalse(summary.exists)
+            XCTAssertEqual(filter.frame.midX, center, accuracy: 1)
+        }
+    }
+
+    @MainActor
     func testMailFilterBarLayoutAndSearch() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -19,7 +42,7 @@ final class MailernUITests: XCTestCase {
                              "The active filter must show its criteria beside the toggle")
         XCTAssertEqual(summary.value as? String, "Unread")
         XCTAssertLessThan(abs(summary.frame.midY - filter.frame.midY), 10)
-        XCTAssertLessThan(summary.frame.minX - filter.frame.maxX, 20)
+        XCTAssertLessThan(filter.frame.minX - summary.frame.maxX, 20)
         for title in ["Inbox", "Snoozed", "Settled"] {
             XCTAssertTrue(app.tabBars.buttons[title].exists)
         }
