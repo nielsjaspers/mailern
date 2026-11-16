@@ -1,5 +1,54 @@
 import SwiftUI
 
+struct MailboxFilterControl: View {
+    let filter: MailboxFilter
+    let status: Workflow
+    let toggle: () -> Void
+    let options: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: toggle) {
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(filter.enabled ? Color.white : Color.primary)
+                    .frame(width: 40, height: 40)
+                    .background { if filter.enabled { Circle().fill(.tint) } }
+                    .padding(2)
+                    .contentShape(Circle())
+            }
+            .accessibilityLabel("Filter")
+            .accessibilityValue(filter.enabled ? filter.summary(for: status) : "Off")
+            .accessibilityAddTraits(filter.enabled ? .isSelected : [])
+
+            if filter.enabled {
+                Button(action: options) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Filtered by")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        HStack(spacing: 3) {
+                            Text(filter.summary(for: status)).lineLimit(1)
+                            Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.tint)
+                    }
+                    .frame(maxWidth: 120, alignment: .leading)
+                    .padding(.trailing, 8)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Filter options")
+                .accessibilityValue(filter.summary(for: status))
+            }
+        }
+        .buttonStyle(.plain)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
 struct MailboxFilterView: View {
     let status: Workflow
     @Binding var filter: MailboxFilter

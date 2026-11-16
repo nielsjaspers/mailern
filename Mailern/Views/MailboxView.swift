@@ -214,21 +214,17 @@ struct MailboxView: View {
         if #available(iOS 26, *), !selecting {
             ToolbarSpacer(.fixed, placement: .topBarTrailing)
         }
-        ToolbarItemGroup(placement: .topBarTrailing) {
+        ToolbarItem(placement: .topBarTrailing) {
             if !selecting {
-                let filter = filters[status]
-                Button { withAnimation { filterBinding(status).wrappedValue.enabled.toggle() } } label: {
-                    Label("Filter", systemImage: filter.enabled
-                          ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-                }
-                .accessibilityValue(filter.enabled ? filter.summary(for: status) : "Off")
-                .accessibilityAddTraits(filter.enabled ? .isSelected : [])
-                Button { filtering = status } label: {
-                    Image(systemName: "chevron.down")
-                }
-                .accessibilityLabel("Filter options")
-                .accessibilityValue(filter.summary(for: status))
+                MailboxFilterControl(filter: filters[status], status: status,
+                                     toggle: { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                                         filterBinding(status).wrappedValue.enabled.toggle()
+                                     } },
+                                     options: { filtering = status })
             }
+        }
+        if #available(iOS 26, *), !bottomCompose && !selecting {
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
         }
         ToolbarItem(placement: .topBarTrailing) {
             if !bottomCompose && !selecting {
@@ -353,10 +349,6 @@ struct MailboxView: View {
                             Text(unreadCount > 0 ? "\(unreadCount) unread" : "All read").textCase(nil)
                         } else {
                             Text(items.count == 1 ? "1 item" : "\(items.count) items").textCase(nil)
-                        }
-                        if !selecting && filters[status].enabled {
-                            Text("Filtered by \(filters[status].summary(for: status))").textCase(nil)
-                                .font(.caption).padding(.top, 4)
                         }
                         Color.clear.frame(height: 0)
                     }

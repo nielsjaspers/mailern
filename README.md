@@ -6,7 +6,7 @@ Open `Mailern.xcodeproj`, select the Mailern scheme and your device, then choose
 
 ## Try the workflow
 
-- Each mailbox has a Filter button and a neighboring arrow that opens Filters. The button toggles filtering without clearing its settings. Choose any combination of accounts, All/Unread/Read in Inbox and Snoozed, Only drafts in Inbox and Snoozed, or Only sent in Settled. Conditions combine with AND; selected accounts combine with OR. Sent matches conversations containing an outgoing message. Settings persist separately for each mailbox. Search and Select All use the filtered results; the Inbox badge still counts all unread conversations. Inbox keeps pinned items first, Snoozed orders by return time, and Settled keeps newest first.
+- Each mailbox has a Filter toggle in the top toolbar. When active, it expands into a shared capsule with “Filtered by” and the current criteria. Tap the criteria or its arrow to open Filters. The button toggles filtering without clearing its settings. Choose any combination of accounts, All/Unread/Read in Inbox and Snoozed, Only drafts in Inbox and Snoozed, or Only sent in Settled. Conditions combine with AND; selected accounts combine with OR. Sent matches conversations containing an outgoing message. Settings persist separately for each mailbox. Search and Select All use the filtered results; the Inbox badge still counts all unread conversations. Inbox keeps pinned items first, Snoozed orders by return time, and Settled keeps newest first.
 - Opening a conversation marks it read and keeps it in its current section.
 - Swipe left for Settle or Snooze. In Settled, swipe left to restore.
 - Swipe right for Read/Unread and Pin. A full right swipe toggles read status outside Settled.
@@ -39,6 +39,8 @@ The checked-in Xcode project works directly. After adding source files, regenera
 `scripts/package-demo.sh TEAM_ID` archives and exports a development-signed IPA using an existing Xcode signing account/profile. The iPhone must be registered in that profile and have Developer Mode enabled. A development-signed app expires with its provisioning profile.
 
 `scripts/serve-demo.py HTTPS_BASE_URL` creates an OTA manifest and install page in `build/install`. Serve only that directory over trusted HTTPS, such as a dedicated Tailscale Serve path. Open its page in Safari on the registered iPhone with Tailscale connected. The computer serving the files must remain awake and connected.
+
+Pass an optional output directory as the second argument to prepare a separate install page for a PR build without replacing an existing installation page.
 
 Settings in the More menu includes snooze preferences and Labs. Labs can assign the Inbox pull-down gesture to Search or New email, and move Compose to the bottom while preserving native tabs. iOS 27 uses the system's prominent trailing tab; earlier versions use a native bottom toolbar. Both experiments are off by default and persist locally. Pull actions require iOS 18 or later. Start a pull while the Inbox is stationary at the very top. Pull farther to fill the ring; a soft tap and brief pulse indicate readiness. Move back up to cancel or pull down again to rearm before releasing. Search opens immediately on release. Compose uses the same native transition as its button.
 

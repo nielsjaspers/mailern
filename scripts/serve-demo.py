@@ -10,7 +10,7 @@ from urllib.parse import quote
 base = sys.argv[1].rstrip('/')
 if not base.startswith('https://'):
     raise SystemExit('An HTTPS base URL is required')
-out = Path('build/install')
+out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path('build/install')
 out.mkdir(parents=True, exist_ok=True)
 with open('build/Mailern.xcarchive/Products/Applications/Mailern.app/Info.plist', 'rb') as f:
     info = plistlib.load(f)
