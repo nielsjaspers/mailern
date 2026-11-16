@@ -79,9 +79,6 @@ import SwiftUI
 
     func testBottomComposeDoesNotSelectBlankTab() async throws {
         guard #available(iOS 27, *) else { return }
-        let previous = UserDefaults.standard.object(forKey: "bottomCompose")
-        UserDefaults.standard.set(true, forKey: "bottomCompose")
-        defer { UserDefaults.standard.set(previous, forKey: "bottomCompose") }
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)
         let directory = URL.temporaryDirectory.appending(path: "bottom-compose-\(UUID())")

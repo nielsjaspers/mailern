@@ -15,7 +15,6 @@ enum InboxPullAction: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var pullAction: InboxPullAction
-    @Binding var bottomCompose: Bool
 
     private var supportsPull: Bool {
         if #available(iOS 18, *) { return true }
@@ -35,7 +34,6 @@ struct SettingsView: View {
                 }
                 .disabled(!supportsPull)
                 if !supportsPull { Text("Pull actions require iOS 18 or later.").font(.footnote).foregroundStyle(.secondary) }
-                Toggle("Compose at bottom right", isOn: $bottomCompose)
             }
         }
         .navigationTitle("Settings")
