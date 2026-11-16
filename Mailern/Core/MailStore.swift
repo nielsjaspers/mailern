@@ -33,12 +33,29 @@ final class MailStore {
     private var undoSnapshot: [Conversation] = []
     private var undoAction: ConversationAction?
     private let persistence: any ConversationPersistence
+    private var loadFailure: String?
+    var needsReload: Bool { loadFailure != nil }
 
     init(persistence: any ConversationPersistence = JSONPersistence.local) {
         self.persistence = persistence
-        do { conversations = try persistence.load() ?? DemoData.conversations() }
-        catch { self.error = "Could not load demo data. Reset Demo Data to start again. \(error.localizedDescription)" }
-        wakeDue()
+        reload()
+    }
+    @discardableResult
+    func reload() -> Bool {
+        do {
+            let loaded = try persistence.load() ?? DemoData.conversations()
+            conversations = loaded
+            loadFailure = nil
+            error = nil
+            clearNotice()
+            wakeDue()
+            return true
+        } catch {
+            let message = "Stored mail could not be loaded. Restore access, then retry loading mail. \(error.localizedDescription)"
+            loadFailure = message
+            self.error = message
+            return false
+        }
     }
     func conversation(_ id: UUID) -> Conversation? { conversations.first { $0.id == id } }
     func list(_ status: Workflow, search: String = "", unreadFirst: Bool = false) -> [Conversation] {
@@ -53,8 +70,14 @@ final class MailStore {
         }
     }
     private func save() {
+        guard canWrite() else { return }
         do { try persistence.save(conversations) }
         catch { self.error = "Changes could not be saved. \(error.localizedDescription)" }
+    }
+    private func canWrite() -> Bool {
+        guard let loadFailure else { return true }
+        error = loadFailure
+        return false
     }
     private func update(_ id: UUID, _ action: (inout Conversation) -> Void) {
         guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
@@ -128,6 +151,7 @@ final class MailStore {
         }
     }
     func receiveNew() {
+        guard canWrite() else { return }
         clearNotice()
         conversations.insert(Conversation(accountID: "icloud", subject: "Coffee this week?", messages: [MailMessage(sender: "Riley", address: "riley@example.com", to: [MailAccount.demo[1].address], date: .now, body: "Hi Morgan,\n\nI'll be in town on Thursday. Do you have time for a coffee around 11?\n\nRiley")]), at: 0)
         save()
@@ -135,6 +159,7 @@ final class MailStore {
     @discardableResult
     func send(threadID: UUID?, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
               bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = []) -> Bool {
+        guard canWrite() else { return false }
         if let threadID, conversation(threadID) == nil {
             error = "The original conversation is no longer available. Your draft has not been sent."
             return false
@@ -159,5 +184,14 @@ final class MailStore {
             return false
         }
     }
-    func reset() { clearNotice(); conversations = DemoData.conversations(); save() }
+    func reset() {
+        let replacement = DemoData.conversations()
+        do {
+            try persistence.save(replacement)
+            conversations = replacement
+            loadFailure = nil
+            error = nil
+            clearNotice()
+        } catch { self.error = "Demo data could not be reset. \(error.localizedDescription)" }
+    }
 }

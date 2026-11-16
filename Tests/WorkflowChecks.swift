@@ -2,6 +2,7 @@ import Foundation
 
 @main struct WorkflowChecks {
     @MainActor static func main() async throws {
+        try mailboxLoadFailurePreservesStoredMail()
         try await checkComposerData()
         try await checkDraftWriteOrdering()
         try await checkAttachmentStorage()
@@ -59,6 +60,32 @@ import Foundation
         assert(store.list(.inbox)[0].pinned)
         assert(store.error == nil)
         print("PASS: read/workflow independence, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
+    }
+
+    @MainActor static func mailboxLoadFailurePreservesStoredMail() throws {
+        let directory = URL.temporaryDirectory.appending(path: "mail-load-failure-\(UUID())")
+        let url = directory.appending(path: "mail.json")
+        let file = MailAttachment(name: "Keep.txt", data: Data("Keep this attachment".utf8), contentType: "public.plain-text")
+        var original = DemoData.conversations()
+        original[0].messages[0].attachments = [file]
+        try AttachmentJSON.save(original, to: url)
+        let payload = AttachmentJSON.directory(for: url).appending(path: file.id.uuidString)
+        let withheld = directory.appending(path: "withheld-payload")
+        try FileManager.default.moveItem(at: payload, to: withheld)
+        let bytes = try Data(contentsOf: url)
+        let store = MailStore(persistence: JSONPersistence(url: url))
+        assert(store.error != nil && store.conversations.isEmpty)
+        store.error = nil
+        assert(!store.send(threadID: nil, account: MailAccount.demo[1], to: ["recipient@example.com"], cc: [], subject: "New", body: "New"))
+        store.receiveNew()
+        let retained = try Data(contentsOf: url)
+        assert(store.conversations.isEmpty && retained == bytes)
+        assert(!store.reload())
+        try FileManager.default.moveItem(at: withheld, to: payload)
+        assert(store.reload() && store.conversations == original)
+        assert(store.send(threadID: nil, account: MailAccount.demo[1], to: ["recipient@example.com"], cc: [], subject: "Recovered", body: "Recovered"))
+        assert(Set(original.map(\.id)).isSubset(of: Set(MailStore(persistence: JSONPersistence(url: url)).conversations.map(\.id))))
+        print("PASS: failed mailbox load preserves metadata and attachments despite new-mail actions")
     }
     @MainActor static func checkComposerData() async throws {
         let dir = URL.temporaryDirectory.appending(path: "mailern-composer-\(UUID())")

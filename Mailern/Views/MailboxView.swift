@@ -91,9 +91,10 @@ struct MailboxView: View {
         }
         .sheet(item: $snoozing) { SnoozeView(ids: [$0.id], beforeSnooze: { peeking = nil }) }
         .alert(
-            "Demo storage",
+            "Mail storage",
             isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })
         ) {
+            if store.needsReload { Button("Retry") { store.reload() } }
             Button("OK") { store.error = nil }
         } message: {
             Text(store.error ?? "")
@@ -184,6 +185,7 @@ struct MailboxView: View {
                     Button("Demo", systemImage: "play.circle") { demo = true }
                     Button("Drafts", systemImage: "doc") { showDrafts = true }
                     Button("Settings", systemImage: "gearshape") { settings = true }
+                    if store.needsReload { Button("Retry loading mail", systemImage: "arrow.clockwise") { store.reload() } }
                 } label: { Label("More", systemImage: "ellipsis.circle") }
             }
         }
