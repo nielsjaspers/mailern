@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ConversationPeekView: View {
     @Environment(MailStore.self) private var store
+    @Environment(DraftStore.self) private var drafts
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let conversation: Conversation
     let onDismiss: () -> Void
@@ -59,6 +60,7 @@ struct ConversationPeekView: View {
 
                     PeekToolsView(
                         conversation: conversation,
+                        hasDraft: drafts.drafts.contains { $0.mode.replyID == conversation.id },
                         offset: max(0, position - travel),
                         onResize: { translation in
                             if dragOrigin == nil { dragOrigin = position }

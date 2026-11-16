@@ -135,6 +135,10 @@ final class MailStore {
         clearNotice()
     }
     func clearNotice() { notice = nil; undoSnapshot = []; undoAction = nil }
+    func clearWorkflowUndo(involving ids: Set<UUID>) {
+        guard case .move = undoAction, undoSnapshot.contains(where: { ids.contains($0.id) }) else { return }
+        clearNotice()
+    }
     func wakeDue(now: Date = .now) {
         var changed = false
         for i in conversations.indices where conversations[i].workflow == .snoozed {
