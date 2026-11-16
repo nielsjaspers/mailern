@@ -49,6 +49,8 @@ import UIKit
         textView.reloadInputViews()
         NotificationCenter.default.addObserver(self, selector: #selector(headerBeganEditing),
                                                name: UITextField.textDidBeginEditingNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(headerBeganEditing),
+                                               name: UITextView.textDidBeginEditingNotification, object: nil)
         controller.modalPresentationStyle = .pageSheet
         if let sheet = controller.sheetPresentationController {
             let height = UISheetPresentationController.Detent.Identifier("format")
@@ -105,7 +107,7 @@ import UIKit
     }
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { resume() }
     @objc private func headerBeganEditing(_ notification: Notification) {
-        guard let field = notification.object as? UITextField, let composerView,
+        guard let field = notification.object as? UIView, field !== textView, let composerView,
               field.isDescendant(of: composerView) else { return }
         controller.dismiss(animated: true) { [weak self] in self?.resume(focusBody: false) }
     }

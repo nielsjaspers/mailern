@@ -32,6 +32,12 @@ final class MailernUITests: XCTestCase {
         app.textFields["Subject"].tap()
         waitForAbsence(close)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        body.tap()
+        app.buttons["Format"].tap()
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        app.descendants(matching: .any).matching(identifier: "To").firstMatch.tap()
+        capture("Recipient focus closes Format", in: app)
+        waitForAbsence(close)
         app.buttons["Cancel"].tap()
         app.buttons["Delete Draft"].tap()
     }
