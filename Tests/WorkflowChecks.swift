@@ -148,6 +148,7 @@ import Foundation
         let protected = DraftStore(url: damagedURL)
         assert(protected.error != nil)
         protected.error = nil
+        assert(protected.needsReload)
         let protectedSave = await protected.save(draft)
         let protectedDelete = await protected.delete(draft.id)
         assert(!protectedSave && protectedDelete)

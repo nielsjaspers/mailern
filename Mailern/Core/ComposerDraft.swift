@@ -97,6 +97,7 @@ final class DraftStore {
     private let url: URL
     private let write: @Sendable (Data, URL) throws -> Void
     private var loadFailure: String?
+    var needsReload: Bool { loadFailure != nil }
     @ObservationIgnored private var pending: Task<Bool, Never>?
 
     init(url: URL = URL.applicationSupportDirectory.appending(path: "Mailern/drafts-v1.json"),

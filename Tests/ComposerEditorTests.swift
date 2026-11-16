@@ -4,6 +4,40 @@ import SwiftUI
 @testable import Mailern
 
 @MainActor final class ComposerEditorTests: XCTestCase {
+    func testDraftRecoverySurvivesErrorDismissal() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "draft-recovery-\(UUID())")
+        let url = directory.appending(path: "drafts.json")
+        let original = ComposerDraft(subject: "Recovered draft", text: "Preserved text")
+        let written = await DraftStore(url: url).save(original)
+        XCTAssertTrue(written)
+        let bytes = try Data(contentsOf: url)
+        try Data("Unreadable fixture".utf8).write(to: url, options: .atomic)
+        let drafts = DraftStore(url: url)
+        drafts.error = nil
+        XCTAssertTrue(drafts.needsReload)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let host = UIHostingController(rootView: DraftsView().environment(drafts))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(300))
+        let renderer = UIGraphicsImageRenderer(bounds: window.bounds)
+        let unavailable = XCTAttachment(image: renderer.image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) })
+        unavailable.name = "Persistent Retry after error dismissal"
+        unavailable.lifetime = .keepAlways
+        add(unavailable)
+        try bytes.write(to: url, options: .atomic)
+        await drafts.reload()
+        XCTAssertFalse(drafts.needsReload)
+        XCTAssertEqual(drafts.drafts, [original])
+        try await Task.sleep(for: .milliseconds(300))
+        let recovered = XCTAttachment(image: renderer.image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) })
+        recovered.name = "Recovered draft list"
+        recovered.lifetime = .keepAlways
+        add(recovered)
+    }
+
     func testBottomComposeDoesNotSelectBlankTab() async throws {
         guard #available(iOS 27, *) else { return }
         let previous = UserDefaults.standard.object(forKey: "bottomCompose")

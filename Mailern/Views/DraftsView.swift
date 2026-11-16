@@ -20,7 +20,19 @@ struct DraftsView: View {
                     .swipeActions { Button("Delete", role: .destructive) { Task { await drafts.delete(draft.id) } } }
                 }
             }
-            .overlay { if drafts.drafts.isEmpty { ContentUnavailableView("No drafts", systemImage: "doc") } }
+            .overlay {
+                if drafts.needsReload {
+                    ContentUnavailableView {
+                        Label("Drafts unavailable", systemImage: "doc")
+                    } description: {
+                        Text("Drafts could not be loaded. Retry when storage is available.")
+                    } actions: {
+                        Button("Retry") { Task { await drafts.reload() } }
+                    }
+                } else if drafts.drafts.isEmpty {
+                    ContentUnavailableView("No drafts", systemImage: "doc")
+                }
+            }
             .navigationTitle("Drafts")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
