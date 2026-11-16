@@ -138,6 +138,7 @@ def main():
                 else:
                     pool.append(None)
             missing = [i for i, device in enumerate(pool) if device is None]
+            cold_start = bool(missing) or any(device["udid"] in pool and device["state"] != "Booted" for device in available)
             if missing:
                 print(f"Creating {len(missing)} disposable workers; later runs reuse them", flush=True)
                 run("xcrun", "simctl", "shutdown", simulator)
@@ -196,8 +197,14 @@ def main():
             failures = []
             results = []
             measured = {}
+            # Cold runner startup can stall the native Photos transfer service.
+            if cold_start:
+                print("Running native pickers before cold worker startup", flush=True)
+                result, durations = batch("pickers", simulator, pickers)
+                results.append(result)
+                measured.update(durations)
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers + 1) as executor:
-                futures = {executor.submit(batch, "pickers", simulator, pickers): "pickers"}
+                futures = {} if cold_start else {executor.submit(batch, "pickers", simulator, pickers): "pickers"}
                 futures.update({executor.submit(batch, f"worker-{i + 1}", device, batches[i]): f"worker-{i + 1}" for i, device in enumerate(pool)})
                 for future in concurrent.futures.as_completed(futures):
                     try:

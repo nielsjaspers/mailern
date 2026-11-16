@@ -1806,7 +1806,10 @@ class MailernUITestCase: XCTestCase {
 
     @MainActor
     func dragMenu(_ distance: CGFloat, in app: XCUIApplication) {
-        let start = app.buttons["Reply"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        // Resolve the moving menu once so the gesture endpoint does not follow it.
+        let frame = app.buttons["Reply"].frame
+        let bounds = app.frame
+        let start = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX - bounds.minX, dy: frame.midY - bounds.minY))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: distance)), withVelocity: .fast, thenHoldForDuration: 0.1)
     }
 
