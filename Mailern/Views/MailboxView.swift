@@ -269,7 +269,21 @@ struct MailboxView: View {
                 Section {
                     ForEach(items) { item in
                         if let conversation = item.conversation {
-                            NavigationLink(value: conversation.id) { ConversationRow(conversation: conversation, hasDraft: item.hasDraft) }
+                            Button {
+                                if selecting {
+                                    if selectedIDs.contains(conversation.id) { selectedIDs.remove(conversation.id) }
+                                    else { selectedIDs.insert(conversation.id) }
+                                } else { paths[status, default: []].append(conversation.id) }
+                            } label: {
+                                HStack {
+                                    ConversationRow(conversation: conversation, hasDraft: item.hasDraft)
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                                .buttonStyle(.plain)
                                 .listRowBackground(item.hasDraft ? Color.orange.opacity(0.07) : Color.clear)
                                 .tag(conversation.id)
                                 .listRowInsets(EdgeInsets(top: 15, leading: 18, bottom: 15, trailing: 16))
@@ -279,12 +293,10 @@ struct MailboxView: View {
                                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                                     swipeButtons(primary: rightPrimary, secondary: rightSecondary, conversation: conversation, hasDraft: item.hasDraft)
                                 }
-                                // Without a swipe action, NavigationLink can treat a horizontal drag as a tap.
-                                .simultaneousGesture(
-                                    DragGesture(minimumDistance: 10).onChanged { _ in },
-                                    including: !hasSwipeActions(primary: leftPrimary, secondary: leftSecondary, conversation: conversation)
-                                        || !hasSwipeActions(primary: rightPrimary, secondary: rightSecondary, conversation: conversation) ? .all : .none
-                                )
+                                .gesture(EmptySwipeGuard(
+                                    left: !hasSwipeActions(primary: leftPrimary, secondary: leftSecondary, conversation: conversation),
+                                    right: !hasSwipeActions(primary: rightPrimary, secondary: rightSecondary, conversation: conversation)
+                                ))
                                 .simultaneousGesture(
                                     LongPressGesture().onEnded { _ in
                                         guard !selecting else { return }
@@ -474,5 +486,32 @@ struct ConversationRow: View {
         }.padding(.vertical, 1)
         .accessibilityElement(children: .combine)
         .accessibilityValue(conversation.unread ? "Unread" : "Read")
+    }
+}
+
+// Cancel row activation only for horizontal drags with no available swipe action.
+private struct EmptySwipeGuard: UIGestureRecognizerRepresentable {
+    let left: Bool
+    let right: Bool
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let recognizer = UIPanGestureRecognizer()
+        recognizer.delegate = context.coordinator
+        return recognizer
+    }
+    func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        context.coordinator.left = left
+        context.coordinator.right = right
+    }
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var left = false
+        var right = false
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            guard abs(velocity.x) > abs(velocity.y) else { return false }
+            return velocity.x > 0 ? right : left
+        }
     }
 }
