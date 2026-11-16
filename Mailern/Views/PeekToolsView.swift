@@ -127,7 +127,9 @@ final class PeekToolsSurface: UIView {
             line.bottomAnchor.constraint(equalTo: separator.bottomAnchor, constant: -10)
         ])
         stack.addArrangedSubview(separator)
-        stack.addArrangedSubview(row(.read, conversation.unread ? "Mark read" : "Mark unread", conversation.unread ? "envelope.open" : "envelope.badge"))
+        if conversation.workflow != .settled {
+            stack.addArrangedSubview(row(.read, conversation.unread ? "Mark read" : "Mark unread", conversation.unread ? "envelope.open" : "envelope.badge"))
+        }
         stack.addArrangedSubview(row(.settle, conversation.workflow == .settled ? "Restore to Inbox" : "Settle", conversation.workflow == .settled ? "tray" : "checkmark"))
         stack.addArrangedSubview(row(.snooze, "Snooze", "clock"))
         stack.addArrangedSubview(row(.pin, conversation.pinned ? "Unpin" : "Pin", conversation.pinned ? "pin.slash" : "pin"))

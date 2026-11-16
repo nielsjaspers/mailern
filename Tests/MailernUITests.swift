@@ -635,6 +635,80 @@ final class MailernUITests: XCTestCase {
     }
 
     @MainActor
+    func testSettledReadActions() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        select("Settled", in: app)
+        let subject = "The photos from our trip"
+        peek(subject, in: app)
+        capture("Settled quick peek actions", in: app)
+        let peekHasUnread = app.buttons["Mark unread"].exists
+        app.buttons["Pin"].tap()
+        waitForAbsence(preview(in: app))
+        app.buttons["Select"].tap()
+        row(subject, in: app).tap()
+        app.buttons["Mark"].tap()
+        capture("Settled bulk actions", in: app)
+        let bulkHasUnread = app.buttons["Mark unread"].exists
+        app.buttons["Unpin"].tap()
+        row(subject, in: app).tap()
+        app.buttons["More actions"].tap()
+        capture("Settled thread actions", in: app)
+        let threadHasUnread = app.buttons["Mark unread"].exists
+        XCTAssertFalse(peekHasUnread)
+        XCTAssertFalse(bulkHasUnread)
+        XCTAssertFalse(threadHasUnread)
+        app.buttons["More actions"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        select("Inbox", in: app)
+        let unreadSubject = "Course project feedback"
+        expectUnread(unreadSubject, in: app)
+        peek(unreadSubject, in: app)
+        app.buttons["Settle"].tap()
+        waitForAbsence(preview(in: app))
+        select("Settled", in: app)
+        XCTAssertEqual(row(unreadSubject, in: app).value as? String, "Read")
+        row(unreadSubject, in: app).swipeRight()
+        XCTAssertFalse(app.buttons["Unread"].exists)
+        XCTAssertTrue(app.buttons["Unpin"].exists)
+        app.buttons["Unpin"].tap()
+        app.terminate()
+        app.launch()
+        select("Settled", in: app)
+        XCTAssertEqual(row(unreadSubject, in: app).value as? String, "Read")
+    }
+
+    @MainActor
+    func testSettledReadOnlySwipeDoesNotOpenThread() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        resetDemo(in: app)
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        app.buttons["Swipe actions"].tap()
+        app.buttons["Reset Swipe Actions"].tap()
+        app.buttons["Swipe right-secondary"].tap()
+        app.buttons["None"].tap()
+        app.navigationBars.buttons["Settings"].tap()
+        app.buttons["Done"].tap()
+        select("Settled", in: app)
+        let subject = "The photos from our trip"
+        fullSwipe(row(subject, in: app), right: true)
+        XCTAssertTrue(app.navigationBars["Settled"].exists)
+        XCTAssertEqual(row(subject, in: app).value as? String, "Read")
+        XCTAssertFalse(app.buttons["Unread"].exists)
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        app.buttons["Swipe actions"].tap()
+        app.buttons["Reset Swipe Actions"].tap()
+        app.navigationBars.buttons["Settings"].tap()
+        app.buttons["Done"].tap()
+    }
+
+    @MainActor
     func testBulkSelection() {
         continueAfterFailure = false
         let app = XCUIApplication()

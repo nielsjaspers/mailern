@@ -282,7 +282,8 @@ struct MailboxView: View {
                                 // Without a swipe action, NavigationLink can treat a horizontal drag as a tap.
                                 .simultaneousGesture(
                                     DragGesture(minimumDistance: 10).onChanged { _ in },
-                                    including: leftPrimary == .none || rightPrimary == .none ? .all : .none
+                                    including: !hasSwipeActions(primary: leftPrimary, secondary: leftSecondary, conversation: conversation)
+                                        || !hasSwipeActions(primary: rightPrimary, secondary: rightSecondary, conversation: conversation) ? .all : .none
                                 )
                                 .simultaneousGesture(
                                     LongPressGesture().onEnded { _ in
@@ -324,6 +325,10 @@ struct MailboxView: View {
             .modifier(InboxPullModifier(mode: status == .inbox && !selecting ? pullAction : .off, interaction: pull))
         }
     }
+    private func hasSwipeActions(primary: MailboxSwipeAction, secondary: MailboxSwipeAction, conversation: Conversation) -> Bool {
+        primary != .none && (primary != .read || conversation.workflow != .settled || (secondary != .none && secondary != .read))
+    }
+
     @ViewBuilder private func swipeButtons(
         primary: MailboxSwipeAction, secondary: MailboxSwipeAction, conversation: Conversation, hasDraft: Bool
     ) -> some View {
@@ -343,10 +348,12 @@ struct MailboxView: View {
                 act { store.move(conversation.id, to: conversation.workflow == .settled ? .inbox : .settled) }
             }.tint(conversation.workflow == .settled ? .blue : .teal).disabled(hasDraft)
         case .read:
-            Button(conversation.unread ? "Read" : "Unread",
-                   systemImage: conversation.unread ? "envelope.open" : "envelope.badge") {
-                act { store.markRead(conversation.id, unread: !conversation.unread) }
-            }.tint(.blue)
+            if conversation.workflow != .settled {
+                Button(conversation.unread ? "Read" : "Unread",
+                       systemImage: conversation.unread ? "envelope.open" : "envelope.badge") {
+                    act { store.markRead(conversation.id, unread: !conversation.unread) }
+                }.tint(.blue)
+            }
         case .snooze:
             Button("Snooze", systemImage: "clock") { snoozing = conversation }.tint(.orange).disabled(hasDraft)
         case .pin:
@@ -418,9 +425,11 @@ struct BulkSelectionToolbar: ToolbarContent {
                 Button("Snooze", systemImage: "clock", action: snooze).disabled(count == 0 || hasDrafts)
                 Spacer()
                 Menu {
-                    Button(hasUnread ? "Mark read" : "Mark unread",
-                           systemImage: hasUnread ? "envelope.open" : "envelope.badge") {
-                        apply(.read(unread: !hasUnread))
+                    if status != .settled {
+                        Button(hasUnread ? "Mark read" : "Mark unread",
+                               systemImage: hasUnread ? "envelope.open" : "envelope.badge") {
+                            apply(.read(unread: !hasUnread))
+                        }
                     }
                     if status == .snoozed {
                         Button("Restore to Inbox", systemImage: "tray") { apply(.move(.inbox)) }

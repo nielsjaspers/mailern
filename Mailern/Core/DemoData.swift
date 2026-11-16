@@ -31,6 +31,6 @@ enum DemoData {
                 thread("icloud", "Jamie Chen", "jamie@example.com", "The photos from our trip",
                        "Here are the photos! I finally got around to sorting them.\n\nThanks again for a great weekend. Let's do it again soon.\n\nJamie", minutes: 1440, status: .settled, unread: false),
                 thread("proton", "Bookshop", "orders@bookshop.example", "Your order is confirmed",
-                       "Thank you for your order.\n\n1 × An Example Book\n\nWe'll let you know when your book ships.\n\nOrder #10428", minutes: 2200, status: .settled, unread: true)]
+                       "Thank you for your order.\n\n1 × An Example Book\n\nWe'll let you know when your book ships.\n\nOrder #10428", minutes: 2200, status: .settled, unread: false)]
     }
 }
