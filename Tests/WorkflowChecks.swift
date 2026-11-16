@@ -270,6 +270,10 @@ import Foundation
         assert(reactivated.latest.subject == "Updated project scope")
         assert(ComposerDraft.make(mode: .reply(source.id), conversation: reactivated).subject == "Re: Updated project scope")
         assert(ComposerDraft.make(mode: .forward(source.id), conversation: reactivated).subject == "Fwd: Updated project scope")
+        // An earlier message keeps the subject it was written under.
+        let original = reactivated.messages[0].id
+        assert(ComposerDraft.make(mode: .forward(source.id), conversation: reactivated, message: original).subject == "Fwd: \(source.subject)")
+        assert(ComposerDraft.make(mode: .reply(source.id), conversation: reactivated, message: original).subject == "Re: \(source.subject)")
         let deletedDraft = await drafts.delete(draft.id)
         assert(deletedDraft && DraftStore(url: dir.appending(path: "drafts.json")).drafts.isEmpty)
         let damagedURL = dir.appending(path: "damaged-drafts.json")

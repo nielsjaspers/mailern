@@ -79,8 +79,8 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
         var draft = Self(mode: mode)
         guard let c = conversation else { return draft }
         draft.accountID = c.accountID
-        let subject = c.effectiveSubject
         let target = c.message(message)
+        let subject = c.subject(at: target)
         switch mode {
         case .reply, .replyAll:
             draft.to = target.outgoing ? target.to.joined(separator: ", ") : target.address

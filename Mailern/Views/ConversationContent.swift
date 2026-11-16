@@ -8,10 +8,9 @@ struct ConversationContent: View {
     var editDraft: (UUID) -> Void = { _ in }
     var discardDraft: (UUID) -> Void = { _ in }
     var deletingDraft = false
-    /// Starts a reply or forward that targets one message.
-    var compose: (ComposeMode, UUID) -> Void = { _, _ in }
-    // Only the latest message starts open. This set holds the messages the reader flipped,
-    // so a newly received message opens and the previous one folds away by itself.
+    /// Starts a reply or forward that targets one message. Nil hides the reply controls.
+    var compose: ((ComposeMode, UUID) -> Void)?
+    // Only the latest message starts open. This set holds the messages the reader flipped.
     @State private var toggled: Set<UUID> = []
     private var workflow: Workflow { conversation.workflow }
     private var latest: MailMessage { conversation.latest }
@@ -46,10 +45,9 @@ struct ConversationContent: View {
                 }.padding(isPreview ? 18 : 16)
             }
             .background(Color(uiColor: isPreview ? .secondarySystemGroupedBackground : .systemGroupedBackground))
-            .onAppear {
-                if let id = drafts.last?.id { proxy.scrollTo(id, anchor: .bottom) }
-                else if !isPreview, !earlier.isEmpty { proxy.scrollTo(latest.id, anchor: .top) }
-            }
+            .onAppear { if let id = drafts.last?.id { proxy.scrollTo(id, anchor: .bottom) } }
+            // A new message opens and the one it replaces folds, whatever the reader did to it.
+            .onChange(of: latest.id) { old, _ in toggled.remove(old) }
             .onChange(of: drafts.map(\.id)) { _, ids in if let id = ids.last { proxy.scrollTo(id, anchor: .bottom) } }
         }
     }
@@ -60,12 +58,12 @@ struct ConversationContent: View {
             ForEach(conversation.messages) { message in
                 if message.id != conversation.messages.first?.id { Divider().padding(.leading, 16) }
                 MessageSection(
-                    message: message, threadSubject: conversation.subject,
+                    message: message, conversationID: conversation.id, threadSubject: conversation.subject,
                     expanded: (message.id == latest.id) != toggled.contains(message.id),
                     toggle: earlier.isEmpty ? nil : {
                         withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { _ = toggled.formSymmetricDifference([message.id]) }
                     },
-                    compose: { mode in compose(mode(conversation.id), message.id) }
+                    compose: compose.map { compose in { compose($0, message.id) } }
                 )
                 .padding(.horizontal, 16)
                 .id(message.id)
@@ -81,7 +79,7 @@ struct ConversationContent: View {
             HStack(spacing: 10) {
                 HStack(spacing: -8) {
                     ForEach(earlier.suffix(3)) {
-                        SenderAvatar(name: $0.sender, size: 24).padding(1.5)
+                        SenderAvatar(name: $0.sender, tint: $0.outgoing ? .teal : nil, size: 24).padding(1.5)
                             .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     }
                 }
@@ -90,19 +88,19 @@ struct ConversationContent: View {
             }
         }
         Divider()
-        MessageSection(message: latest, threadSubject: conversation.subject, expanded: true)
+        MessageSection(message: latest, conversationID: conversation.id, threadSubject: conversation.subject, expanded: true)
     }
 }
 
 private struct MessageSection: View {
     let message: MailMessage
+    let conversationID: UUID
     let threadSubject: String
     let expanded: Bool
     /// Nil when the message cannot fold: a single-message thread or a peek.
     var toggle: (() -> Void)?
     /// Nil hides the reply controls.
-    var compose: ((@escaping (UUID) -> ComposeMode) -> Void)?
-    private var actions: Bool { expanded && compose != nil }
+    var compose: ((ComposeMode) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -114,19 +112,7 @@ private struct MessageSection: View {
                 } else { header }
             }
             .overlay(alignment: .bottomTrailing) {
-                if actions, let compose {
-                    HStack(spacing: 8) {
-                        Button { compose(ComposeMode.reply) } label: { Image(systemName: "arrowshape.turn.up.left") }
-                            .accessibilityLabel("Reply to \(message.sender)")
-                        Menu {
-                            Button("Reply", systemImage: "arrowshape.turn.up.left") { compose(ComposeMode.reply) }
-                            Button("Reply All", systemImage: "arrowshape.turn.up.left.2") { compose(ComposeMode.replyAll) }
-                            Button("Forward", systemImage: "arrowshape.turn.up.right") { compose(ComposeMode.forward) }
-                        } label: { Image(systemName: "ellipsis").frame(height: 16) }
-                            .accessibilityLabel("Message actions")
-                    }
-                    .buttonStyle(.bordered).buttonBorderShape(.circle).tint(.secondary)
-                }
+                if expanded { controls }
             }
             if expanded {
                 if let subject = message.subject,
@@ -147,9 +133,28 @@ private struct MessageSection: View {
         .padding(.vertical, 14)
     }
 
+    // The time tells apart two open messages from one sender.
+    @ViewBuilder private var controls: some View {
+        if let compose {
+            let id = conversationID
+            let time = message.date.formatted(date: .omitted, time: .shortened)
+            HStack(spacing: 8) {
+                Button { compose(.reply(id)) } label: { Image(systemName: "arrowshape.turn.up.left") }
+                    .accessibilityLabel("Reply to \(message.sender), \(time)")
+                Menu {
+                    Button("Reply", systemImage: "arrowshape.turn.up.left") { compose(.reply(id)) }
+                    Button("Reply All", systemImage: "arrowshape.turn.up.left.2") { compose(.replyAll(id)) }
+                    Button("Forward", systemImage: "arrowshape.turn.up.right") { compose(.forward(id)) }
+                } label: { Image(systemName: "ellipsis").frame(height: 16) }
+                    .accessibilityLabel("Message actions, \(message.sender), \(time)")
+            }
+            .buttonStyle(.bordered).buttonBorderShape(.circle).tint(.secondary)
+        }
+    }
+
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
-            SenderAvatar(name: message.sender, size: 36)
+            SenderAvatar(name: message.sender, tint: message.outgoing ? .teal : nil, size: 36)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(message.sender).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
@@ -161,13 +166,14 @@ private struct MessageSection: View {
                 if expanded {
                     HStack(alignment: .bottom) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(message.address)
+                            Text(message.address).lineLimit(1)
                             Text("To: \(message.to.joined(separator: ", "))")
                             if !message.cc.isEmpty { Text("Cc: \(message.cc.joined(separator: ", "))") }
-                        }.lineLimit(1)
+                        }
                         Spacer(minLength: 8)
-                        // Reserves the space of the reply controls, which sit outside the fold button.
-                        if actions { Color.clear.frame(width: 80, height: 34) }
+                        // A hidden copy reserves the space of the reply controls at any text size.
+                        // The live controls sit outside the fold button.
+                        controls.hidden().accessibilityHidden(true)
                     }
                 } else {
                     Text(message.body.snippet).font(.footnote).lineLimit(1)

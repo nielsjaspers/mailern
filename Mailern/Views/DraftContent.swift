@@ -4,10 +4,10 @@ struct DraftRow: View {
     let draft: ComposerDraft
     var body: some View {
         MailboxRow(
-            avatar: SenderAvatar(name: draft.to, symbol: "square.and.pencil"),
+            avatar: SenderAvatar(name: draft.to, symbol: "square.and.pencil", tint: .orange, label: "Draft"),
             title: draft.to.isEmpty ? "No recipients" : draft.to, date: draft.updatedAt,
             subject: draft.title, snippet: draft.text.snippet, account: draft.account.name,
-            draft: true, pinned: draft.pinned == true, snoozedUntil: draft.snoozedUntil
+            pinned: draft.pinned == true, snoozedUntil: draft.snoozedUntil
         )
     }
 }

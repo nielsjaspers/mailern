@@ -3,11 +3,15 @@ import SwiftUI
 struct SenderAvatar: View {
     let name: String
     var symbol: String?
+    /// Overrides the per-sender color: drafts are orange, your own messages teal.
+    var tint: Color?
+    /// Read by VoiceOver when the avatar itself carries meaning, as on a draft row.
+    var label: String?
     var size: CGFloat = 40
-    // Teal and orange already mark unread mail and drafts.
-    private static let palette: [Color] = [.indigo, .purple, .pink, .blue, .green, .brown, .red, .cyan]
+    // Teal and orange are reserved for `tint`. Each color must carry white text.
+    private static let palette: [Color] = [.indigo, .purple, .pink, .blue, .brown, .red]
     private var color: Color {
-        guard symbol == nil else { return .orange }
+        if let tint { return tint }
         // Hashable is seeded per launch; a sender must keep one color across launches.
         let hash = name.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) % 1_000_003 }
         return Self.palette[hash % Self.palette.count]
@@ -25,7 +29,8 @@ struct SenderAvatar: View {
                 .font(.system(size: size * 0.42, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
             }
-            .accessibilityHidden(true)
+            .accessibilityHidden(label == nil)
+            .accessibilityLabel(label ?? "")
     }
 }
 

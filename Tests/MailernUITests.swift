@@ -531,20 +531,21 @@ final class MailernUITests: XCTestCase {
         row(subject, in: app).tap()
 
         // Only the latest message starts open, so only it offers reply controls.
-        let latestReplies = app.buttons.matching(identifier: "Reply to Casey Rivera")
-        XCTAssertTrue(latestReplies.firstMatch.waitForExistence(timeout: 5))
-        XCTAssertEqual(latestReplies.count, 1)
-        XCTAssertFalse(app.buttons["Reply to Morgan"].exists)
+        let caseyReplies = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera"))
+        let ownReply = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Morgan")).firstMatch
+        XCTAssertTrue(caseyReplies.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(caseyReplies.count, 1)
+        XCTAssertFalse(ownReply.exists)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Around 7?")).firstMatch.exists)
         capture("Thread with folded earlier messages", in: app)
 
-        let first = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Hey! Are you free")).firstMatch
-        first.tap()
-        XCTAssertTrue(latestReplies.element(boundBy: 1).waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["Reply to Morgan"].exists)
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Hey! Are you free")).firstMatch.tap()
+        XCTAssertTrue(caseyReplies.element(boundBy: 1).waitForExistence(timeout: 5))
+        XCTAssertFalse(ownReply.exists)
         capture("Thread with an earlier message open", in: app)
 
-        latestReplies.element(boundBy: 0).tap()
+        // The first message in the thread is the first in the accessibility order.
+        caseyReplies.element(boundBy: 0).tap()
         XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
         let quote = app.textViews["Message body"].value as? String ?? ""
         XCTAssertTrue(quote.contains("Are you free on Saturday?"))
@@ -554,7 +555,7 @@ final class MailernUITests: XCTestCase {
         app.buttons["Cancel"].tap()
         waitForAbsence(app.navigationBars["Re: \(subject)"])
 
-        app.buttons.matching(identifier: "Message actions").element(boundBy: 0).tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Message actions")).element(boundBy: 0).tap()
         app.buttons["Forward"].tap()
         XCTAssertTrue(app.navigationBars["Fwd: \(subject)"].waitForExistence(timeout: 5))
         XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").contains("Are you free on Saturday?"))
@@ -562,9 +563,19 @@ final class MailernUITests: XCTestCase {
         waitForAbsence(app.navigationBars["Fwd: \(subject)"])
 
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Sounds good.")).firstMatch.tap()
-        XCTAssertTrue(app.buttons["Reply to Morgan"].waitForExistence(timeout: 5))
+        XCTAssertTrue(ownReply.waitForExistence(timeout: 5))
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Morgan")).firstMatch.tap()
-        waitForAbsence(app.buttons["Reply to Morgan"])
+        waitForAbsence(ownReply)
+
+        // A new message opens, and the message it replaces stays folded after the reader
+        // folded it. Open messages are counted by their reply controls.
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera")).element(boundBy: 1).tap()
+        waitForAbsence(caseyReplies.element(boundBy: 1))
+        app.buttons["More actions"].tap()
+        app.buttons["Simulate incoming reply"].tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Hi Morgan,")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(caseyReplies.count, 2)
+        capture("Thread after an incoming reply", in: app)
     }
 
     @MainActor
