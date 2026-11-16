@@ -27,7 +27,6 @@ struct MailboxFilterToolbar: View {
                     }
                 }
                 control.toggleButton
-                    .padding(.horizontal, 4)
                     .glassEffect(.regular.interactive(), in: .capsule)
                     .glassEffectUnion(id: "filter", namespace: glass)
                 MailboxFilterControl(filter: .initial(for: status), status: status, toggle: toggle, options: options)
@@ -38,7 +37,7 @@ struct MailboxFilterToolbar: View {
     }
 }
 
-// One layout owns the expansion. The circle never changes position, including between animation frames.
+// One layout owns the expansion. The toggle never changes position, including between animation frames.
 private struct FilterToolbarLayout: Layout {
     var expansion: CGFloat
     var animatableData: CGFloat {
@@ -99,8 +98,8 @@ struct MailboxFilterControl: View {
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.tint)
             }
-            .frame(maxWidth: 120, alignment: .leading)
-            .padding(.leading, 8)
+            .frame(maxWidth: 120)
+            .padding(.horizontal, 12)
             .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
@@ -115,10 +114,10 @@ struct MailboxFilterControl: View {
                 .font(.system(size: 20, weight: .medium))
                 .contentTransition(.identity)
                 .foregroundStyle(filter.enabled ? Color.white : Color.primary)
-                .frame(width: 40, height: 40)
-                .background { Circle().fill(.tint).opacity(filter.enabled ? 1 : 0) }
+                .frame(width: 48, height: 40)
+                .background { Capsule().fill(.tint).opacity(filter.enabled ? 1 : 0) }
                 .padding(2)
-                .contentShape(Circle())
+                .contentShape(Capsule())
                 .transaction { $0.animation = nil }
         }
         .buttonStyle(.plain)
