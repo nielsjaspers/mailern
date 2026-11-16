@@ -9,7 +9,7 @@ struct SenderAvatar: View {
     var label: String?
     var size: CGFloat = 40
     // Teal and orange are reserved for `tint`. Each color must carry white text.
-    private static let palette: [Color] = [.indigo, .purple, .pink, .blue, .red]
+    private static let palette: [Color] = [.blue, .purple, .pink, .red, .green]
     private var color: Color {
         if let tint { return tint }
         // Hashable is seeded per launch; a sender must keep one color across launches.

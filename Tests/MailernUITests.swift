@@ -574,11 +574,22 @@ final class MailernUITests: XCTestCase {
         app.textViews["Message body"].typeText("One reply draft\n")
         app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
         XCTAssertTrue(app.buttons["Edit draft"].waitForExistence(timeout: 5))
-        // A conversation holds one reply draft, so a per-message reply resumes it.
+        // A reply started from a message does not resume the toolbar's draft, and keeps its own.
         caseyReplies.element(boundBy: 0).tap()
         XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
-        let resumed = app.textViews["Message body"].value as? String ?? ""
-        XCTAssertTrue(resumed.hasPrefix("One reply draft") && resumed.contains("Around 7?"))
+        let separate = app.textViews["Message body"].value as? String ?? ""
+        XCTAssertTrue(separate.contains("Are you free on Saturday?") && !separate.contains("One reply draft"))
+        app.textViews["Message body"].typeText("Earlier reply draft\n")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        XCTAssertTrue(app.buttons.matching(identifier: "Edit draft").element(boundBy: 1).waitForExistence(timeout: 5))
+        caseyReplies.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").hasPrefix("Earlier reply draft"))
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+        waitForAbsence(app.buttons.matching(identifier: "Edit draft").element(boundBy: 1))
+        app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
+        XCTAssertTrue(app.navigationBars["Re: \(subject)"].waitForExistence(timeout: 5))
+        XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").hasPrefix("One reply draft"))
         app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
         waitForAbsence(app.buttons["Edit draft"])
 

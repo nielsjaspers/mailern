@@ -55,6 +55,8 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     var updatedAt = Date.now
     var pinned: Bool?
     var snoozedUntil: Date?
+    /// The message a reply or forward was started from. Nil means the latest message at that time.
+    var messageID: UUID?
 
     func matchesContent(of other: Self) -> Bool {
         // Pinning and snooze expiry do not change the editor's saved content.
@@ -76,7 +78,7 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
         }
     }
     static func make(mode: ComposeMode, conversation: Conversation?, message: UUID? = nil) -> Self {
-        var draft = Self(mode: mode)
+        var draft = Self(mode: mode, messageID: message)
         guard let c = conversation else { return draft }
         draft.accountID = c.accountID
         let target = c.message(message)

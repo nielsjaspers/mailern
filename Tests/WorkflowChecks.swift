@@ -228,6 +228,7 @@ import Foundation
         let earlierReply = ComposerDraft.make(mode: .replyAll(revisedID), conversation: revisedSource, message: first.id)
         assert(earlierReply.to == first.address && ComposerDraft.addresses(earlierReply.cc) == ["coordinator@college.example.com"])
         assert(earlierReply.text.contains(first.body) && !earlierReply.text.contains("Revised recipient group"))
+        assert(earlierReply.messageID == first.id && revisedReply.messageID == nil)
         let earlierForward = ComposerDraft.make(mode: .forward(revisedID), conversation: revisedSource, message: first.id)
         assert(earlierForward.text.contains(first.body) && !earlierForward.text.contains("Revised recipient group"))
         assert(ComposerDraft.make(mode: .reply(revisedID), conversation: revisedSource, message: UUID()).text.contains("Revised recipient group"))

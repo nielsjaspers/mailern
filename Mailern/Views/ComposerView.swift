@@ -228,7 +228,7 @@ struct ComposerView: View {
                 return
             }
             draft = saved
-        } else if let replyID = mode.replyID, let existing = drafts.drafts.first(where: { $0.mode.replyID == replyID }) {
+        } else if let replyID = mode.replyID, let existing = drafts.drafts.first(where: { $0.mode.replyID == replyID && $0.messageID == messageID }) {
             draft = existing
         } else {
             draft = ComposerDraft.make(mode: mode, conversation: mode.sourceID.flatMap(store.conversation), message: messageID)

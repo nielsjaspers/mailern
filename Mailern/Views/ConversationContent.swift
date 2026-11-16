@@ -45,9 +45,16 @@ struct ConversationContent: View {
                 }.padding(isPreview ? 18 : 16)
             }
             .background(Color(uiColor: isPreview ? .secondarySystemGroupedBackground : .systemGroupedBackground))
-            .onAppear { if let id = drafts.last?.id { proxy.scrollTo(id, anchor: .bottom) } }
+            // A long thread opens on its latest message, or on a draft below it.
+            .onAppear {
+                if let id = drafts.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                else if !isPreview, !earlier.isEmpty { proxy.scrollTo(latest.id, anchor: .top) }
+            }
             // A new message opens and the one it replaces folds, whatever the reader did to it.
-            .onChange(of: latest.id) { old, _ in toggled.remove(old) }
+            .onChange(of: latest.id) { old, new in
+                toggled.remove(old)
+                if !isPreview { withAnimation(reduceMotion ? nil : .snappy) { proxy.scrollTo(new, anchor: .top) } }
+            }
             .onChange(of: drafts.map(\.id)) { _, ids in if let id = ids.last { proxy.scrollTo(id, anchor: .bottom) } }
         }
     }
@@ -66,6 +73,7 @@ struct ConversationContent: View {
                     compose: compose.map { compose in { compose($0, message.id) } }
                 )
                 .padding(.horizontal, 16)
+                .id(message.id)
             }
         }
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
@@ -132,10 +140,10 @@ private struct MessageSection: View {
         .padding(.vertical, 14)
     }
 
-    // The time tells apart two open messages from one sender.
     @ViewBuilder private var controls: some View {
         if let compose {
             let id = conversationID
+            // In the labels, the time tells apart two open messages from one sender.
             let time = message.date.formatted(date: .omitted, time: .shortened)
             HStack(spacing: 8) {
                 Button { compose(.reply(id)) } label: { Image(systemName: "arrowshape.turn.up.left") }
@@ -156,7 +164,7 @@ private struct MessageSection: View {
         Text(message.sender).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
     }
     private var date: some View {
-        Text(expanded
+        Text(expanded && !Calendar.current.isDateInToday(message.date)
              ? message.date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
              : message.date.mailboxStamp).fixedSize()
     }
