@@ -12,9 +12,17 @@ enum InboxPullAction: String, CaseIterable, Identifiable {
     }
 }
 
+/// How long sent mail waits in the outbox, so Undo can take it back.
+enum UndoSend {
+    static let key = "undoSendDelay"
+    static let defaultDelay = 10
+    static let choices = [0, 5, 10, 20]
+}
+
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var pullAction: InboxPullAction
+    @AppStorage(UndoSend.key) private var undoDelay = UndoSend.defaultDelay
 
     private var supportsPull: Bool {
         if #available(iOS 18, *) { return true }
@@ -26,6 +34,9 @@ struct SettingsView: View {
                 NavigationLink("Accounts") { AccountsSettingsView() }
                 NavigationLink("Snooze settings") { SnoozeSettingsView() }
                 NavigationLink("Swipe actions") { SwipeSettingsView() }
+                Picker("Undo send", selection: $undoDelay) {
+                    ForEach(UndoSend.choices, id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
+                }
             }
             Section("Labs") {
                 Picker("Inbox pull-down", selection: $pullAction) {

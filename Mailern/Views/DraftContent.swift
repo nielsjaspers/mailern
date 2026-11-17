@@ -28,19 +28,7 @@ struct DraftCard: View {
                 Text(draft.updatedAt, format: .dateTime.month(.abbreviated).day().hour().minute())
                     .font(.caption).foregroundStyle(.secondary)
             }.font(.subheadline.weight(.semibold))
-            Text("From: \(store.account(draft.accountID).address)").font(.caption).foregroundStyle(.secondary)
-            Text(draft.to.isEmpty ? "No recipients" : "To: \(draft.to)").font(.caption).foregroundStyle(.secondary)
-            if !draft.cc.isEmpty { Text("Cc: \(draft.cc)").font(.caption).foregroundStyle(.secondary) }
-            if !draft.bcc.isEmpty { Text("Bcc: \(draft.bcc)").font(.caption).foregroundStyle(.secondary) }
-            Text(draft.title).font(.headline)
-            if !draft.text.isEmpty {
-                Group {
-                    if let richText = draft.richText {
-                        RichMessageText(text: RichText.decode(richText, fallback: draft.text))
-                    } else { Text(draft.text) }
-                }.textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if !draft.attachments.isEmpty { AttachmentList(attachments: draft.attachments) }
+            DraftDetails(draft: draft)
             HStack {
                 Button("Edit draft", systemImage: "square.and.pencil", action: edit)
                     .buttonStyle(.bordered).tint(.orange)
@@ -52,6 +40,28 @@ struct DraftCard: View {
         .padding(18)
         .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
         .accessibilityIdentifier("draft-card-\(draft.id)")
+    }
+}
+
+/// The addresses, subject, body, and attachments of a draft or scheduled message.
+struct DraftDetails: View {
+    @Environment(MailStore.self) private var store
+    let draft: ComposerDraft
+
+    var body: some View {
+        Text("From: \(store.account(draft.accountID).address)").font(.caption).foregroundStyle(.secondary)
+        Text(draft.to.isEmpty ? "No recipients" : "To: \(draft.to)").font(.caption).foregroundStyle(.secondary)
+        if !draft.cc.isEmpty { Text("Cc: \(draft.cc)").font(.caption).foregroundStyle(.secondary) }
+        if !draft.bcc.isEmpty { Text("Bcc: \(draft.bcc)").font(.caption).foregroundStyle(.secondary) }
+        Text(draft.title).font(.headline)
+        if !draft.text.isEmpty {
+            Group {
+                if let richText = draft.richText {
+                    RichMessageText(text: RichText.decode(richText, fallback: draft.text))
+                } else { Text(draft.text) }
+            }.textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        if !draft.attachments.isEmpty { AttachmentList(attachments: draft.attachments) }
     }
 }
 

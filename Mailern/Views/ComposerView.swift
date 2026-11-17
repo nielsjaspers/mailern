@@ -30,6 +30,12 @@ struct ComposerView: View {
     @State private var importsInFlight = 0
     @State private var error: String?
     @State private var savedInput: DraftInput?
+    @State private var picking: TimeChoice?
+    @AppStorage(UndoSend.key) private var undoDelay = UndoSend.defaultDelay
+    private enum TimeChoice: String, Identifiable {
+        case sendLater, reminder
+        var id: Self { self }
+    }
     private struct DraftInput: Equatable {
         var draft: ComposerDraft
         var text: NSAttributedString
@@ -99,6 +105,17 @@ struct ComposerView: View {
                         ComposerSubjectField(text: $draft.subject, isFocused: subjectFocused) { subjectFocused = $0 }
                     }.frame(minHeight: 48)
                     Divider()
+                    if let followUp = draft.followUp {
+                        HStack(spacing: 8) {
+                            Label("Remind me \(followUp.formatted(.dateTime.weekday(.abbreviated).hour().minute())) if nobody replies",
+                                  systemImage: "hourglass")
+                                .font(.subheadline).foregroundStyle(.orange)
+                            Spacer()
+                            Button("Remove reminder", systemImage: "xmark.circle.fill") { draft.followUp = nil }
+                                .labelStyle(.iconOnly).foregroundStyle(.secondary)
+                        }.frame(minHeight: 44)
+                        Divider()
+                    }
                     RichTextEditor(state: editor, attach: { if !importing { filePicker = true } },
                                    photos: { if !importing { photoPicker = true } }, canAttach: !importing)
                     if !draft.attachments.isEmpty {
@@ -124,7 +141,13 @@ struct ComposerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importing || finishing) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Send", systemImage: "arrow.up") { Task { await send() } }
+                    // Hold Send for Send Later and a follow-up reminder, as in Mail.
+                    Menu {
+                        Button("Send Later…", systemImage: "calendar.badge.clock") { picking = .sendLater }
+                        Button(draft.followUp == nil ? "Remind Me If No Reply…" : "Change Reminder…", systemImage: "hourglass") { picking = .reminder }
+                    } label: {
+                        Label("Send", systemImage: "arrow.up")
+                    } primaryAction: { Task { await send() } }
                         .labelStyle(.iconOnly).tint(.blue)
                         .foregroundStyle(draft.canSend ? Color.white : Color.secondary).disabled(!draft.canSend || !loaded || completed || finishing || importing)
                 }
@@ -169,6 +192,26 @@ struct ComposerView: View {
             }
         }
         .sheet(isPresented: $contacts) { recipientPicker }
+        .sheet(item: $picking) { choice in
+            NavigationStack {
+                Group {
+                    switch choice {
+                    case .sendLater:
+                        SnoozeOptionsForm(customLabel: "Send at", confirmTitle: { "Send \($0.formatted(date: .abbreviated, time: .shortened))" }) { date in
+                            picking = nil
+                            Task { await send(at: date) }
+                        }
+                    case .reminder:
+                        SnoozeOptionsForm(customLabel: "Remind me", confirmTitle: { "Remind me \($0.formatted(date: .abbreviated, time: .shortened))" }) { date in
+                            draft.followUp = date
+                            picking = nil
+                        }
+                    }
+                }
+                .navigationTitle(choice == .sendLater ? "Send Later" : "Remind If No Reply").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { picking = nil } } }
+            }
+        }
         .alert("Composer", isPresented: Binding(get: { error != nil || drafts.error != nil }, set: { if !$0 { error = nil; drafts.error = nil } })) {
             Button("OK") { error = nil; drafts.error = nil; if completed { dismiss() } }
         } message: { Text(error ?? drafts.error ?? "") }
@@ -339,7 +382,8 @@ struct ComposerView: View {
             if dismissAfter { completed = true; dismiss() }
         } catch { self.error = error.localizedDescription }
     }
-    private func send() async {
+    /// Sends now, after the Undo Send delay, or at `scheduled`. Delayed mail waits in the outbox as this draft.
+    private func send(at scheduled: Date? = nil) async {
         guard draft.canSend, loaded, !completed, !finishing, !importing else { return }
         let activity = DraftSaveActivity()
         defer { activity.end() }
@@ -348,17 +392,26 @@ struct ComposerView: View {
         editor.view?.window?.endEditing(true)
         do {
             let content = try snapshot(input)
-            guard store.send(threadID: content.mode.replyID, replyingTo: content.answering ?? content.messageID, account: account, to: ComposerDraft.addresses(content.to), cc: ComposerDraft.addresses(content.cc),
-                       subject: content.subject.isEmpty ? "(No Subject)" : content.subject, body: content.text,
-                       bcc: ComposerDraft.addresses(content.bcc), richText: content.richText, attachments: content.attachments) else {
-                error = store.error
-                store.error = nil
+            let sendAt = scheduled ?? (undoDelay > 0 ? Date.now.addingTimeInterval(TimeInterval(undoDelay)) : nil)
+            if let followUp = content.followUp, followUp <= (sendAt ?? .now) {
+                error = "Choose a reminder after the message is sent."
                 return
+            }
+            if let sendAt {
+                guard await drafts.schedule(content, at: sendAt) else { return }
+                if scheduled == nil { drafts.undoable = content.id }
+            } else {
+                // The draft's ID makes sending a leftover draft again a no-op if deleting it fails below.
+                guard store.send(content, id: content.id) else {
+                    error = store.error
+                    store.error = nil
+                    return
+                }
             }
             completed = true
             focus = nil
             editor.view?.resignFirstResponder()
-            if !(await drafts.delete(draft.id)) {
+            if sendAt == nil, !(await drafts.delete(draft.id)) {
                 drafts.error = nil
                 error = "Message saved, but the draft could not be removed. You can discard it from its Inbox thread."
                 return

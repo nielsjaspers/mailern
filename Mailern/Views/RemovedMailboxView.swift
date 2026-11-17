@@ -66,7 +66,7 @@ struct RemovedMailboxView: View {
                     deleting = []
                     Task {
                         // A blocked sender's reply can bring a thread here with its reply draft.
-                        guard await drafts.discardDrafts(for: ids) else { return }
+                        guard await drafts.discardDrafts(for: ids, scheduled: true) else { return }
                         store.deletePermanently(ids)
                         endSelection()
                     }

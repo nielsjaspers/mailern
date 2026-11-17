@@ -13,6 +13,7 @@ struct ThreadView: View {
     @State private var deleting = false
     @State private var settling: DraftDiscard?
     @State private var deletingConversation = false
+    private var scheduled: [ComposerDraft] { drafts.outbox.filter { $0.mode.replyID == id } }
     private var attachedDrafts: [ComposerDraft] { drafts.drafts.filter { $0.mode.replyID == id }.sorted { $0.updatedAt < $1.updatedAt } }
     private func compose(_ mode: ComposeMode, message: UUID? = nil) {
         target = message
@@ -27,7 +28,7 @@ struct ThreadView: View {
     var body: some View {
         Group {
             if let c = store.conversation(id) {
-                ConversationContent(conversation: c, drafts: attachedDrafts, editDraft: { mode = .draft($0) }, discardDraft: { draftID in
+                ConversationContent(conversation: c, drafts: attachedDrafts, scheduled: scheduled, editDraft: { mode = .draft($0) }, discardDraft: { draftID in
                     Task {
                         deleting = true
                         defer { deleting = false }
@@ -55,6 +56,7 @@ struct ThreadView: View {
                                 if c.workflow != .inbox { Button("Restore to Inbox", systemImage: "tray") { store.move(id, to: .inbox); dismiss() } }
                                 Button("Move to Junk", systemImage: RemovedMailbox.junk.symbol) { remove(to: .junk) }
                             }
+                            Button(c.muted == true ? "Unmute" : "Mute", systemImage: c.muted == true ? "bell" : "bell.slash") { store.toggleMute(id) }
                             Divider()
                             Button("Simulate incoming reply", systemImage: "arrow.down.message") { store.receiveReply(id) }
                         } label: { Label("More actions", systemImage: "ellipsis.circle") }
@@ -91,6 +93,7 @@ struct ThreadView: View {
                 }
             } else { ContentUnavailableView("Conversation unavailable", systemImage: "envelope") }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner(sendingOnly: true) }
         .toolbar(.hidden, for: .tabBar)
         .onAppear { store.markRead(id) }
         .sheet(item: $mode) { mode in
@@ -107,7 +110,7 @@ struct ThreadView: View {
         .confirmationDialog("Delete this conversation permanently?", isPresented: $deletingConversation, titleVisibility: .visible) {
             Button("Delete Permanently", role: .destructive) {
                 Task {
-                    guard await drafts.discardDrafts(for: [id]) else { return }
+                    guard await drafts.discardDrafts(for: [id], scheduled: true) else { return }
                     store.deletePermanently([id])
                     dismiss()
                 }

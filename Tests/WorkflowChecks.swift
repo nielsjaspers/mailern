@@ -21,6 +21,9 @@ import SQLite3
         try checkThreadingHeaders()
         checkMessageLinks()
         checkHTMLDocument()
+        try checkMute()
+        try checkFollowUp()
+        try await checkOutbox()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -316,6 +319,159 @@ import SQLite3
         assert(String(text.characters).contains("*this*"), "Plain text is not read as Markdown")
         assert(MessageLinks.linked("Tuesday, 10:00–11:00\nOrder #10428").runs.allSatisfy { $0.link == nil })
         print("PASS: mailto parsing and drafts, web/email/phone links in plain text, no Markdown in plain text")
+    }
+
+    @MainActor static func checkMute() throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-mute-\(UUID())")
+        let disk = SQLitePersistence(url: directory.appending(path: "mute.sqlite"))
+        let store = MailStore(persistence: disk)
+        let settled = store.list(.settled)[0].id
+        let snoozed = store.list(.snoozed)[0]
+        store.toggleMute(settled)
+        store.toggleMute(snoozed.id)
+        let trashed = store.list(.inbox)[0].id
+        store.toggleMute(trashed)
+        store.apply(ids: [trashed], action: .remove(.trash))
+        store.receiveReply(settled)
+        store.receiveReply(snoozed.id)
+        store.receiveReply(trashed)
+        assert(store.conversation(trashed)!.removal?.mailbox == .trash)
+        // A reply joins a muted thread but leaves it where it was, read, and still snoozed.
+        let quiet = store.conversation(settled)!
+        assert(quiet.workflow == .settled && !quiet.unread && quiet.latest.body.contains("follow-up"))
+        assert(store.conversation(snoozed.id)!.workflow == .snoozed && store.conversation(snoozed.id)!.snoozedUntil == snoozed.snoozedUntil)
+        assert(MailStore(persistence: SQLitePersistence(url: disk.url)).conversation(settled)!.muted == true)
+        // A reply to a muted thread that waits for one ends the reminder and settles it, so it never returns.
+        let inbox = store.list(.inbox).first { $0.id != trashed && $0.messages.contains { !$0.outgoing } }!
+        store.toggleMute(inbox.id)
+        assert(store.send(threadID: inbox.id, account: store.account(inbox.accountID), to: [inbox.correspondent.address], cc: [],
+                          subject: inbox.subject, body: "Any news?", followUp: .now.addingTimeInterval(100)))
+        store.receiveReply(inbox.id)
+        store.wakeDue(now: .now.addingTimeInterval(101))
+        assert(store.conversation(inbox.id)!.workflow == .settled && store.conversation(inbox.id)!.followUp == nil && !store.conversation(inbox.id)!.unread)
+        store.toggleMute(settled)
+        store.receiveReply(settled)
+        assert(store.conversation(settled)!.workflow == .inbox && store.conversation(settled)!.unread)
+        print("PASS: muted threads keep replies without moving or turning unread, mute persists, unmute restores delivery")
+    }
+
+    @MainActor static func checkFollowUp() throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-follow-up-\(UUID())")
+        let disk = SQLitePersistence(url: directory.appending(path: "follow-up.sqlite"))
+        let store = MailStore(persistence: disk)
+        let account = store.accounts[0]
+        let due = Date.now.addingTimeInterval(100)
+        // New mail with a reminder waits in Snoozed, and the reminder survives a reload.
+        assert(store.send(threadID: nil, account: account, to: ["sam@example.com"], cc: [], subject: "Quote", body: "Any news?", followUp: due))
+        let sent = store.conversations[0].id
+        assert(store.conversation(sent)!.workflow == .snoozed && store.conversation(sent)!.snoozedUntil == due)
+        let reloaded = MailStore(persistence: SQLitePersistence(url: disk.url))
+        assert(reloaded.conversation(sent)!.followUp == .waiting)
+        // Nobody replied: it returns to Inbox marked. Settling it clears the mark.
+        store.wakeDue(now: due.addingTimeInterval(1))
+        assert(store.conversation(sent)!.workflow == .inbox && store.conversation(sent)!.followUp == .noReply)
+        store.move(sent, to: .settled)
+        assert(store.conversation(sent)!.followUp == nil)
+        store.undo()
+        assert(store.conversation(sent)!.followUp == .noReply)
+        // A reply cancels the reminder and returns the thread as usual.
+        let thread = store.list(.inbox).first { $0.id != sent && $0.messages.contains { !$0.outgoing } }!
+        assert(store.send(threadID: thread.id, account: store.account(thread.accountID), to: [thread.correspondent.address], cc: [],
+                          subject: thread.subject, body: "Following up.", followUp: due))
+        assert(store.conversation(thread.id)!.workflow == .snoozed && store.conversation(thread.id)!.followUp == .waiting)
+        store.receiveReply(thread.id)
+        assert(store.conversation(thread.id)!.workflow == .inbox && store.conversation(thread.id)!.unread && store.conversation(thread.id)!.followUp == nil)
+        // Snoozing a waiting thread by hand ends the reminder, so it returns unmarked.
+        assert(store.send(threadID: thread.id, account: store.account(thread.accountID), to: [thread.correspondent.address], cc: [],
+                          subject: thread.subject, body: "Again.", followUp: due))
+        store.move(thread.id, to: .snoozed, until: due.addingTimeInterval(50))
+        store.wakeDue(now: due.addingTimeInterval(51))
+        assert(store.conversation(thread.id)!.workflow == .inbox && store.conversation(thread.id)!.followUp == nil)
+        // Trash and Junk are manual moves too. Undo brings the reminder back.
+        for mailbox in RemovedMailbox.allCases {
+            assert(store.send(threadID: thread.id, account: store.account(thread.accountID), to: [thread.correspondent.address], cc: [],
+                              subject: thread.subject, body: "Moving on.", followUp: due))
+            store.apply(ids: [thread.id], action: .remove(mailbox))
+            assert(store.conversation(thread.id)!.workflow == .settled && store.conversation(thread.id)!.followUp == nil)
+            store.undo()
+            assert(store.conversation(thread.id)!.workflow == .snoozed && store.conversation(thread.id)!.followUp == .waiting
+                   && store.conversation(thread.id)!.removal == nil)
+            store.apply(ids: [thread.id], action: .remove(mailbox))
+            store.apply(ids: [thread.id], action: .restoreRemoved)
+            store.wakeDue(now: due.addingTimeInterval(1))
+            assert(store.conversation(thread.id)!.workflow == .settled && store.conversation(thread.id)!.followUp == nil)
+        }
+        // A reminder time that already passed settles the mail like a plain send.
+        assert(store.send(threadID: nil, account: account, to: ["sam@example.com"], cc: [], subject: "Late", body: "x", followUp: .now.addingTimeInterval(-1)))
+        assert(store.conversations[0].workflow == .settled && store.conversations[0].followUp == nil)
+        print("PASS: follow-up reminders wait in Snoozed, return marked without a reply, end on reply or a manual move, undo, persistence")
+    }
+
+    @MainActor static func checkOutbox() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-outbox-\(UUID())")
+        let store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "outbox.sqlite")))
+        let url = directory.appending(path: "drafts.json")
+        let drafts = DraftStore(url: url)
+        let thread = store.list(.inbox).first { $0.messages.contains { !$0.outgoing } }!
+        let start = Date.now
+        var later = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        later.to = "sam@example.com"
+        later.subject = "Later"
+        later.followUp = start.addingTimeInterval(500)
+        let scheduledLater = await drafts.schedule(later, at: start.addingTimeInterval(100))
+        assert(scheduledLater)
+        var reply = ComposerDraft.make(mode: .reply(thread.id), conversation: thread, accounts: store.accounts)
+        reply.text = "On my way"
+        let scheduledReply = await drafts.schedule(reply, at: start.addingTimeInterval(200))
+        assert(scheduledReply)
+        // Scheduled mail leaves the draft list, persists, and survives Settle's draft discard.
+        assert(drafts.drafts.isEmpty && drafts.outbox.map(\.id) == [later.id, reply.id])
+        assert(DraftStore(url: url).outbox.count == 2)
+        let discarded = await drafts.discardDrafts(for: [thread.id])
+        assert(discarded && drafts.outbox.count == 2)
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(99))
+        assert(drafts.outbox.count == 2 && !store.conversations.contains { $0.subject == "Later" })
+        // A failed draft write after sending keeps the mail scheduled, and the retry does not send it twice.
+        let failing = DraftStore(url: url, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        await failing.sendDue(through: store, now: start.addingTimeInterval(101))
+        await failing.sendDue(through: store, now: start.addingTimeInterval(102))
+        assert(failing.outbox.count == 2 && store.conversations.filter { $0.subject == "Later" }.count == 1)
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(103))
+        let sent = store.conversations.first { $0.subject == "Later" }!
+        assert(drafts.outbox.map(\.id) == [reply.id] && sent.messages.map(\.id) == [later.id])
+        // The reminder starts when the mail goes out.
+        assert(sent.workflow == .snoozed && sent.followUp == .waiting)
+        // Send Now skips the wait. Taking back mail that already went out fails.
+        let sentNow = await drafts.sendNow(reply.id, through: store)
+        assert(sentNow)
+        assert(drafts.outbox.isEmpty && store.conversation(thread.id)!.latest.id == reply.id && store.conversation(thread.id)!.workflow == .settled)
+        let tookBackSent = await drafts.unschedule(reply.id)
+        assert(tookBackSent == false)
+        // Unschedule returns mail to Drafts. Edit also asks for the composer.
+        var undo = later
+        undo.id = UUID()
+        let scheduledUndo = await drafts.schedule(undo, at: .now.addingTimeInterval(10))
+        assert(scheduledUndo)
+        drafts.undoable = undo.id
+        await drafts.edit(undo.id)
+        assert(drafts.reopening == undo.id && drafts.undoable == nil && drafts.drafts.map(\.id) == [undo.id])
+        // Mail the store refuses goes back to Drafts with an explanation.
+        var orphan = reply
+        orphan.id = UUID()
+        orphan.mode = .reply(UUID())
+        let scheduledOrphan = await drafts.schedule(orphan, at: start)
+        assert(scheduledOrphan)
+        await drafts.sendDue(through: store)
+        assert(drafts.outbox.isEmpty && drafts.drafts.contains { $0.id == orphan.id } && store.error?.contains("back in Drafts") == true)
+        store.error = nil
+        // Deleting a conversation discards its scheduled replies too.
+        var pending = reply
+        pending.id = UUID()
+        let scheduledPending = await drafts.schedule(pending, at: start.addingTimeInterval(900))
+        assert(scheduledPending)
+        let discardedWithThread = await drafts.discardDrafts(for: [thread.id], scheduled: true)
+        assert(discardedWithThread && drafts.outbox.isEmpty)
+        print("PASS: outbox scheduling, persistence, due delivery, no duplicate after a failed draft write, reminders on send, send now, edit/unschedule, refused mail back in Drafts, discard with deleted conversation")
     }
 
     @MainActor static func checkTrashAndJunk() throws {

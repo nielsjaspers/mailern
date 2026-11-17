@@ -51,6 +51,8 @@ struct MailboxRow: View {
     var unread = false
     var draft = false
     var pinned = false
+    var muted = false
+    var followUp: FollowUp?
     var snoozedUntil: Date?
 
     var body: some View {
@@ -77,6 +79,9 @@ struct MailboxRow: View {
                     Group {
                         if draft { Image(systemName: "square.and.pencil").foregroundStyle(.orange).accessibilityLabel("Draft") }
                         if pinned { Image(systemName: "pin.fill").foregroundStyle(.orange).accessibilityLabel("Pinned") }
+                        if muted { Image(systemName: "bell.slash.fill").accessibilityLabel("Muted") }
+                        if followUp == .noReply { Text("No reply").fontWeight(.medium).foregroundStyle(.orange) }
+                        if followUp == .waiting { Image(systemName: "hourglass").accessibilityLabel("Waiting for a reply") }
                         if let snoozedUntil {
                             Image(systemName: "clock")
                             Text(snoozedUntil, format: .dateTime.weekday(.abbreviated).hour().minute()).fixedSize()
@@ -133,7 +138,8 @@ struct ConversationRow: View {
             avatar: SenderAvatar(name: conversation.avatarName),
             title: conversation.participants, count: conversation.messages.count, date: conversation.latest.date,
             subject: conversation.subject, snippet: conversation.latest.body.snippet, account: store.account(conversation.accountID),
-            unread: conversation.unread, draft: hasDraft, pinned: conversation.pinned, snoozedUntil: conversation.snoozedUntil
+            unread: conversation.unread, draft: hasDraft, pinned: conversation.pinned, muted: conversation.muted == true,
+            followUp: conversation.followUp, snoozedUntil: conversation.snoozedUntil
         )
         .accessibilityValue(conversation.unread ? "Unread" : "Read")
     }

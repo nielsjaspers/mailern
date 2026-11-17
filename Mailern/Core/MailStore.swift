@@ -134,6 +134,9 @@ final class MailStore {
         if case .pin = undoAction { clearNotice() }
         update(id) { $0.pinned.toggle() }
     }
+    func toggleMute(_ id: UUID) {
+        update(id) { $0.muted = $0.muted == true ? nil : true }
+    }
     func move(_ id: UUID, to status: Workflow, until: Date? = nil) {
         apply(ids: [id], action: .move(status, until: until))
     }
@@ -158,8 +161,11 @@ final class MailStore {
             case .move(let status, let until): conversations[i].move(to: status, until: until)
             case .read(let unread): conversations[i].unread = unread
             case .pin(let pinned): conversations[i].pinned = pinned
-            case .remove(.trash): conversations[i].removal = .trash(since: .now)
+            case .remove(.trash):
+                conversations[i].endReminder()
+                conversations[i].removal = .trash(since: .now)
             case .remove(.junk):
+                conversations[i].endReminder()
                 conversations[i].removal = .junk
                 blockedSenders.formUnion(conversations[i].senderAddresses)
             case .restoreRemoved:
@@ -197,9 +203,17 @@ final class MailStore {
                 if old.workflow == .settled { conversations[i].unread = false }
                 conversations[i].workflow = old.workflow
                 conversations[i].snoozedUntil = old.snoozedUntil
+                conversations[i].followUp = old.followUp
             case .read: conversations[i].unread = old.unread
             case .pin: conversations[i].pinned = old.pinned
-            case .remove, .restoreRemoved: conversations[i].removal = old.removal
+            case .remove:
+                // Removal can end a reminder, which settles the conversation.
+                conversations[i].removal = old.removal
+                conversations[i].workflow = old.workflow
+                conversations[i].snoozedUntil = old.snoozedUntil
+                conversations[i].followUp = old.followUp
+                conversations[i].unread = old.unread
+            case .restoreRemoved: conversations[i].removal = old.removal
             }
         }
         blockedSenders = undoBlockedSenders
@@ -226,7 +240,12 @@ final class MailStore {
     func wakeDue(now: Date = .now) {
         var changed = false
         for i in conversations.indices where conversations[i].workflow == .snoozed {
-            if let date = conversations[i].snoozedUntil, date <= now { conversations[i].move(to: .inbox); changed = true }
+            if let date = conversations[i].snoozedUntil, date <= now {
+                let waiting = conversations[i].followUp == .waiting
+                conversations[i].move(to: .inbox)
+                if waiting { conversations[i].followUp = .noReply }
+                changed = true
+            }
         }
         if changed { clearNotice(); save() }
         let expired = Set(conversations.filter {
@@ -269,7 +288,7 @@ final class MailStore {
     /// a draft left behind by a deleted account would have no sender address.
     func deleteAccount(_ id: String, drafts: DraftStore) async -> String? {
         guard canWrite(), accounts.count > 1 else { return error ?? "You need at least one account." }
-        let removed = drafts.drafts.filter { $0.accountID == id }
+        let removed = drafts.all.filter { $0.accountID == id }
         guard await drafts.discardDrafts(accountID: id) else {
             defer { drafts.error = nil }
             return drafts.error ?? "The account's drafts could not be deleted."
@@ -333,8 +352,9 @@ final class MailStore {
     }
     @discardableResult
     /// Sends a message. With a `threadID`, it answers the message `replyingTo` in that conversation, or the latest one.
+    /// The conversation settles, or waits in Snoozed until `followUp` when that is still ahead.
     func send(threadID: UUID?, replyingTo: UUID? = nil, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
-              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = []) -> Bool {
+              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil, id: UUID = UUID()) -> Bool {
         guard canWrite() else { return false }
         guard accounts.contains(where: { $0.id == account.id }) else {
             error = "The sending account no longer exists. Choose another From address."
@@ -345,16 +365,22 @@ final class MailStore {
             return false
         }
         let before = conversations
-        var message = MailMessage(sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body,
+        var message = MailMessage(id: id, sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body,
                                   outgoing: true, bcc: bcc.isEmpty ? nil : bcc, richText: richText, attachments: attachments.isEmpty ? nil : attachments,
                                   subject: subject, messageID: MailMessage.newMessageID(from: account.address))
         if let threadID, let i = conversations.firstIndex(where: { $0.id == threadID }) {
             message.answer(conversations[i].message(replyingTo))
             conversations[i].messages.append(message)
-            conversations[i].move(to: .settled)
             conversations[i].removal = nil
         } else {
-            conversations.insert(Conversation(accountID: account.id, subject: subject, workflow: .settled, unread: false, messages: [message]), at: 0)
+            conversations.insert(Conversation(accountID: account.id, subject: subject, unread: false, messages: [message]), at: 0)
+        }
+        let i = threadID.flatMap { id in conversations.firstIndex { $0.id == id } } ?? 0
+        if let followUp, followUp > .now {
+            conversations[i].move(to: .snoozed, until: followUp)
+            conversations[i].followUp = .waiting
+        } else {
+            conversations[i].move(to: .settled)
         }
         do {
             try persistence.save(data)
@@ -368,6 +394,15 @@ final class MailStore {
             self.error = "Message could not be saved. Your draft has not been sent. \(error.localizedDescription)"
             return false
         }
+    }
+    /// Sends a composed draft as message `id`. A message with that ID that already went out is not sent again.
+    @discardableResult func send(_ draft: ComposerDraft, id: UUID = UUID()) -> Bool {
+        if conversations.contains(where: { $0.messages.contains { $0.id == id } }) { return true }
+        return send(threadID: draft.mode.replyID, replyingTo: draft.answering ?? draft.messageID, account: account(draft.accountID),
+                    to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
+                    subject: draft.subject.isEmpty ? "(No Subject)" : draft.subject, body: draft.text,
+                    bcc: ComposerDraft.addresses(draft.bcc), richText: draft.richText, attachments: draft.attachments,
+                    followUp: draft.followUp, id: id)
     }
     func reset() {
         let replacement = MailData(conversations: DemoData.conversations())
