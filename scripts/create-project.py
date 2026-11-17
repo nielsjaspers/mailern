@@ -19,6 +19,8 @@ for path in sources:
     builds.append(obj('build'+str(path), f'isa = PBXBuildFile; fileRef = {ref};'))
 icon = obj('icon', 'isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = Mailern/AppIcon.icon; sourceTree = SOURCE_ROOT;')
 refs.append(icon)
+version = obj('version', 'isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Version.xcconfig; sourceTree = SOURCE_ROOT;')
+refs.append(version)
 iconbuild = obj('buildicon', f'isa = PBXBuildFile; fileRef = {icon};')
 resources = obj('resources', f'isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ({iconbuild},); runOnlyForDeploymentPostprocessing = 0;')
 app = obj('app', 'isa = PBXFileReference; explicitFileType = wrapper.application; path = Mailern.app; sourceTree = BUILT_PRODUCTS_DIR;')
@@ -40,12 +42,13 @@ for scope in ['project', 'target', 'uitest', 'unittest']:
         settings = 'SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 18.0; SWIFT_VERSION = 5.0; CLANG_ENABLE_MODULES = YES;'
         settings += ' SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; ENABLE_TESTABILITY = YES;' if config == 'Debug' else ' SWIFT_OPTIMIZATION_LEVEL = "-O";'
         if scope == 'target':
-            settings += ' ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; PRODUCT_BUNDLE_IDENTIFIER = com.example.mailern; PRODUCT_NAME = "$(TARGET_NAME)"; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = Mailern; INFOPLIST_FILE = Mailern/Info.plist; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"; TARGETED_DEVICE_FAMILY = "1"; CODE_SIGN_STYLE = Automatic; MARKETING_VERSION = 0.5.0; CURRENT_PROJECT_VERSION = 30;'
+            settings += ' ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; PRODUCT_BUNDLE_IDENTIFIER = com.example.mailern; PRODUCT_NAME = "$(TARGET_NAME)"; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = Mailern; INFOPLIST_FILE = Mailern/Info.plist; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"; TARGETED_DEVICE_FAMILY = "1"; CODE_SIGN_STYLE = Automatic;'
         if scope == 'uitest':
             settings += ' PRODUCT_BUNDLE_IDENTIFIER = com.example.mailern.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; GENERATE_INFOPLIST_FILE = YES; TEST_TARGET_NAME = Mailern; TARGETED_DEVICE_FAMILY = "1"; CODE_SIGN_STYLE = Automatic; ENABLE_TESTING_SEARCH_PATHS = YES;'
         if scope == 'unittest':
             settings += ' PRODUCT_BUNDLE_IDENTIFIER = com.example.mailern.tests; PRODUCT_NAME = "$(TARGET_NAME)"; GENERATE_INFOPLIST_FILE = YES; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Mailern.app/Mailern"; BUNDLE_LOADER = "$(TEST_HOST)"; TARGETED_DEVICE_FAMILY = "1"; CODE_SIGN_STYLE = Automatic;'
-        configs.append(obj(scope+config, f'isa = XCBuildConfiguration; buildSettings = {{ {settings} }}; name = {config};'))
+        base = f'baseConfigurationReference = {version}; ' if scope == 'target' else ''
+        configs.append(obj(scope+config, f'isa = XCBuildConfiguration; {base}buildSettings = {{ {settings} }}; name = {config};'))
     obj(scope+'configs', f'isa = XCConfigurationList; buildConfigurations = ({",".join(configs)},); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;')
 obj('target', f'isa = PBXNativeTarget; buildConfigurationList = {uid("targetconfigs")}; buildPhases = ({phase},{frameworks},{resources},); buildRules = (); dependencies = (); name = Mailern; productName = Mailern; productReference = {app}; productType = "com.apple.product-type.application";')
 testphase = obj('uitestsources', f'isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ({testbuild},); runOnlyForDeploymentPostprocessing = 0;')
