@@ -1485,7 +1485,10 @@ final class DeletingJunkDiscardsItsReplyDraftUITests: MailernUITestCase {
         app.buttons["Select All"].tap()
         app.toolbars.buttons["Delete Permanently"].tap()
         XCTAssertTrue(app.staticTexts["Delete 2 conversations permanently?"].existsOrWait(timeout: 5))
-        app.buttons["Delete Permanently"].firstMatch.tap()
+        // The toolbar has the same label. Confirm through the dialog, not its obscured button.
+        let confirmDelete = app.sheets.buttons["Delete Permanently"]
+        XCTAssertTrue(confirmDelete.existsOrWait(timeout: 5))
+        confirmDelete.tap()
         XCTAssertTrue(app.staticTexts["No junk"].existsOrWait(timeout: 5))
         app.navigationBars.buttons["Inbox"].tap()
         XCTAssertTrue(row("Course project feedback", in: app).existsOrWait(timeout: 5))
