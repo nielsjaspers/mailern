@@ -21,6 +21,7 @@ import SQLite3
         try checkThreadingHeaders()
         checkMessageLinks()
         checkHTMLDocument()
+        checkQuotedText()
         try checkMute()
         try checkFollowUp()
         try await checkOutbox()
@@ -361,6 +362,35 @@ import SQLite3
         legacyStore.receiveReply(conversation.id)
         assert(legacyStore.conversations.count == 1 && legacyStore.conversation(conversation.id)!.latest.inReplyTo == old.threadingID)
         print("PASS: Message-ID headers on demo and sent mail, threading by In-Reply-To and References within one account, legacy mail")
+    }
+
+    static func checkQuotedText() {
+        let original = "Hey! Are you free on Saturday?\n\nCasey"
+        func visible(_ body: String, _ quotable: [String] = [original]) -> String? {
+            QuotedText.start(in: body, quotable: quotable).map { String((body as NSString).substring(to: $0)) }
+        }
+        // Mailern's composer quotes the earlier body under an attribution line, without `>`.
+        let reply = "Sure, 7 works.\n\nMorgan\n\nOn 11/17/2026, 3:45 PM, Casey Rivera <casey@example.com> wrote:\n\(original)"
+        assert(visible(reply) == "Sure, 7 works.\n\nMorgan\n\n")
+        // Text written below the quote, or a quote that was edited, keeps the whole message visible.
+        assert(visible(reply + "\n\nP.S. I'll bring wine.") == nil, "Text below a quote never folds")
+        assert(visible(reply.replacingOccurrences(of: "Saturday", with: "Sunday")) == nil, "An edited quote is not proven")
+        // Other clients prefix quoted lines with `>`. Only a trailing run folds, with its attribution.
+        assert(visible("Yes.\n\nOn Monday, Avery wrote:\n> Cabin?\n>\n> Avery\n", []) == "Yes.\n\n")
+        assert(visible("Yes.\n> quoted\n", []) == "Yes.\n")
+        assert(visible("> Cabin?\nYes, the first one.", []) == nil, "An inline answer below a quote stays visible")
+        assert(visible("> Only a quote", []) == nil && visible(reply.components(separatedBy: "On 11").last.map { "On 11" + $0 } ?? "") == nil,
+               "A message never folds to nothing")
+        assert(visible("Plain message\nwith two lines", []) == nil)
+        // Forwarded mail is the point of a forward and does not fold.
+        assert(visible("FYI\n\nBegin forwarded message:\n\nFrom: Casey\n\n\(original)") == nil)
+
+        var thread = DemoData.conversations().first { $0.subject == "Dinner on Saturday?" }!
+        let quoting = reply.replacingOccurrences(of: original, with: thread.messages[0].body)
+        var answer = MailMessage(sender: "Morgan", address: "morgan@personal.example.com", to: ["casey@example.com"], date: .now, body: quoting, outgoing: true)
+        answer.answer(thread.messages[0])
+        thread.messages.append(answer)
+        assert(thread.quoteStart(of: answer) != nil && thread.quoteStart(of: thread.messages[0]) == nil, "Only earlier messages count as quotable")
     }
 
     static func checkHTMLDocument() {
