@@ -164,7 +164,7 @@ final class DraftStore {
     /// A draft to open in the composer, set when Undo Send or Edit takes scheduled mail back.
     var reopening: UUID?
     var error: String?
-    /// Counts Pin, Snooze, and Restore on standalone drafts, like `MailStore.actionCount`.
+    /// Counts Pin, Snooze, Restore, Settle, and Discard on standalone drafts, like `MailStore.actionCount`.
     private(set) var actionCount = 0
     private let url: URL
     private let write: @Sendable (Data, URL) throws -> Void
@@ -220,13 +220,18 @@ final class DraftStore {
     }
     /// Discards the given standalone drafts and every reply draft attached to the given conversations.
     /// Scheduled replies stay unless `scheduled` is true, as when their conversation is deleted.
+    /// Discards the drafts in `ids` and the reply drafts of conversations in `ids`. Settling or trashing a standalone
+    /// draft row counts as a move. Reply drafts do not, because their conversation's move counts already.
     func discardDrafts(for ids: Set<UUID>, scheduled: Bool = false) async -> Bool {
-        await enqueue {
+        let standalone = drafts.contains { ids.contains($0.id) }
+        let discarded = await enqueue {
             await self.persist(self.all.filter { draft in
                 guard scheduled || draft.sendAt == nil else { return true }
                 return !ids.contains(draft.id) && !(draft.mode.replyID.map(ids.contains) ?? false)
             })
         }
+        if discarded && standalone { actionCount += 1 }
+        return discarded
     }
     /// Discards every draft sent from the given account.
     func discardDrafts(accountID: String) async -> Bool {

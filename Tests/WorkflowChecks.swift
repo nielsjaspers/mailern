@@ -25,6 +25,7 @@ import SQLite3
         try checkFollowUp()
         try await checkOutbox()
         try checkActionHaptics()
+        await checkDraftDiscardHaptics()
         checkAllMailSearch()
         checkNextConversation()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
@@ -100,6 +101,21 @@ import SQLite3
         assert(changes { store.apply(ids: [id], action: .restoreRemoved) })
         assert(!changes { store.receiveReply(id) }, "Incoming mail is not a move")
         print("PASS: haptics follow moves a person makes, not opening mail, refused moves, or incoming mail")
+    }
+
+    @MainActor static func checkDraftDiscardHaptics() async {
+        let drafts = DraftStore(url: URL.temporaryDirectory.appending(path: "mailern-draft-haptics-\(UUID()).json"))
+        let source = DemoData.conversations()[0]
+        let reply = ComposerDraft.make(mode: .reply(source.id), conversation: source, accounts: MailAccount.demo)
+        let standalone = ComposerDraft(subject: "Standalone haptic")
+        await drafts.save(reply)
+        await drafts.save(standalone)
+        let before = drafts.actionCount
+        let replyDiscarded = await drafts.discardDrafts(for: [source.id])
+        assert(replyDiscarded && drafts.actionCount == before, "The conversation's own move plays the haptic")
+        let draftDiscarded = await drafts.discardDrafts(for: [standalone.id])
+        assert(draftDiscarded && drafts.actionCount == before + 1, "Settling a draft row plays one")
+        print("PASS: discarding a standalone draft plays one haptic; reply drafts leave it to their conversation's move")
     }
 
     static func checkAllMailSearch() {
