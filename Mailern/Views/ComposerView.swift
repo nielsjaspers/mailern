@@ -7,6 +7,7 @@ struct ComposerView: View {
     @Environment(DraftStore.self) private var drafts
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let mode: ComposeMode
     /// The message a new reply or forward quotes. Nil targets the latest message.
     var messageID: UUID?
@@ -60,12 +61,26 @@ struct ComposerView: View {
                         Divider()
                         addressRow("Bcc", text: $draft.bcc, field: .bcc)
                         Divider()
-                        HStack(spacing: 8) {
-                            Text("From:").foregroundStyle(.secondary)
-                            Picker("From", selection: $draft.accountID) {
-                                ForEach(store.accounts) { Text($0.address).tag($0.id) }
-                            }.labelsHidden().tint(.primary).disabled(draft.mode.replyID != nil)
-                            Spacer(minLength: 0)
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("From:").foregroundStyle(.secondary).fixedSize()
+                            Menu {
+                                Picker("From", selection: $draft.accountID) {
+                                    ForEach(store.accounts) { Text($0.address).tag($0.id) }
+                                }
+                            } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                    Text(account.address)
+                                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                                        .truncationMode(.middle)
+                                        .multilineTextAlignment(.leading)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Image(systemName: "chevron.up.chevron.down").font(.caption)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 12)
+                                .contentShape(Rectangle())
+                            }.tint(.primary).disabled(draft.mode.replyID != nil)
+                                .accessibilityLabel("From, \(account.address)")
                         }.frame(minHeight: 48)
                         Divider()
                     } else {

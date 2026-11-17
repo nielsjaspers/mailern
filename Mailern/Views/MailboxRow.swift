@@ -58,19 +58,17 @@ struct MailboxRow: View {
             avatar.padding(.top, 3)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(title).fontWeight(unread ? .semibold : .regular).lineLimit(1)
-                    if count > 1 {
-                        Text("\(count)").font(.caption2.weight(.medium)).foregroundStyle(.secondary)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(.secondary.opacity(0.6)) }
-                            .fixedSize()
-                            .accessibilityLabel("\(count) messages")
+                    HStack(spacing: 6) {
+                        Text(title).fontWeight(unread ? .semibold : .regular).lineLimit(1)
+                        if count > 1 {
+                            Text("\(count)").font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(.secondary.opacity(0.6)) }
+                                .fixedSize()
+                                .accessibilityLabel("\(count) messages")
+                        }
                     }
                     Spacer(minLength: 4)
-                    if unread {
-                        Circle().fill(.teal).frame(width: 8, height: 8)
-                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }
-                    }
                     Text(date.mailboxStamp).font(.caption).foregroundStyle(.secondary).fixedSize()
                 }
                 HStack(spacing: 6) {

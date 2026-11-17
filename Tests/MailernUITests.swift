@@ -93,6 +93,80 @@ final class ComposeDefaultsToBottomRightUITests: MailernUITestCase {
     }
 }
 
+final class ThreadCountAlignmentUITests: MailernUITestCase {
+    @MainActor
+    func testCountStaysCenteredBesideReadAndUnreadSenders() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let thread = row("Dinner on Saturday?", in: app)
+        for unread in [false, true] {
+            XCTAssertEqual(thread.value as? String, unread ? "Unread" : "Read")
+            let sender = thread.staticTexts["Casey Rivera, Me"]
+            let count = thread.staticTexts["3 messages"]
+            XCTAssertTrue(count.exists)
+            capture("Thread count beside \(unread ? "unread" : "read") sender", in: app)
+            XCTAssertEqual(count.frame.midY, sender.frame.midY, accuracy: 1)
+            XCTAssertGreaterThan(count.frame.minX, sender.frame.maxX)
+            if !unread { fullSwipe(thread, right: true) }
+        }
+    }
+}
+
+final class ComposerSenderLayoutUITests: MailernUITestCase {
+    @MainActor
+    func testSenderUsesRowWidthAndStaysBetweenHeaders() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
+        if app.buttons["Continue"].exists { app.buttons["Continue"].tap() }
+        app.buttons["Cc/Bcc, From"].tap()
+        let sender = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'From, '")).firstMatch
+        XCTAssertTrue(sender.existsOrWait(timeout: 5))
+        capture("Composer sender layout", in: app)
+        XCTAssertGreaterThan(sender.frame.width, app.frame.width * 0.6,
+                             "The sender must use the space beside From instead of wrapping in a narrow picker")
+        XCTAssertLessThanOrEqual(sender.frame.height, 48)
+        let bcc = app.descendants(matching: .any).matching(identifier: "Bcc").firstMatch
+        let subject = app.textFields["Subject"]
+        XCTAssertGreaterThanOrEqual(sender.frame.minY, bcc.frame.maxY)
+        XCTAssertLessThanOrEqual(sender.frame.maxY, subject.frame.minY)
+        sender.tap()
+        for address in ["morgan@personal.example.com", "morgan@private.example.com", "morgan@student.example.com"] {
+            XCTAssertTrue(app.buttons[address].existsOrWait(timeout: 3))
+        }
+        app.buttons["morgan@private.example.com"].tap()
+        XCTAssertTrue(sender.label.contains("morgan@private.example.com"))
+        XCTAssertGreaterThan(sender.frame.width, app.frame.width * 0.6)
+        XCTAssertLessThanOrEqual(sender.frame.height, 48)
+        capture("Composer after switching sender", in: app)
+    }
+
+    @MainActor
+    func testSenderGrowsAtAccessibilityTextSizes() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launchArguments = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
+        app.buttons["Cc/Bcc, From"].tap()
+        let sender = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'From, '")).firstMatch
+        XCTAssertTrue(sender.existsOrWait(timeout: 5))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.25)))
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        let bcc = app.descendants(matching: .any).matching(identifier: "Bcc").firstMatch
+        let subject = app.textFields["Subject"]
+        XCTAssertGreaterThanOrEqual(sender.frame.minY, bcc.frame.maxY)
+        XCTAssertLessThanOrEqual(sender.frame.maxY, subject.frame.minY)
+        XCTAssertGreaterThan(sender.frame.height, app.staticTexts["From:"].frame.height * 2)
+        capture("Composer sender at largest accessibility text size", in: app)
+    }
+}
+
 final class AccountsSignaturesAndDeletionUITests: MailernUITestCase {
     @MainActor
     func testAccountsSignaturesAndDeletion() {
