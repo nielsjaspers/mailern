@@ -14,9 +14,15 @@ struct MailboxFilterToolbar: View {
         let control = MailboxFilterControl(filter: filter, status: status, toggle: toggle, options: options)
         GlassEffectContainer(spacing: 16) {
             FilterToolbarLayout(expansion: filter.enabled ? 1 : 0) {
-                Button("Select", action: select)
-                    .buttonStyle(.glass)
-                    .controlSize(.large)
+                Button(action: select) {
+                    Text("Select")
+                        .padding(.horizontal, 16)
+                        .frame(minHeight: 44)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tint)
+                .glassEffect(.regular.interactive(), in: .capsule)
                 Group {
                     if filter.enabled {
                         control.summary

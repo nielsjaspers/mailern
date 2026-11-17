@@ -11,6 +11,7 @@ cp 'Tests/Fixtures/Sample attachment.txt' "$app_data/Documents/Sample attachment
 xcrun simctl addmedia "$simulator_id" 'Tests/Fixtures/Sample photo.png'
 xcodebuild -project Mailern.xcodeproj -scheme Mailern -destination "id=$simulator_id" -derivedDataPath "$derived_data" test-without-building -parallel-testing-enabled NO \
   -only-testing:MailernTests \
+  -only-testing:MailernUITests/RecipientSearchUITests/testSearchRecipientsAndPreserveSelection \
   -only-testing:MailernUITests/ComposerSelectionHandleDragKeepsEditingUITests/testComposerSelectionHandleDragKeepsEditing \
   -only-testing:MailernUITests/AttachmentMenuDismissalKeepsEditorUsableUITests/testAttachmentMenuDismissalKeepsEditorUsable \
   -only-testing:MailernUITests/InboxDraftPreviewEditAndDiscardUITests/testInboxDraftPreviewEditAndDiscard \

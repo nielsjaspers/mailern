@@ -93,6 +93,75 @@ final class ComposeDefaultsToBottomRightUITests: MailernUITestCase {
     }
 }
 
+final class MailboxSelectButtonSizeUITests: MailernUITestCase {
+    @MainActor
+    func testSelectMatchesAdjacentToolbarHeight() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        for mailbox in ["Inbox", "Snoozed", "Settled"] {
+            select(mailbox, in: app)
+            let select = app.buttons["Select"]
+            let filter = app.buttons["Filter"]
+            XCTAssertTrue(select.isHittable)
+            XCTAssertEqual(select.frame.height, filter.frame.height, accuracy: 1)
+            XCTAssertEqual(select.frame.midY, filter.frame.midY, accuracy: 1)
+            if mailbox == "Inbox" { capture("Select matches adjacent toolbar controls", in: app) }
+            select.tap()
+            XCTAssertTrue(app.buttons["Cancel"].existsOrWait(timeout: 3))
+            app.buttons["Cancel"].tap()
+        }
+    }
+}
+
+final class RecipientSearchUITests: MailernUITestCase {
+    @MainActor
+    func testSearchRecipientsAndPreserveSelection() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        app.buttons["Add recipient"].tap()
+        XCTAssertTrue(app.navigationBars["Recipients"].existsOrWait(timeout: 5))
+        let search = app.searchFields["Search recipients"]
+        let recipients = app.collectionViews["recipient-list"]
+        XCTAssertTrue(search.isHittable)
+        capture("Recipients with native search", in: app)
+        search.tap()
+        search.typeText("  jOrDaN  ")
+        XCTAssertTrue(recipients.buttons.containing(.staticText, identifier: "Dr. Jordan Lee").firstMatch.exists)
+        XCTAssertFalse(recipients.staticTexts["Avery"].exists)
+        capture("Recipients filtered by name", in: app)
+        search.buttons["Clear text"].tap()
+        search.typeText("orders@bookshop")
+        let bookshop = recipients.buttons.containing(.staticText, identifier: "Bookshop").firstMatch
+        XCTAssertTrue(bookshop.exists)
+        XCTAssertFalse(recipients.staticTexts["Dr. Jordan Lee"].exists)
+        search.buttons["Clear text"].tap()
+        search.typeText("no-such-recipient")
+        XCTAssertTrue(app.staticTexts["No recipients found"].exists)
+        capture("Recipient search with no matches", in: app)
+        search.buttons["Clear text"].tap()
+        XCTAssertTrue(recipients.staticTexts["Avery"].exists)
+        search.typeText("orders@bookshop")
+        bookshop.tap()
+        XCTAssertFalse(app.navigationBars["Recipients"].exists)
+        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
+        XCTAssertEqual(to.value as? String, "orders@bookshop.example")
+        app.buttons["Add recipient"].tap()
+        XCTAssertTrue(search.existsOrWait(timeout: 3))
+        XCTAssertEqual(search.value as? String, "Search recipients")
+        search.tap()
+        search.typeText("avery")
+        recipients.buttons.containing(.staticText, identifier: "Avery").firstMatch.tap()
+        XCTAssertEqual(to.value as? String, "orders@bookshop.example, avery@example.com")
+        app.buttons["Add recipient"].tap()
+        app.navigationBars["Recipients"].buttons["Cancel"].tap()
+        XCTAssertFalse(app.navigationBars["Recipients"].exists)
+        XCTAssertEqual(to.value as? String, "orders@bookshop.example, avery@example.com")
+    }
+}
+
 final class FilterToggleStaysAnchoredOnRepeatedChangesUITests: MailernUITestCase {
     @MainActor
     func testFilterToggleStaysAnchoredOnRepeatedChanges() {
