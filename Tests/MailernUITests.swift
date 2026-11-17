@@ -1410,6 +1410,29 @@ final class TrashAndJunkMailboxesUITests: MailernUITestCase {
         waitForAbsence(row(course, in: app))
         openMailbox("Trash", in: app)
         XCTAssertTrue(row(dinner, in: app).existsOrWait(timeout: 5))
+        // A search must drop hidden conversations from a bulk deletion.
+        func selectable(_ subject: String) -> XCUIElement {
+            app.cells.containing(NSPredicate(format: "label CONTAINS %@", subject)).firstMatch
+        }
+        app.buttons["Select"].tap()
+        selectable(course).tap()
+        let search = app.searchFields["Search Trash"]
+        if !search.isHittable { app.swipeDown() }
+        search.tap()
+        search.typeText("Dinner")
+        XCTAssertTrue(selectable(dinner).existsOrWait(timeout: 5))
+        waitForAbsence(selectable(course))
+        selectable(dinner).tap()
+        let delete = app.toolbars.buttons["Delete Permanently"]
+        delete.tap()
+        // The first tap can end search editing instead of reaching the toolbar.
+        if !app.alerts.firstMatch.existsOrWait(timeout: 2) && !app.sheets.firstMatch.exists { delete.tap() }
+        XCTAssertFalse(app.staticTexts["Delete 2 conversations permanently?"].exists)
+        XCTAssertTrue(app.staticTexts["Delete this conversation permanently?"].existsOrWait(timeout: 5))
+        capture("Search drops hidden selections", in: app)
+        app.terminate()
+        app.launch()
+        openMailbox("Trash", in: app)
         app.buttons["Empty Trash"].tap()
         XCTAssertTrue(app.staticTexts["Delete 2 conversations permanently?"].existsOrWait(timeout: 5))
         app.buttons["Delete Permanently"].tap()

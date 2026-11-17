@@ -221,7 +221,6 @@ final class MailStore {
         conversations.removeAll { ids.contains($0.id) }
         save()
     }
-    func emptyTrash() { deletePermanently(Set(list(.trash).map(\.id))) }
     private func deliver(_ message: MailMessage, to id: UUID) {
         update(id) {
             $0.receive(message)

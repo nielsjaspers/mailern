@@ -116,11 +116,11 @@ import Foundation
         reloaded.wakeDue(now: .now.addingTimeInterval(MailStore.trashRetention + 1))
         assert(old.allSatisfy { reloaded.conversation($0) == nil }, "Trash deletes mail after 30 days")
         reloaded.apply(ids: [reloaded.list(.inbox)[0].id], action: .remove(.trash))
-        reloaded.emptyTrash()
+        reloaded.deletePermanently(Set(reloaded.list(.trash).map(\.id)))
         assert(reloaded.list(.trash).isEmpty && MailStore(persistence: disk).conversations == reloaded.conversations)
         reloaded.reset()
         assert(reloaded.blockedSenders.isEmpty && reloaded.list(.junk).isEmpty)
-        print("PASS: trash/junk lists, restore to original workflow, Undo with block list, reply rescues Trash but not Junk, block survives deletion, 30-day purge, Empty Trash, reset")
+        print("PASS: trash/junk lists, restore to original workflow, Undo with block list, reply rescues Trash but not Junk, block survives deletion, 30-day purge, permanent deletion, reset")
     }
 
     @MainActor static func checkUndoExpiry() async throws {

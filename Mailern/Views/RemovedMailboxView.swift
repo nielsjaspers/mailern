@@ -64,7 +64,9 @@ struct RemovedMailboxView: View {
                     endSelection()
                 }
             } message: { Text("This can't be undone.") }
-            .onChange(of: store.conversations) { _, _ in selectedIDs.formIntersection(conversations.map(\.id)) }
+            // Bulk actions apply only to visible conversations.
+            .onChange(of: store.conversations) { _, _ in pruneSelection() }
+            .onChange(of: search) { _, _ in pruneSelection() }
     }
 
     @ViewBuilder private var content: some View {
@@ -118,4 +120,5 @@ struct RemovedMailboxView: View {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
     private func endSelection() { selecting = false; selectedIDs = [] }
+    private func pruneSelection() { selectedIDs.formIntersection(conversations.map(\.id)) }
 }
