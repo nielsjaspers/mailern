@@ -2,7 +2,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 simulator_id=${1:?Usage: scripts/check-ui.sh DISPOSABLE_SIMULATOR_ID [WORKERS|--stop]}
-workers=${2:-5}
+workers=${2:-4}
 if [ "$workers" = --stop ]; then
   exec python3 scripts/run-ui-workers.py "$simulator_id" --stop
 fi
