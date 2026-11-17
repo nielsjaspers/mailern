@@ -204,6 +204,26 @@ final class MailboxSelectButtonSizeUITests: MailernUITestCase {
     }
 }
 
+final class MailtoLinkOpensComposerUITests: MailernUITestCase {
+    @MainActor
+    func testMailtoLinkOpensComposer() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        row("Project presentations", in: app).tap()
+        let link = app.links["course@college.example.com"]
+        XCTAssertTrue(link.existsOrWait(timeout: 5))
+        link.tap()
+        XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
+        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
+        XCTAssertEqual(to.value as? String, "course@college.example.com")
+        capture("Composer from a mailto link", in: app)
+        app.buttons["Cancel"].tap()
+        waitForComposerDismissal(in: app)
+        XCTAssertTrue(app.links["course@college.example.com"].exists, "The thread stays open")
+    }
+}
+
 final class RecipientSearchUITests: MailernUITestCase {
     @MainActor
     func testSearchRecipientsAndPreserveSelection() {

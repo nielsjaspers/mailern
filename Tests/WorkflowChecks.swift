@@ -19,6 +19,7 @@ import SQLite3
         try checkSQLiteStorage()
         try await checkAccounts()
         try checkThreadingHeaders()
+        checkMessageLinks()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -264,6 +265,26 @@ import SQLite3
         legacyStore.receiveReply(conversation.id)
         assert(legacyStore.conversations.count == 1 && legacyStore.conversation(conversation.id)!.latest.inReplyTo == old.threadingID)
         print("PASS: Message-ID headers on demo and sent mail, threading by In-Reply-To and References within one account, legacy mail")
+    }
+
+    static func checkMessageLinks() {
+        let link = MailtoLink(URL(string: "mailto:a@example.com,b@example.com?cc=c@example.com&bcc=d@example.com&subject=Hello%20there&body=Line%201%0ALine+2")!)!
+        assert(link.to == ["a@example.com", "b@example.com"] && link.cc == ["c@example.com"] && link.bcc == ["d@example.com"])
+        assert(link.subject == "Hello there" && link.body == "Line 1\nLine+2", "RFC 6068 keeps + as written")
+        assert(MailtoLink(URL(string: "mailto:?to=x@example.com")!)!.to == ["x@example.com"])
+        assert(MailtoLink(URL(string: "https://example.com")!) == nil)
+
+        let accounts = MailAccount.demo
+        let draft = ComposerDraft.make(mode: .mailto(link), conversation: nil, accounts: accounts)
+        assert(draft.mode == .new && draft.to == "a@example.com, b@example.com" && draft.cc == "c@example.com" && draft.bcc == "d@example.com")
+        assert(draft.subject == "Hello there" && draft.text == "Line 1\nLine+2\n\nMorgan", "The body goes above the signature")
+
+        let text = MessageLinks.linked("Read *this* at https://example.com/a, write to help@example.com, or call +1 (555) 010-0199.")
+        let links = text.runs.compactMap { run in run.link.map { (String(text[run.range].characters), $0.absoluteString) } }
+        assert(links.map(\.1) == ["https://example.com/a", "mailto:help@example.com", "tel:+15550100199"], "\(links)")
+        assert(String(text.characters).contains("*this*"), "Plain text is not read as Markdown")
+        assert(MessageLinks.linked("Tuesday, 10:00–11:00\nOrder #10428").runs.allSatisfy { $0.link == nil })
+        print("PASS: mailto parsing and drafts, web/email/phone links in plain text, no Markdown in plain text")
     }
 
     @MainActor static func checkTrashAndJunk() throws {

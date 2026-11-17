@@ -34,6 +34,12 @@ struct ThreadView: View {
                         await drafts.delete(draftID)
                     }
                 }, deletingDraft: deleting, compose: c.removal == nil ? { compose($0, message: $1) } : nil)
+                // A mailto: link starts a message here. Other links go to the system, which opens web links in the browser.
+                .environment(\.openURL, OpenURLAction { url in
+                    guard let link = MailtoLink(url) else { return .systemAction }
+                    compose(.mailto(link))
+                    return .handled
+                })
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -88,10 +94,13 @@ struct ThreadView: View {
         .toolbar(.hidden, for: .tabBar)
         .onAppear { store.markRead(id) }
         .sheet(item: $mode) { mode in
-            if case .draft = mode { ComposerView(mode: mode) }
+            switch mode {
+            case .draft, .mailto: ComposerView(mode: mode)
             // The zoom transition belongs to the toolbar's Reply button.
-            else if target != nil { ComposerView(mode: mode, messageID: target) }
-            else { ComposerView(mode: mode).modifier(ComposerTransition(source: "reply", namespace: composeTransition)) }
+            default:
+                if target != nil { ComposerView(mode: mode, messageID: target) }
+                else { ComposerView(mode: mode).modifier(ComposerTransition(source: "reply", namespace: composeTransition)) }
+            }
         }
         .modifier(DraftStorageAlert(active: mode == nil))
         .modifier(DiscardDraftsConfirmation(request: $settling, onDone: { dismiss() }))

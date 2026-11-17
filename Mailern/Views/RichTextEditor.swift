@@ -333,19 +333,34 @@ final class QuotedTextView: UITextView {
 
 struct RichMessageText: UIViewRepresentable {
     let text: NSAttributedString
+    func makeCoordinator() -> LinkRouter { LinkRouter() }
     func makeUIView(context: Context) -> QuotedTextView {
         let view = QuotedTextView(usingTextLayoutManager: true)
         view.backgroundColor = .clear
         view.isEditable = false
+        view.dataDetectorTypes = [.link, .phoneNumber]
+        view.delegate = context.coordinator
         view.isScrollEnabled = false
         view.adjustsFontForContentSizeCategory = true
         view.textContainerInset = .zero
         view.textContainer.lineFragmentPadding = 0
         return view
     }
-    func updateUIView(_ view: QuotedTextView, context: Context) { view.attributedText = text }
+    func updateUIView(_ view: QuotedTextView, context: Context) {
+        context.coordinator.openURL = context.environment.openURL
+        view.attributedText = text
+    }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: QuotedTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? 300
         return uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+    }
+}
+
+/// Sends link taps in a text view to SwiftUI's `openURL`, so they follow the same rules as links elsewhere.
+final class LinkRouter: NSObject, UITextViewDelegate {
+    var openURL: OpenURLAction?
+    func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem, defaultAction: UIAction) -> UIAction? {
+        guard case .link(let url) = textItem.content, let openURL else { return defaultAction }
+        return UIAction { _ in openURL(url) }
     }
 }

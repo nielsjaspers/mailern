@@ -133,7 +133,7 @@ private struct MessageSection: View {
                 Group {
                     if let richText = message.richText {
                         RichMessageText(text: RichText.decode(richText, fallback: message.body))
-                    } else { Text(.init(message.body)) }
+                    } else { Text(MessageLinks.linked(message.body)) }
                 }.font(.body).lineSpacing(5).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let attachments = message.attachments, !attachments.isEmpty {
