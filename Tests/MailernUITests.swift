@@ -2365,6 +2365,191 @@ final class PeekMenuResizeAndTapsUITests: MailernUITestCase {
     }
 }
 
+final class UndoSendUITests: MailernUITestCase {
+    @MainActor
+    func testUndoSendReopensTheReplyAndSendsAfterTheDelay() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launchEnvironment["MAILERN_TEST_UNDO_SEND"] = "5"
+        app.launch()
+        let course = "Course project feedback"
+        row(course, in: app).tap()
+        app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
+        XCTAssertTrue(app.navigationBars["Re: \(course)"].existsOrWait(timeout: 5))
+        enterText("Undo send proof", in: app.textViews["Message body"])
+        app.buttons["Send"].tap()
+        waitForComposerDismissal(in: app)
+        XCTAssertTrue(app.staticTexts["Sending…"].existsOrWait(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'scheduled-card-'")).firstMatch.exists)
+        capture("Undo Send banner in the thread", in: app)
+        app.buttons["Undo"].tap()
+        let body = app.textViews["Message body"]
+        XCTAssertTrue(body.existsOrWait(timeout: 5))
+        XCTAssertTrue((body.value as? String)?.hasPrefix("Undo send proof") == true)
+        // Taking mail back must not send it later.
+        sleep(6)
+        XCTAssertTrue(app.navigationBars["Re: \(course)"].exists)
+        app.buttons["Send"].tap()
+        waitForComposerDismissal(in: app)
+        XCTAssertTrue(app.staticTexts["Sending…"].existsOrWait(timeout: 3))
+        waitForAbsence(app.staticTexts["Sending…"], timeout: 10)
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Undo send proof'")).firstMatch.existsOrWait(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Settled"].existsOrWait(timeout: 5))
+        app.navigationBars.buttons["Inbox"].tap()
+        waitForAbsence(row(course, in: app))
+        select("Settled", in: app)
+        XCTAssertTrue(row(course, in: app).existsOrWait(timeout: 5))
+    }
+}
+
+final class SendLaterUITests: MailernUITestCase {
+    @MainActor
+    func testSendLaterScheduledMailboxCancelEditAndSendNow() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let subject = "Later proof"
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
+        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
+        to.tap(); to.typeText("sam@example.com")
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(subject)
+        sendLater(in: app)
+        openScheduled(in: app)
+        XCTAssertTrue(row(subject, in: app).existsOrWait(timeout: 5))
+        capture("Scheduled mailbox", in: app)
+        row(subject, in: app).tap()
+        XCTAssertTrue(app.buttons["Send Now"].existsOrWait(timeout: 5))
+        capture("Scheduled message", in: app)
+        app.buttons["Cancel Send"].tap()
+        XCTAssertTrue(app.staticTexts["No scheduled mail"].existsOrWait(timeout: 5))
+        // Cancel Send keeps the message as a draft.
+        app.navigationBars.buttons["Inbox"].tap()
+        openDraft(subject, in: app)
+        XCTAssertTrue(app.navigationBars[subject].existsOrWait(timeout: 5))
+        sendLater(in: app)
+        // The draft view closes once its draft leaves Drafts.
+        XCTAssertTrue(app.navigationBars["Inbox"].existsOrWait(timeout: 5))
+        waitForAbsence(row(subject, in: app))
+        openScheduled(in: app)
+        row(subject, in: app).tap()
+        app.buttons["Send Now"].tap()
+        XCTAssertTrue(app.staticTexts["No scheduled mail"].existsOrWait(timeout: 5))
+        app.navigationBars.buttons["Inbox"].tap()
+        select("Settled", in: app)
+        XCTAssertTrue(row(subject, in: app).existsOrWait(timeout: 5))
+
+        // A scheduled reply shows in its thread. Edit takes it back into the composer.
+        let dinner = "Dinner on Saturday?"
+        select("Inbox", in: app)
+        row(dinner, in: app).tap()
+        app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
+        XCTAssertTrue(app.navigationBars["Re: \(dinner)"].existsOrWait(timeout: 5))
+        sendLater(in: app)
+        let card = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'scheduled-card-'")).firstMatch
+        XCTAssertTrue(card.existsOrWait(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Scheduled"].exists)
+        capture("Scheduled reply in its thread", in: app)
+        app.buttons["Edit"].tap()
+        XCTAssertTrue(app.navigationBars["Re: \(dinner)"].existsOrWait(timeout: 5))
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        waitForComposerDismissal(in: app)
+        waitForAbsence(card)
+        XCTAssertTrue(app.buttons["Edit draft"].existsOrWait(timeout: 5))
+    }
+
+    @MainActor
+    private func sendLater(in app: XCUIApplication) {
+        app.buttons["Send"].press(forDuration: 1.2)
+        XCTAssertTrue(app.buttons["Send Later…"].existsOrWait(timeout: 5))
+        app.buttons["Send Later…"].tap()
+        XCTAssertTrue(app.navigationBars["Send Later"].existsOrWait(timeout: 5))
+        let option = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "In ")).firstMatch
+        XCTAssertTrue(option.existsOrWait(timeout: 5))
+        option.tap()
+        waitForComposerDismissal(in: app)
+    }
+
+    @MainActor
+    private func openScheduled(in app: XCUIApplication) {
+        app.buttons["More"].tap()
+        let item = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Scheduled")).firstMatch
+        XCTAssertTrue(item.existsOrWait(timeout: 5))
+        item.tap()
+        XCTAssertTrue(app.navigationBars["Scheduled"].existsOrWait(timeout: 5))
+    }
+}
+
+final class FollowUpReminderUITests: MailernUITestCase {
+    @MainActor
+    func testReminderKeepsSentMailInSnoozed() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let subject = "Reminder proof"
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
+        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
+        to.tap(); to.typeText("sam@example.com")
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(subject)
+        app.buttons["Send"].press(forDuration: 1.2)
+        app.buttons["Remind Me If No Reply…"].tap()
+        XCTAssertTrue(app.navigationBars["Remind If No Reply"].existsOrWait(timeout: 5))
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "In ")).firstMatch.tap()
+        let reminder = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", "if nobody replies")).firstMatch
+        XCTAssertTrue(reminder.existsOrWait(timeout: 5))
+        capture("Composer with a follow-up reminder", in: app)
+        app.buttons["Send"].tap()
+        waitForComposerDismissal(in: app)
+        select("Snoozed", in: app)
+        let sent = row(subject, in: app)
+        XCTAssertTrue(sent.existsOrWait(timeout: 5))
+        XCTAssertTrue(sent.label.contains("Waiting for a reply"))
+        capture("Sent mail waiting for a reply in Snoozed", in: app)
+        sent.tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", "if nobody replies")).firstMatch.existsOrWait(timeout: 5))
+    }
+}
+
+final class MuteThreadUITests: MailernUITestCase {
+    @MainActor
+    func testMutedThreadStaysSettledOnReply() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let dinner = "Dinner on Saturday?"
+        row(dinner, in: app).tap()
+        app.buttons["More actions"].tap()
+        app.buttons["Mute"].tap()
+        XCTAssertTrue(app.staticTexts["· Muted"].existsOrWait(timeout: 5))
+        app.buttons["Settle"].tap()
+        waitForAbsence(row(dinner, in: app))
+        select("Settled", in: app)
+        let muted = row(dinner, in: app)
+        XCTAssertTrue(muted.existsOrWait(timeout: 5))
+        XCTAssertTrue(muted.label.contains("Muted"))
+        capture("Muted row in Settled", in: app)
+        muted.tap()
+        app.buttons["More actions"].tap()
+        app.buttons["Simulate incoming reply"].tap()
+        app.navigationBars.buttons["Settled"].tap()
+        XCTAssertTrue(row(dinner, in: app).existsOrWait(timeout: 5))
+        XCTAssertEqual(row(dinner, in: app).value as? String, "Read")
+        select("Inbox", in: app)
+        XCTAssertFalse(row(dinner, in: app).exists)
+        select("Settled", in: app)
+        row(dinner, in: app).tap()
+        app.buttons["More actions"].tap()
+        app.buttons["Unmute"].tap()
+        app.buttons["More actions"].tap()
+        app.buttons["Simulate incoming reply"].tap()
+        app.navigationBars.buttons["Settled"].tap()
+        waitForAbsence(row(dinner, in: app))
+        select("Inbox", in: app)
+        expectReadStatus(dinner, in: app)
+    }
+}
+
 class MailernUITestCase: XCTestCase {
     override func record(_ issue: XCTIssue) {
         // Attach the main-thread failure screen to the issue so failure-only exports include it.
@@ -2543,8 +2728,8 @@ class MailernUITestCase: XCTestCase {
     }
 
     @MainActor
-    func waitForAbsence(_ element: XCUIElement) {
-        XCTAssertTrue(!element.exists || element.waitForNonExistence(timeout: 5))
+    func waitForAbsence(_ element: XCUIElement, timeout: TimeInterval = 5) {
+        XCTAssertTrue(!element.exists || element.waitForNonExistence(timeout: timeout))
     }
 }
 
