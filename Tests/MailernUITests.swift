@@ -48,6 +48,7 @@ final class TestApplication: XCUIApplication {
         let reuse = !requiresFreshProcess && !hasLaunched && launchArguments.isEmpty && previous != nil && state == .runningForeground
         hasLaunched = true
         if reuse {
+            super.activate()
             do {
                 try JSONEncoder().encode(launchEnvironment).write(to: URL(fileURLWithPath: path), options: .atomic)
                 CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
@@ -1416,7 +1417,8 @@ final class CustomSwipeActionsUITests: MailernUITestCase {
         func settings() {
             app.buttons["More"].tap()
             XCTAssertTrue(app.buttons["Settings"].wait(for: \.isHittable, toEqual: true, timeout: 5))
-            app.buttons["Settings"].tap()
+            // The default activation point can leave the native menu open after a swipe.
+            app.buttons["Settings"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
             XCTAssertTrue(app.navigationBars["Settings"].existsOrWait(timeout: 5))
             XCTAssertTrue(app.buttons["Swipe actions"].wait(for: \.isHittable, toEqual: true, timeout: 5))
             app.buttons["Swipe actions"].tap()
