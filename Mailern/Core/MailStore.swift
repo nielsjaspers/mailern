@@ -269,11 +269,17 @@ final class MailStore {
     /// a draft left behind by a deleted account would have no sender address.
     func deleteAccount(_ id: String, drafts: DraftStore) async -> String? {
         guard canWrite(), accounts.count > 1 else { return error ?? "You need at least one account." }
+        let removed = drafts.drafts.filter { $0.accountID == id }
         guard await drafts.discardDrafts(accountID: id) else {
             defer { drafts.error = nil }
             return drafts.error ?? "The account's drafts could not be deleted."
         }
-        return deleteAccount(id) ? nil : error ?? "This account could not be deleted."
+        guard deleteAccount(id) else {
+            let problem = error ?? "This account could not be deleted."
+            _ = await drafts.restore(removed)
+            return problem
+        }
+        return nil
     }
     /// Removes an account and its conversations without Undo. Callers confirm first. The last account stays.
     @discardableResult func deleteAccount(_ id: String) -> Bool {
@@ -320,6 +326,10 @@ final class MailStore {
     func send(threadID: UUID?, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
               bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = []) -> Bool {
         guard canWrite() else { return false }
+        guard accounts.contains(where: { $0.id == account.id }) else {
+            error = "The sending account no longer exists. Choose another From address."
+            return false
+        }
         if let threadID, conversation(threadID) == nil {
             error = "The original conversation is no longer available. Your draft has not been sent."
             return false

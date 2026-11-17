@@ -29,7 +29,7 @@ struct DemoView: View {
             }
             .navigationTitle("Demo").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .confirmationDialog("Replace all local demo messages?", isPresented: $reset, titleVisibility: .visible) {
+            .confirmationDialog("Replace all local demo messages and accounts?", isPresented: $reset, titleVisibility: .visible) {
                 Button("Reset Demo Data", role: .destructive) { store.reset(); dismiss() }
             }
         }

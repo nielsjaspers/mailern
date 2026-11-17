@@ -248,6 +248,8 @@ struct ComposerView: View {
         } else {
             draft = ComposerDraft.make(mode: mode, conversation: mode.sourceID.flatMap(store.conversation), message: messageID, accounts: store.accounts)
         }
+        // A draft can outlive its account, for example after a demo reset. It sends from the default account instead.
+        if !store.accounts.contains(where: { $0.id == draft.accountID }) { draft.accountID = store.accounts[0].id }
         let text = NSMutableAttributedString(attributedString: RichText.decode(draft.richText, fallback: draft.text))
         if !saved, draft.richText == nil, let sourceID = draft.mode.sourceID, let source = store.conversation(sourceID), text.length > 2 {
             // Retain the original formatting inside the editable reply or forward quote.

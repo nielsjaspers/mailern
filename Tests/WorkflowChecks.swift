@@ -151,7 +151,11 @@ import SQLite3
         assert(swapped("Hi\n\nMorgan X.", old: "Morgan M.", new: "Morgan") == nil)
         assert(swapped("Hi\n\nMorgan M.", old: "Morgan", new: "Avery") == nil)
         assert(swapped("Hi\n\nMorgan M. and Morgan\n\nOn Monday", old: "Morgan", new: "Avery") == nil)
-        assert(swapped("Hi\n\nMorgan\n\nOn Monday", old: "Morgan", new: "Avery") == "Hi\n\nAvery\n\nOn Monday")
+        assert(swapped("Hi\n\nMorgan\n\nOn Monday", old: "Morgan", new: "Avery", quote: 12) == "Hi\n\nAvery\n\nOn Monday")
+        // Only the inserted block at the end counts. Earlier text that looks like it stays untouched.
+        assert(swapped("Hi\n\nMorgan\n\nPlease call me.\n\nMorgan", old: "Morgan", new: "Avery") == "Hi\n\nMorgan\n\nPlease call me.\n\nAvery")
+        assert(swapped("Participants:\n\nMorgan\nAvery\n\nMorgan (edited)", old: "Morgan", new: "Avery") == nil)
+        assert(swapped("Hi\n\nMorgan\n\nP.S. Call me", old: "Morgan", new: "Avery") == nil)
         // The quote can contain the old signature's text. An edited signature must not redirect the swap into the quote.
         let forwardBody = "\n\nMorgan (edited)\n\nBegin forwarded message:\n\nThanks\n\nMorgan"
         assert(swapped(forwardBody, old: "Morgan", new: "Avery", quote: 19) == nil)
@@ -170,9 +174,26 @@ import SQLite3
         let failingDrafts = DraftStore(url: directory.appending(path: "drafts.json"), write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
         let failure = await store.deleteAccount("work", drafts: failingDrafts)
         assert(failure != nil && store.account("work").name == "Studio" && store.conversation(sent.id) != nil && failingDrafts.drafts.count == 2)
+        // A failed database write after the drafts are gone puts the drafts back.
+        var lock: OpaquePointer?
+        assert(sqlite3_open(url.path, &lock) == SQLITE_OK && sqlite3_exec(lock, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+        let locked = await store.deleteAccount("work", drafts: drafts)
+        sqlite3_exec(lock, "ROLLBACK", nil, nil, nil)
+        sqlite3_close(lock)
+        store.error = nil
+        assert(locked != nil && store.account("work").name == "Studio" && Set(drafts.drafts.map(\.subject)) == ["Studio draft", "Personal draft"])
+        assert(Set(DraftStore(url: directory.appending(path: "drafts.json")).drafts.map(\.subject)) == ["Studio draft", "Personal draft"])
+        // An unreadable draft store can still hold the account's drafts, so deletion waits until it loads.
+        let unreadableURL = directory.appending(path: "unreadable-drafts.json")
+        try Data("not json".utf8).write(to: unreadableURL)
+        let unreadable = DraftStore(url: unreadableURL)
+        let blocked = await store.deleteAccount("work", drafts: unreadable)
+        assert(blocked != nil && store.account("work").name == "Studio")
         let deleted = await store.deleteAccount("work", drafts: drafts)
         assert(deleted == nil && drafts.drafts.map(\.subject) == ["Personal draft"])
         assert(store.conversation(sent.id) == nil && store.account("work").name == "Removed account")
+        assert(!store.send(threadID: nil, account: store.account("work"), to: ["client@example.com"], cc: [], subject: "Orphan", body: "No sender"))
+        store.error = nil
         let reopened = MailStore(persistence: SQLitePersistence(url: url))
         assert(reopened.accounts == MailAccount.demo && reopened.conversation(sent.id) == nil)
         for account in MailAccount.demo.dropFirst() { assert(reopened.deleteAccount(account.id)) }

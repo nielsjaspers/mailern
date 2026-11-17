@@ -88,28 +88,16 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     static func signatureBlock(_ signature: String) -> String { signature.isEmpty ? "" : "\n\n\(signature)" }
 
     /// Swaps the block for `old` in `text` for `replacement` and returns the range it replaced.
-    /// An edited signature no longer matches, so it stays and this returns nil. With no old signature,
-    /// the replacement goes above the quote that starts at `quoteStart`, or at the end of a new message.
+    /// The inserted signature is the last text above the quote that starts at `quoteStart`, or the end of a new
+    /// message. Any edit to it, or text typed below it, leaves it in place and returns nil. With no old signature,
+    /// the replacement goes in that same spot.
     static func swapSignature(in text: NSMutableAttributedString, old: String, replacement: NSAttributedString, quoteStart: Int?) -> NSRange? {
-        let block = signatureBlock(old)
-        let range: NSRange
-        if block.isEmpty {
-            // The quote follows a blank line, which stays below the inserted signature.
-            range = NSRange(location: quoteStart.map { max(0, $0 - 2) } ?? text.length, length: 0)
-        } else {
-            // Only text above the quote can hold the inserted signature. Text typed onto its last line is an edit,
-            // so the block must end at a line break or at the end of that text.
-            let string = text.string as NSString
-            let end = min(quoteStart ?? string.length, string.length)
-            var search = NSRange(location: 0, length: end)
-            var match = string.range(of: block, range: search)
-            while match.location != NSNotFound, NSMaxRange(match) < end, string.character(at: NSMaxRange(match)) != 10 {
-                search = NSRange(location: match.location + 1, length: end - match.location - 1)
-                match = string.range(of: block, range: search)
-            }
-            guard match.location != NSNotFound else { return nil }
-            range = match
-        }
+        let string = text.string as NSString
+        // A quote follows a blank line, which stays below the signature.
+        let end = quoteStart.map { min(max(0, $0 - 2), string.length) } ?? string.length
+        let block = signatureBlock(old) as NSString
+        guard end >= block.length, string.substring(with: NSRange(location: end - block.length, length: block.length)) == block as String else { return nil }
+        let range = NSRange(location: end - block.length, length: block.length)
         text.replaceCharacters(in: range, with: replacement)
         return range
     }
@@ -208,8 +196,17 @@ final class DraftStore {
     /// Discards every draft sent from the given account.
     func discardDrafts(accountID: String) async -> Bool {
         await enqueue {
+            // An unreadable store can still hold this account's drafts.
+            guard self.loadFailure == nil else { self.error = self.loadFailure; return false }
             guard self.drafts.contains(where: { $0.accountID == accountID }) else { return true }
             return await self.persist(self.drafts.filter { $0.accountID != accountID })
+        }
+    }
+    /// Puts back drafts that `discardDrafts(accountID:)` removed.
+    func restore(_ restored: [ComposerDraft]) async -> Bool {
+        await enqueue {
+            let ids = Set(self.drafts.map(\.id))
+            return await self.persist(restored.filter { !ids.contains($0.id) } + self.drafts)
         }
     }
     func togglePin(_ id: UUID) async {
