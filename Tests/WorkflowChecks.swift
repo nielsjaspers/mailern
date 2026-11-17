@@ -80,6 +80,12 @@ import Foundation
         store.apply(ids: [settled], action: .restoreRemoved)
         assert(store.conversation(settled)!.workflow == .settled && store.list(.trash).isEmpty)
         store.apply(ids: [settled], action: .remove(.trash))
+        store.apply(ids: [settled], action: .remove(.trash))
+        store.apply(ids: [settled], action: .restoreRemoved)
+        store.clearWorkflowUndo(involving: [settled])
+        store.undo()
+        assert(store.conversation(settled)!.removal == nil, "A reply draft saved after Restore cancels its Undo")
+        store.apply(ids: [settled], action: .remove(.trash))
         store.receiveReply(settled)
         let rescued = store.conversation(settled)!
         assert(rescued.removal == nil && rescued.workflow == .inbox && rescued.unread)
@@ -120,7 +126,7 @@ import Foundation
         assert(reloaded.list(.trash).isEmpty && MailStore(persistence: disk).conversations == reloaded.conversations)
         reloaded.reset()
         assert(reloaded.blockedSenders.isEmpty && reloaded.list(.junk).isEmpty)
-        print("PASS: trash/junk lists, restore to original workflow, Undo with block list, reply rescues Trash but not Junk, block survives deletion, 30-day purge, permanent deletion, reset")
+        print("PASS: trash/junk lists, restore to original workflow, Undo with block list, draft cancels Restore Undo, reply rescues Trash but not Junk, block survives deletion, 30-day purge, permanent deletion, reset")
     }
 
     @MainActor static func checkUndoExpiry() async throws {

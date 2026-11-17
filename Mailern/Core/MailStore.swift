@@ -198,8 +198,13 @@ final class MailStore {
         undoAction = nil
         undoBlockedSenders = []
     }
+    /// A new reply draft must not ride a stale Undo back into Trash, Junk, or another section.
     func clearWorkflowUndo(involving ids: Set<UUID>) {
-        guard case .move = undoAction, undoSnapshot.contains(where: { ids.contains($0.id) }) else { return }
+        switch undoAction {
+        case .move, .remove, .restoreRemoved: break
+        case .read, .pin, nil: return
+        }
+        guard undoSnapshot.contains(where: { ids.contains($0.id) }) else { return }
         clearNotice()
     }
     func wakeDue(now: Date = .now) {
