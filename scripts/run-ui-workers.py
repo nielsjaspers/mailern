@@ -60,7 +60,7 @@ def devices():
 
 
 def timings(log):
-    cases = re.findall(r"Test Case '-\[(MailernUITests|MailernTests)\.(\w+) (\w+)\]' started.\(([\d.]+) seconds\)", log)
+    cases = re.findall(r"Test Case '-\[(MailernUITests|MailernTests)\.(\w+) (\w+)\]' passed \(([\d.]+) seconds\)", log)
     result = {}
     for (module, cls, method), seconds in {(m, c, t): float(s) for m, c, t, s in cases}.items():
         key = cls if module == "MailernUITests" else "MailernTests"
@@ -175,10 +175,10 @@ def main():
             costs = json.loads(cache.read_text()) if cache.exists() else {}
             # The fixture Simulator also takes ordinary cases instead of sitting idle after imports.
             batches = [pickers.copy(), *[[] for _ in pool]]
-            loads = [sum(costs.get(name, 60) for name in pickers), *[0.0 for _ in pool]]
             jobs = [name for name in classes if name not in pickers] + ["MailernTests"]
             known = [costs[name] for name in classes if name in costs]
             fallback = sum(known) / len(known) if known else 1
+            loads = [sum(costs.get(name, fallback) for name in pickers), *[0.0 for _ in pool]]
             for name in sorted(jobs, key=lambda name: costs.get(name, fallback), reverse=True):
                 index = min(range(workers + 1), key=loads.__getitem__)
                 batches[index].append(name)
@@ -211,7 +211,10 @@ def main():
                     if len(started_cases) != expected or set(started_cases) != expected_cases:
                         raise RuntimeError(f"{name}: missing, duplicate, or unexpected test executions")
                     print(f"Passed {name}: {expected} unique tests, no retries, {time.monotonic() - batch_started:.1f}s including validation", flush=True)
-                return f"{prefix}.xcresult", timings(Path(f"{prefix}.log").read_text())
+                durations = timings(Path(f"{prefix}.log").read_text())
+                if set(durations) != set(tests):
+                    raise RuntimeError(f"{name}: missing test durations; refusing an incomplete timing cache")
+                return f"{prefix}.xcresult", durations
 
             failures = []
             results = []
