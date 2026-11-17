@@ -29,8 +29,9 @@ struct HTMLDocument {
             <meta name="color-scheme" content="\(adaptsToDarkMode ? "light dark" : "light")">
             <style>
             html { -webkit-text-size-adjust: 100%; background: \(adaptsToDarkMode ? "transparent" : "#fff"); }
-            body { margin: 0; padding: 12px \(Int(margin))px; font: -apple-system-body; overflow-wrap: break-word; }
-            /* The body grows around mail laid out wider than the screen, so the scaled page keeps a margin on both sides. */
+            body { margin: 0; padding: 12px \(Int(margin))px; font: -apple-system-body; overflow-wrap: anywhere; }
+            /* The body grows around mail laid out wider than the screen, so the scaled page keeps a margin on both sides.
+               Long words and links wrap anywhere, so they cannot widen the body and shrink the whole message. */
             body { box-sizing: border-box; width: fit-content; min-width: 100%; }
             img { max-width: 100% !important; height: auto; }
             </style>

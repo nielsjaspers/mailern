@@ -241,7 +241,7 @@ private struct MessageSection: View {
             }
             if let html = message.html {
                 // HTML uses the full width. Its own page sets the margins.
-                HTMLMessageView(html: html, fallback: message.body, margin: margin).allowsHitTesting(!isPreview)
+                HTMLMessageView(html: html, fallback: message.body, margin: margin, isPreview: isPreview).allowsHitTesting(!isPreview)
             } else {
                 Group {
                     if let richText = message.richText {

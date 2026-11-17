@@ -9,6 +9,8 @@ struct HTMLMessageView: View {
     let fallback: String
     /// The reader's side margin. The page gets the same margin inside, so a light page spans the full width.
     var margin: CGFloat = 20
+    /// A peek takes no touches, so it states that images are hidden without offering to load them.
+    var isPreview = false
     @State private var blocker: WKContentRuleList?
     @State private var blockerFailed = false
     @State private var remoteContent = false
@@ -26,8 +28,10 @@ struct HTMLMessageView: View {
                         Image(systemName: "eye.slash").accessibilityHidden(true)
                         Text("Remote images are hidden")
                         Spacer(minLength: 8)
-                        Button("Load images") { remoteContent = true }
-                            .fontWeight(.semibold).buttonStyle(.borderless)
+                        if !isPreview {
+                            Button("Load images") { remoteContent = true }
+                                .fontWeight(.semibold).buttonStyle(.borderless)
+                        }
                     }
                     .font(.footnote).foregroundStyle(.secondary)
                     .padding(.horizontal, margin)
