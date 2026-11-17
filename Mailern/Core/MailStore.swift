@@ -161,8 +161,11 @@ final class MailStore {
             case .move(let status, let until): conversations[i].move(to: status, until: until)
             case .read(let unread): conversations[i].unread = unread
             case .pin(let pinned): conversations[i].pinned = pinned
-            case .remove(.trash): conversations[i].removal = .trash(since: .now)
+            case .remove(.trash):
+                conversations[i].endReminder()
+                conversations[i].removal = .trash(since: .now)
             case .remove(.junk):
+                conversations[i].endReminder()
                 conversations[i].removal = .junk
                 blockedSenders.formUnion(conversations[i].senderAddresses)
             case .restoreRemoved:
@@ -203,7 +206,14 @@ final class MailStore {
                 conversations[i].followUp = old.followUp
             case .read: conversations[i].unread = old.unread
             case .pin: conversations[i].pinned = old.pinned
-            case .remove, .restoreRemoved: conversations[i].removal = old.removal
+            case .remove:
+                // Removal can end a reminder, which settles the conversation.
+                conversations[i].removal = old.removal
+                conversations[i].workflow = old.workflow
+                conversations[i].snoozedUntil = old.snoozedUntil
+                conversations[i].followUp = old.followUp
+                conversations[i].unread = old.unread
+            case .restoreRemoved: conversations[i].removal = old.removal
             }
         }
         blockedSenders = undoBlockedSenders

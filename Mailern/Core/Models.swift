@@ -143,15 +143,16 @@ struct Conversation: Codable, Identifiable, Equatable {
         workflow = status
         snoozedUntil = status == .snoozed ? until : nil
     }
+    /// Ends a reminder without the move that usually ends it. A waiting thread sat in Snoozed only for its
+    /// reminder, so it settles instead of returning to Inbox later.
+    mutating func endReminder() {
+        if followUp == .waiting { move(to: .settled) }
+        followUp = nil
+    }
     mutating func receive(_ message: MailMessage) {
         messages.append(message)
         guard !message.outgoing else { return }
-        guard muted != true else {
-            // The reply answers a reminder. The thread waited in Snoozed only for it, so it settles quietly.
-            if followUp == .waiting { move(to: .settled) }
-            followUp = nil
-            return
-        }
+        guard muted != true else { endReminder(); return }
         move(to: .inbox)
         unread = true
         // A reply rescues a thread from Trash. Junk keeps it until the sender is unblocked.

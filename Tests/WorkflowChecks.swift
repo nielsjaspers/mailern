@@ -387,6 +387,20 @@ import SQLite3
         store.move(thread.id, to: .snoozed, until: due.addingTimeInterval(50))
         store.wakeDue(now: due.addingTimeInterval(51))
         assert(store.conversation(thread.id)!.workflow == .inbox && store.conversation(thread.id)!.followUp == nil)
+        // Trash and Junk are manual moves too. Undo brings the reminder back.
+        for mailbox in RemovedMailbox.allCases {
+            assert(store.send(threadID: thread.id, account: store.account(thread.accountID), to: [thread.correspondent.address], cc: [],
+                              subject: thread.subject, body: "Moving on.", followUp: due))
+            store.apply(ids: [thread.id], action: .remove(mailbox))
+            assert(store.conversation(thread.id)!.workflow == .settled && store.conversation(thread.id)!.followUp == nil)
+            store.undo()
+            assert(store.conversation(thread.id)!.workflow == .snoozed && store.conversation(thread.id)!.followUp == .waiting
+                   && store.conversation(thread.id)!.removal == nil)
+            store.apply(ids: [thread.id], action: .remove(mailbox))
+            store.apply(ids: [thread.id], action: .restoreRemoved)
+            store.wakeDue(now: due.addingTimeInterval(1))
+            assert(store.conversation(thread.id)!.workflow == .settled && store.conversation(thread.id)!.followUp == nil)
+        }
         // A reminder time that already passed settles the mail like a plain send.
         assert(store.send(threadID: nil, account: account, to: ["sam@example.com"], cc: [], subject: "Late", body: "x", followUp: .now.addingTimeInterval(-1)))
         assert(store.conversations[0].workflow == .settled && store.conversations[0].followUp == nil)

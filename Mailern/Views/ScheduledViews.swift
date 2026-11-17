@@ -124,6 +124,7 @@ struct ScheduledMessageView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
+        .modifier(DraftStorageAlert(active: true))
         .onChange(of: drafts.outbox.contains { $0.id == id }) { _, scheduled in if !scheduled { dismiss() } }
     }
 }
