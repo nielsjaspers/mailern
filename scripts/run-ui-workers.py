@@ -4,7 +4,6 @@ import concurrent.futures
 import copy
 import fcntl
 import json
-import os
 from pathlib import Path
 import plistlib
 import re
@@ -121,8 +120,6 @@ def main():
                 plan[name]["PreferredScreenCaptureFormat"] = "screenshots"
                 plan[name]["SystemAttachmentLifetime"] = "keepNever"
             plan["MailernUITests"].setdefault("UITargetAppEnvironmentVariables", {})["OS_ACTIVITY_MODE"] = "disable"
-            if os.environ.get("MAILERN_UI_NAMED_CAPTURES") == "1":
-                plan["MailernUITests"].setdefault("EnvironmentVariables", {})["MAILERN_UI_NAMED_CAPTURES"] = "1"
             app = Path(plan["MailernUITests"]["UITargetAppPath"].replace("__TESTROOT__", str(products)))
             app_id = plistlib.loads((app / "Info.plist").read_bytes())["CFBundleIdentifier"]
             run("xcrun", "simctl", "bootstatus", simulator, "-b")

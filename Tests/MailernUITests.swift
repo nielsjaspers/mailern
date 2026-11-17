@@ -1929,10 +1929,9 @@ class MailernUITestCase: XCTestCase {
 
     @MainActor
     func capture(_ name: String, in app: XCUIApplication) {
-        guard ProcessInfo.processInfo.environment["MAILERN_UI_NAMED_CAPTURES"] == "1" else { return }
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
-        attachment.lifetime = .keepAlways
+        attachment.lifetime = .deleteOnSuccess
         add(attachment)
     }
 
