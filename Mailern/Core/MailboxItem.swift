@@ -22,7 +22,9 @@ enum MailboxItem: Identifiable {
     var accountID: String { conversation?.accountID ?? drafts[0].accountID }
     var date: Date { max(conversation?.latest.date ?? .distantPast, drafts.map(\.updatedAt).max() ?? .distantPast) }
 
-    static func list(conversations: [Conversation], drafts: [ComposerDraft], status: Workflow,
+    /// The items of one workflow section. A nil `status` lists all mail in Inbox, Snoozed, and Settled, newest
+    /// first. Mailbox filters belong to one section, so all mail ignores `filter`.
+    static func list(conversations: [Conversation], drafts: [ComposerDraft], status: Workflow?,
                      search: MailSearch = MailSearch(), filter: MailboxFilter = MailboxFilter()) -> [Self] {
         let conversationIDs = Set(conversations.map(\.id))
         let replies = Dictionary(grouping: drafts.filter { draft in
@@ -34,7 +36,7 @@ enum MailboxItem: Identifiable {
                 draft.mode.replyID.map { !conversationIDs.contains($0) } ?? true
             }.map { Self.draft($0) }
         return items.filter { item in
-            guard item.workflow == status, filter.includes(item, in: status) else { return false }
+            if let status, item.workflow != status || !filter.includes(item, in: status) { return false }
             return item.conversation.map(search.matches) == true || item.drafts.contains(where: search.matches)
         }.sorted {
             if status == .inbox && $0.pinned != $1.pinned { return $0.pinned }
@@ -45,6 +47,7 @@ enum MailboxItem: Identifiable {
             return $0.id.uuidString < $1.id.uuidString
         }
     }
+
 }
 
 extension ComposerDraft {

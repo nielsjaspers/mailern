@@ -25,6 +25,7 @@ import SQLite3
         try checkFollowUp()
         try await checkOutbox()
         try checkActionHaptics()
+        checkAllMailSearch()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -98,6 +99,28 @@ import SQLite3
         assert(changes { store.apply(ids: [id], action: .restoreRemoved) })
         assert(!changes { store.receiveReply(id) }, "Incoming mail is not a move")
         print("PASS: haptics follow moves a person makes, not opening mail, refused moves, or incoming mail")
+    }
+
+    static func checkAllMailSearch() {
+        let now = Date.now
+        var conversations = DemoData.conversations(now: now)
+        conversations[1].move(to: .snoozed, until: now.addingTimeInterval(600))
+        conversations[2].removal = .trash(since: now)
+        let photos = conversations.first { $0.subject == "The photos from our trip" }!
+        var draft = ComposerDraft(subject: "Weekend photos draft")
+        draft.updatedAt = now.addingTimeInterval(60)
+        func all(_ text: String) -> [MailboxItem] {
+            MailboxItem.list(conversations: conversations, drafts: [draft], status: nil, search: MailSearch(text: text),
+                             filter: MailboxFilter(enabled: true, accountIDs: []))
+        }
+        assert(MailboxItem.list(conversations: conversations, drafts: [draft], status: .inbox, search: MailSearch(text: "photos")).map(\.id) == [draft.id])
+        assert(all("photos").map(\.id) == [draft.id, photos.id], "All mail finds settled mail and drafts, newest first, and ignores filters")
+        let everything = all("")
+        assert(Set(everything.map(\.workflow)) == [.inbox, .snoozed, .settled])
+        assert(everything.count == conversations.count, "All mail leaves out Trash and adds the standalone draft")
+        assert(!everything.contains { $0.id == conversations[2].id })
+        assert(zip(everything, everything.dropFirst()).allSatisfy { $0.date >= $1.date }, "Pins and snooze order belong to one section")
+        print("PASS: all-mail search spans Inbox, Snoozed, and Settled with drafts, newest first, without filters, Junk, or Trash")
     }
 
     @MainActor static func checkSQLiteStorage() throws {

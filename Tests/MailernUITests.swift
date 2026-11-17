@@ -2556,6 +2556,41 @@ final class MuteThreadUITests: MailernUITestCase {
     }
 }
 
+final class AllMailSearchUITests: MailernUITestCase {
+    @MainActor
+    func testAllMailFindsSettledMailAndNamesItsMailbox() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let photos = "The photos from our trip"
+        app.collectionViews.firstMatch.swipeDown(velocity: .slow)
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.existsOrWait(timeout: 5))
+        search.tap()
+        search.typeText("photos")
+        XCTAssertTrue(app.staticTexts["No results"].existsOrWait(timeout: 5))
+        app.buttons["All mail"].tap()
+        XCTAssertTrue(row(photos, in: app).existsOrWait(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Settled · 1"].exists)
+        capture("All mail search result in Settled", in: app)
+        row(photos, in: app).tap()
+        XCTAssertTrue(app.buttons["Restore"].existsOrWait(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(row(photos, in: app).existsOrWait(timeout: 5))
+        app.buttons["This section"].tap()
+        XCTAssertTrue(app.staticTexts["No results"].existsOrWait(timeout: 5))
+        // Leaving search returns to this section, so the next search starts there.
+        app.buttons["All mail"].tap()
+        XCTAssertTrue(row(photos, in: app).existsOrWait(timeout: 5))
+        app.buttons["Close"].tap()
+        waitForAbsence(row(photos, in: app))
+        app.collectionViews.firstMatch.swipeDown(velocity: .slow)
+        search.tap()
+        XCTAssertTrue(app.buttons["This section"].existsOrWait(timeout: 5))
+        XCTAssertTrue(app.buttons["This section"].isSelected)
+    }
+}
+
 class MailernUITestCase: XCTestCase {
     override func record(_ issue: XCTIssue) {
         // Attach the main-thread failure screen to the issue so failure-only exports include it.
