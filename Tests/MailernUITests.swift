@@ -224,6 +224,30 @@ final class MailtoLinkOpensComposerUITests: MailernUITestCase {
     }
 }
 
+final class HTMLMailUITests: MailernUITestCase {
+    @MainActor
+    func testHTMLMailBlocksRemoteImagesAndRoutesLinks() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        row("A little less, but better", in: app).tap()
+        let page = app.webViews.firstMatch
+        XCTAssertTrue(page.staticTexts["A little less, but better"].existsOrWait(timeout: 10))
+        let load = app.buttons["Load images"]
+        XCTAssertTrue(load.exists)
+        capture("HTML newsletter with images blocked", in: app)
+        load.tap()
+        waitForAbsence(load)
+        XCTAssertTrue(page.staticTexts["A little less, but better"].existsOrWait(timeout: 10), "The message reloads with images")
+        let editors = page.links["the editors"]
+        for _ in 0..<4 where !editors.isHittable { app.swipeUp() }
+        editors.tap()
+        XCTAssertTrue(app.navigationBars["Tip for Sample Weekly"].existsOrWait(timeout: 5))
+        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
+        XCTAssertEqual(to.value as? String, "editors@example.com")
+    }
+}
+
 final class RecipientSearchUITests: MailernUITestCase {
     @MainActor
     func testSearchRecipientsAndPreserveSelection() {

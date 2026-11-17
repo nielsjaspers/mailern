@@ -90,13 +90,13 @@ struct ConversationContent: View {
     // new message, and scrolling down reads back through the thread.
     @ViewBuilder private var preview: some View {
         Divider()
-        MessageSection(message: latest, conversationID: conversation.id, threadSubject: conversation.subject, expanded: true)
+        MessageSection(message: latest, conversationID: conversation.id, threadSubject: conversation.subject, expanded: true, isPreview: true)
         if !earlier.isEmpty {
             Text("Earlier messages").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
             ForEach(earlier.reversed()) { message in
                 Divider()
-                MessageSection(message: message, conversationID: conversation.id, threadSubject: conversation.subject, expanded: true)
+                MessageSection(message: message, conversationID: conversation.id, threadSubject: conversation.subject, expanded: true, isPreview: true)
             }
         }
     }
@@ -108,6 +108,8 @@ private struct MessageSection: View {
     let conversationID: UUID
     let threadSubject: String
     let expanded: Bool
+    /// A peek opens the conversation on any tap, so its HTML takes no touches.
+    var isPreview = false
     /// Nil when the message cannot fold: a single-message thread or a peek.
     var toggle: (() -> Void)?
     /// Nil hides the reply controls.
@@ -130,12 +132,16 @@ private struct MessageSection: View {
                    subject != threadSubject, subject.caseInsensitiveCompare("Re: \(threadSubject)") != .orderedSame {
                     Text("Subject: \(subject)").font(.subheadline).fontWeight(.semibold)
                 }
-                Group {
-                    if let richText = message.richText {
-                        RichMessageText(text: RichText.decode(richText, fallback: message.body))
-                    } else { Text(MessageLinks.linked(message.body)) }
-                }.font(.body).lineSpacing(5).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let html = message.html {
+                    HTMLMessageView(html: html, fallback: message.body).allowsHitTesting(!isPreview)
+                } else {
+                    Group {
+                        if let richText = message.richText {
+                            RichMessageText(text: RichText.decode(richText, fallback: message.body))
+                        } else { Text(MessageLinks.linked(message.body)) }
+                    }.font(.body).lineSpacing(5).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 if let attachments = message.attachments, !attachments.isEmpty {
                     AttachmentList(attachments: attachments)
                 }

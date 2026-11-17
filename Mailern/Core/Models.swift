@@ -67,6 +67,8 @@ struct MailMessage: Codable, Identifiable, Equatable {
     var richText: Data?
     var attachments: [MailAttachment]?
     var subject: String?
+    /// The HTML part of the message. `body` holds its plain-text alternative for snippets, search, and quotes.
+    var html: String?
     /// The RFC 5322 Message-ID header, with angle brackets. Mail from a provider can lack one.
     var messageID: String?
     /// The Message-ID this message answers.
