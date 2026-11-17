@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run duration-balanced UI batches on a dedicated disposable Simulator pool."""
 import concurrent.futures
+import copy
 import fcntl
 import json
 from pathlib import Path
@@ -118,8 +119,6 @@ def main():
             for name in ["MailernUITests", "MailernTests"]:
                 plan[name]["PreferredScreenCaptureFormat"] = "screenshots"
                 plan[name]["SystemAttachmentLifetime"] = "keepNever"
-            test_run = products / f"Mailern-ui-{run_id}.xctestrun"
-            test_run.write_bytes(plistlib.dumps(plan))
             app = Path(plan["MailernUITests"]["UITargetAppPath"].replace("__TESTROOT__", str(products)))
             app_id = plistlib.loads((app / "Info.plist").read_bytes())["CFBundleIdentifier"]
             run("xcrun", "simctl", "bootstatus", simulator, "-b")
@@ -187,6 +186,17 @@ def main():
             def batch(name, destination, tests):
                 batch_started = time.monotonic()
                 prefix = f"build/ui-{run_id}-{name}"
+                batch_plan = copy.deepcopy(plan)
+                control_directory = derived.resolve() / "ui-control"
+                control_directory.mkdir(exist_ok=True)
+                control = {
+                    "MAILERN_TEST_CONTROL_FILE": str(control_directory / f"{destination}.json"),
+                    "MAILERN_TEST_CONTROL_NAME": f"{app_id}.ui-tests.{destination}",
+                }
+                for key in ["EnvironmentVariables", "UITargetAppEnvironmentVariables"]:
+                    batch_plan["MailernUITests"].setdefault(key, {}).update(control)
+                test_run = products / f"Mailern-ui-{run_id}-{name}.xctestrun"
+                test_run.write_bytes(plistlib.dumps(batch_plan))
                 expected = sum(editor_count if test == "MailernTests" else 1 for test in tests)
                 selectors = [f"-only-testing:{test}" if test == "MailernTests" else f"-only-testing:MailernUITests/{test}" for test in tests]
                 with open(f"{prefix}.log", "w") as log:

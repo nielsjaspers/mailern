@@ -1,14 +1,68 @@
 import XCTest
 import UIKit
+import CoreFoundation
 
 @MainActor
 final class TestApplication: XCUIApplication {
+    var requiresFreshProcess = false
     private let session = UUID().uuidString
+    private var hasLaunched = false
+    private static var process: String?
+    private static let observer = NSObject()
+    private static var observing = false
+    private static var acknowledge: (() -> Void)?
 
     override func launch() {
         // Reapply this after tests replace launchEnvironment to clear fault injection.
         launchEnvironment["MAILERN_TEST_SESSION"] = session
-        super.launch()
+        let initial = ProcessInfo.processInfo.environment
+        guard let path = initial["MAILERN_TEST_CONTROL_FILE"],
+              let name = initial["MAILERN_TEST_CONTROL_NAME"] else {
+            super.launch()
+            return
+        }
+        if !Self.observing {
+            Self.observing = true
+            CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                Unmanaged.passUnretained(Self.observer).toOpaque(), { _, _, _, _, _ in
+                    DispatchQueue.main.async { TestApplication.acknowledge?() }
+                }, (name + ".ack") as CFString, nil, .deliverImmediately)
+        }
+        let request = UUID().uuidString
+        launchEnvironment["MAILERN_TEST_REQUEST_ID"] = request
+        launchEnvironment["MAILERN_TEST_CONTROL_FILE"] = path
+        launchEnvironment["MAILERN_TEST_CONTROL_NAME"] = name
+        let ready = XCTestExpectation(description: "App installed isolated UI fixture \(session)")
+        var response: [String: String]?
+        Self.acknowledge = {
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path + ".ack")),
+                  let reply = try? JSONDecoder().decode([String: String].self, from: data),
+                  reply["request"] == request, reply["session"] == self.session else { return }
+            response = reply
+            ready.fulfill()
+            Self.acknowledge = nil
+        }
+        let previous = Self.process
+        // Only independent cases reuse a process. Every launch after the first on this
+        // object remains an actual relaunch, including persistence and fault tests.
+        let reuse = !requiresFreshProcess && !hasLaunched && launchArguments.isEmpty && previous != nil && state == .runningForeground
+        hasLaunched = true
+        if reuse {
+            do {
+                try JSONEncoder().encode(launchEnvironment).write(to: URL(fileURLWithPath: path), options: .atomic)
+                CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                    CFNotificationName(rawValue: name as CFString), nil, nil, true)
+            } catch { XCTFail("Could not request UI fixture reset: \(error)"); return }
+        } else {
+            super.launch()
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
+        Self.acknowledge = nil
+        guard let process = response?["process"] else { XCTFail("Missing app process identity"); return }
+        if reuse { XCTAssertEqual(process, previous, "Fixture reset must retain the app process") }
+        else if let previous { XCTAssertNotEqual(process, previous, "Relaunch must create a new app process") }
+        Self.process = process
+        print("UI fixture \(reuse ? "reset" : "launch"): session=\(session) process=\(process)")
     }
 }
 
@@ -914,6 +968,8 @@ final class ComposerPhotoAttachmentUITests: MailernUITestCase {
     func testComposerPhotoAttachment() {
         continueAfterFailure = false
         let app = TestApplication()
+        // Quick Look retains its chrome state within the process after a previous preview.
+        app.requiresFreshProcess = true
         app.launch()
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
@@ -953,6 +1009,7 @@ final class ComposerFileAttachmentUITests: MailernUITestCase {
     func testComposerFileAttachment() {
         continueAfterFailure = false
         let app = TestApplication()
+        app.requiresFreshProcess = true
         app.launch()
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
