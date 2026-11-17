@@ -365,33 +365,40 @@ import SQLite3
     }
 
     static func checkQuotedText() {
-        let casey = MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [], date: .now, body: "Hey! Are you free on Saturday?\n\nCasey")
+        let casey = MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [], date: .now,
+                                body: "Hey! Are you free on Saturday? I was thinking we could cook at my place.\n\nCasey")
         func visible(_ body: String, _ answered: MailMessage? = casey) -> String? {
             QuotedText.start(in: body, answering: answered).map { String((body as NSString).substring(to: $0)) }
         }
         // Mailern's composer quotes the answered body under its attribution line, without `>`.
-        let reply = "Sure, 7 works.\n\nMorgan\n\nOn 11/17/2026, 3:45 PM, Casey Rivera <casey@example.com> wrote:\n\(casey.body)"
+        let attribution = QuotedText.attribution(for: casey)
+        let reply = "Sure, 7 works.\n\nMorgan\n\n\(attribution)\n\(casey.body)"
         assert(visible(reply) == "Sure, 7 works.\n\nMorgan\n\n")
-        // Text written below the quote, an edited quote, or another message's body keeps the whole message visible.
+        // Text written below the quote, an edited quote, or a different attribution keeps the whole message visible.
         assert(visible(reply + "\n\nP.S. I'll bring wine.") == nil, "Text below a quote never folds")
         assert(visible(reply.replacingOccurrences(of: "Saturday", with: "Sunday")) == nil, "An edited quote is not proven")
-        assert(visible("Yes.\n\nOn the card I wrote:\n\(casey.body)") == nil, "Prose is not an attribution")
+        assert(visible("Yes.\n\nOn the sign at check-in, Casey Rivera <casey@example.com> wrote:\n\(casey.body)") == nil,
+               "Only the composer's own attribution counts")
         assert(visible(reply, nil) == nil, "A message that answers nothing quotes nothing")
-        // Other clients prefix quoted lines with `>`. Only the trailing run of them folds.
-        assert(visible("Yes.\n\nOn Monday, Avery <avery@example.com> wrote:\n> Cabin?\n>\n> Avery\n", nil)
-               == "Yes.\n\nOn Monday, Avery <avery@example.com> wrote:\n")
-        assert(visible("> First\nOn Monday I wrote:\n> Second", nil) == "> First\nOn Monday I wrote:\n", "Text between quotes shows")
-        assert(visible("> Cabin?\nYes, the first one.", nil) == nil, "An inline answer below a quote stays visible")
-        assert(visible("> Only a quote", nil) == nil, "A message never folds to nothing")
-        assert(visible("Plain message\nwith two lines", nil) == nil)
+        assert(visible(reply, MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [], date: casey.date, body: " ")) == nil,
+               "An empty answered body proves nothing")
+        // Other clients prefix quoted lines with `>` and may rewrap them. The run must hold the answered body.
+        let wrapped = "> Hey! Are you free on Saturday? I was thinking we\n> could cook at my place.\n>\n> Casey\n"
+        assert(visible("Yes.\n\nOn Monday, Casey <casey@example.com> wrote:\n" + wrapped) == "Yes.\n\nOn Monday, Casey <casey@example.com> wrote:\n")
+        assert(visible("Yes.\n\n" + wrapped + "> $500 total\n") == nil, "An answer that starts with > stays visible")
+        assert(visible("Budget update.\n\n>= 90% is reserved.\n> $5,000 needs approval.", nil) == nil, "Lines that only start with > stay visible")
+        assert(visible("> First\nOn Monday I wrote:\n" + wrapped) == "> First\nOn Monday I wrote:\n", "Text between quotes shows")
+        assert(visible(wrapped + "Yes, the first one.") == nil, "An inline answer below a quote stays visible")
+        assert(visible(wrapped) == nil, "A message never folds to nothing")
         // Forwarded mail is the point of a forward and does not fold.
         assert(visible("FYI\n\nBegin forwarded message:\n\nFrom: Casey Rivera <casey@example.com>\n\n\(casey.body)") == nil)
 
-        // In a conversation, In-Reply-To names the answered message.
+        // In a conversation, In-Reply-To names the answered message, and the composer writes the quote this check expects.
         var thread = DemoData.conversations().first { $0.subject == "Dinner on Saturday?" }!
         let first = thread.messages[0]
+        let draft = ComposerDraft.make(mode: .reply(thread.id), conversation: thread, message: first.id, accounts: MailAccount.demo)
         var answer = MailMessage(sender: "Morgan", address: "morgan@personal.example.com", to: ["casey@example.com"], date: .now,
-                                 body: "Sure.\n\nOn 11/17/2026, 3:45 PM, \(first.sender) <\(first.address)> wrote:\n\(first.body)", outgoing: true)
+                                 body: "Sure." + draft.text, outgoing: true)
         answer.answer(first)
         thread.messages.append(answer)
         assert(thread.quoteStart(of: answer) != nil && thread.quoteStart(of: first) == nil)

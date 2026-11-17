@@ -140,7 +140,7 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
                 var seen = Set(accounts.map { $0.address.lowercased() } + addresses(draft.to).map { $0.lowercased() })
                 draft.cc = (target.to + target.cc).filter { seen.insert($0.lowercased()).inserted }.joined(separator: ", ")
             }
-            draft.text += "\n\nOn \(target.date.formatted()), \(target.sender) <\(target.address)> wrote:\n\(target.body)"
+            draft.text += "\n\n\(QuotedText.attribution(for: target))\n\(target.body)"
         case .forward:
             draft.subject = subject.lowercased().hasPrefix("fwd:") ? subject : "Fwd: \(subject)"
             draft.text += "\n\nBegin forwarded message:\n\nFrom: \(target.sender) <\(target.address)>\nDate: \(target.date.formatted())\nSubject: \(subject)\nTo: \(target.to.joined(separator: ", "))\n\n\(target.body)"
