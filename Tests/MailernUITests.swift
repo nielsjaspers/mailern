@@ -147,13 +147,22 @@ final class AccountsSignaturesAndDeletionUITests: MailernUITestCase {
         XCTAssertEqual(body.value as? String, "Label proof\n\nMorgan M.")
         sender("morgan@personal.example.com")
         XCTAssertEqual(body.value as? String, "Label proof\n\nMorgan")
+        // A saved and reopened draft still swaps its unedited signature.
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText("Signature reopen")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        waitForComposerDismissal(in: app)
+        openDraft("Signature reopen", in: app)
+        XCTAssertTrue(body.existsOrWait(timeout: 5))
+        XCTAssertEqual(body.value as? String, "Label proof\n\nMorgan")
+        app.buttons["Cc/Bcc, From"].tap()
         sender("morgan@studio.example.com")
+        XCTAssertEqual(body.value as? String, "Label proof\n\nMorgan M.")
         let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
         to.tap(); to.typeText("client@example.com")
         app.buttons["Send"].tap()
         waitForComposerDismissal(in: app)
         select("Settled", in: app)
-        let sent = row("(No Subject)", in: app)
+        let sent = row("Signature reopen", in: app)
         XCTAssertTrue(sent.existsOrWait(timeout: 5))
         XCTAssertTrue((sent.label).contains("Studio"))
         capture("Settled row with the account label", in: app)
@@ -166,11 +175,11 @@ final class AccountsSignaturesAndDeletionUITests: MailernUITestCase {
         XCTAssertTrue(app.navigationBars["Accounts"].existsOrWait(timeout: 5))
         XCTAssertFalse(app.staticTexts["morgan@studio.example.com"].exists)
         closeSettings()
-        waitForAbsence(row("(No Subject)", in: app))
+        waitForAbsence(row("Signature reopen", in: app))
         app.terminate()
         app.launch()
         select("Settled", in: app)
-        XCTAssertFalse(row("(No Subject)", in: app).exists)
+        XCTAssertFalse(row("Signature reopen", in: app).exists)
     }
 }
 

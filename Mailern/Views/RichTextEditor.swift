@@ -9,16 +9,21 @@ enum RichText {
     static func plain(_ text: String) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label])
     }
-    /// Whether `range` still has only the attributes that `plain` gives text, so no formatting was applied.
+    /// Whether `range` still looks like `plain` text, so no formatting was applied. Saving a draft as RTFD
+    /// rewrites the font descriptor and adds a left-aligned paragraph style, so this compares their effect.
     static func isPlain(_ text: NSAttributedString, in range: NSRange) -> Bool {
-        let body = UIFont.preferredFont(forTextStyle: .body).fontDescriptor
+        let body = UIFont.preferredFont(forTextStyle: .body)
         var unchanged = true
         text.enumerateAttributes(in: range) { attributes, _, stop in
-            let font = (attributes[.font] as? UIFont)?.fontDescriptor ?? body
+            let font = attributes[.font] as? UIFont ?? body
             let color = attributes[.foregroundColor] as? UIColor ?? .label
             let paragraph = attributes[.paragraphStyle] as? NSParagraphStyle ?? .default
             let other = Set(attributes.keys).subtracting([.font, .foregroundColor, .paragraphStyle])
-            if font != body || color != .label || paragraph != .default || !other.isEmpty { unchanged = false; stop.pointee = true }
+            // Bold and italic change the font name.
+            let plainFont = font.fontName == body.fontName && font.pointSize == body.pointSize
+            let plainParagraph = [.natural, .left].contains(paragraph.alignment) && paragraph.textLists.isEmpty
+                && paragraph.headIndent == 0 && paragraph.firstLineHeadIndent == 0
+            if !plainFont || color != .label || !plainParagraph || !other.isEmpty { unchanged = false; stop.pointee = true }
         }
         return unchanged
     }

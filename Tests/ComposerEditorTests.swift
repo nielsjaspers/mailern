@@ -4,13 +4,16 @@ import SwiftUI
 @testable import Mailern
 
 @MainActor final class ComposerEditorTests: XCTestCase {
-    func testFormattedSignatureCountsAsEdited() {
+    func testFormattedSignatureCountsAsEdited() throws {
         let text = NSMutableAttributedString(attributedString: RichText.plain("Hi\n\nMorgan"))
         let signature = NSRange(location: 2, length: 8)
         XCTAssertTrue(RichText.isPlain(text, in: signature))
+        // A saved draft comes back through RTFD with rewritten font and paragraph attributes.
+        XCTAssertTrue(RichText.isPlain(RichText.decode(try RichText.encode(text), fallback: ""), in: signature))
         let bold = UIFont.preferredFont(forTextStyle: .body).fontDescriptor.withSymbolicTraits(.traitBold)!
         text.addAttribute(.font, value: UIFont(descriptor: bold, size: 0), range: NSRange(location: 4, length: 6))
         XCTAssertFalse(RichText.isPlain(text, in: signature))
+        XCTAssertFalse(RichText.isPlain(RichText.decode(try RichText.encode(text), fallback: ""), in: signature))
         text.setAttributes(RichText.plain("x").attributes(at: 0, effectiveRange: nil), range: signature)
         text.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: NSRange(location: 4, length: 6))
         XCTAssertFalse(RichText.isPlain(text, in: signature))
