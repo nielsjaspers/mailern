@@ -143,7 +143,9 @@ final class ComposerSenderLayoutUITests: MailernUITestCase {
         XCTAssertLessThanOrEqual(sender.frame.height, 48)
         capture("Composer after switching sender", in: app)
     }
+}
 
+final class ComposerSenderAccessibilitySizeUITests: MailernUITestCase {
     @MainActor
     func testSenderGrowsAtAccessibilityTextSizes() {
         continueAfterFailure = false
