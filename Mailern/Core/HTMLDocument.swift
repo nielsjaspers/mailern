@@ -8,7 +8,8 @@ struct HTMLDocument {
     /// True when the message refers to images or styles on the network.
     let hasRemoteContent: Bool
 
-    init(_ source: String, remoteContent: Bool) {
+    /// `margin` pads the page, so a light page reaches the screen edges while its text keeps the reader's margins.
+    init(_ source: String, remoteContent: Bool, margin: Double = 20) {
         let lowered = source.lowercased()
         // A dark style or a color-scheme that includes dark opts in. `color-scheme: only light` does not.
         adaptsToDarkMode = lowered.range(of: #"color-scheme[^;>{]*\bdark"#, options: .regularExpression) != nil
@@ -28,7 +29,9 @@ struct HTMLDocument {
             <meta name="color-scheme" content="\(adaptsToDarkMode ? "light dark" : "light")">
             <style>
             html { -webkit-text-size-adjust: 100%; background: \(adaptsToDarkMode ? "transparent" : "#fff"); }
-            body { margin: 0; font: -apple-system-body; overflow-wrap: break-word; }
+            body { margin: 0; padding: 12px \(Int(margin))px; font: -apple-system-body; overflow-wrap: break-word; }
+            /* The body grows around mail laid out wider than the screen, so the scaled page keeps a margin on both sides. */
+            body { box-sizing: border-box; width: fit-content; min-width: 100%; }
             img { max-width: 100% !important; height: auto; }
             </style>
             """ + shown
