@@ -29,6 +29,11 @@ enum Removal: Codable, Equatable {
     }
 }
 
+/// A reminder on sent mail. The conversation waits in Snoozed and returns marked when nobody replied in time.
+enum FollowUp: String, Codable {
+    case waiting, noReply
+}
+
 /// Colors a person can give an account. Each one stays readable as a small dot in light and dark mode.
 enum AccountColor: String, Codable, CaseIterable, Identifiable {
     case blue, teal, green, yellow, orange, red, pink, purple, indigo, brown, gray
@@ -103,6 +108,7 @@ struct Conversation: Codable, Identifiable, Equatable {
     var removal: Removal?
     /// Replies to a muted conversation join it without moving it or marking it unread.
     var muted: Bool?
+    var followUp: FollowUp?
     var messages: [MailMessage]
     var latest: MailMessage { messages[messages.count - 1] }
     var effectiveSubject: String { subject(at: latest) }
@@ -130,14 +136,19 @@ struct Conversation: Codable, Identifiable, Equatable {
     /// The message a reply or forward targets. Falls back to the latest message.
     func message(_ id: UUID?) -> MailMessage { messages.first { $0.id == id } ?? latest }
 
+    /// Moving a conversation by hand ends its reminder. Callers that start one set it after the move.
     mutating func move(to status: Workflow, until: Date? = nil) {
+        followUp = nil
         if status == .settled { unread = false }
         workflow = status
         snoozedUntil = status == .snoozed ? until : nil
     }
     mutating func receive(_ message: MailMessage) {
         messages.append(message)
-        guard !message.outgoing, muted != true else { return }
+        guard !message.outgoing else { return }
+        // A reply ends the reminder, also in a muted thread.
+        followUp = nil
+        guard muted != true else { return }
         move(to: .inbox)
         unread = true
         // A reply rescues a thread from Trash. Junk keeps it until the sender is unblocked.

@@ -38,9 +38,14 @@ struct ConversationContent: View {
                         }.font(.caption).foregroundStyle(.secondary)
                         if workflow == .snoozed, conversation.removal == nil, let date = conversation.snoozedUntil {
                             Label(
-                                "Returns \(date.formatted(date: .abbreviated, time: .shortened))",
+                                conversation.followUp == .waiting
+                                    ? "Returns \(date.formatted(date: .abbreviated, time: .shortened)) if nobody replies"
+                                    : "Returns \(date.formatted(date: .abbreviated, time: .shortened))",
                                 systemImage: "clock"
                             ).font(.caption).foregroundStyle(.orange)
+                        }
+                        if conversation.followUp == .noReply, conversation.removal == nil {
+                            Label("No reply yet", systemImage: "hourglass").font(.caption).foregroundStyle(.orange)
                         }
                     }
                     .padding(.horizontal, isPreview ? 0 : 4)

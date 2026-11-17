@@ -22,6 +22,7 @@ import SQLite3
         checkMessageLinks()
         checkHTMLDocument()
         try checkMute()
+        try checkFollowUp()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -343,6 +344,44 @@ import SQLite3
         store.receiveReply(settled)
         assert(store.conversation(settled)!.workflow == .inbox && store.conversation(settled)!.unread)
         print("PASS: muted threads keep replies without moving or turning unread, mute persists, unmute restores delivery")
+    }
+
+    @MainActor static func checkFollowUp() throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-follow-up-\(UUID())")
+        let disk = SQLitePersistence(url: directory.appending(path: "follow-up.sqlite"))
+        let store = MailStore(persistence: disk)
+        let account = store.accounts[0]
+        let due = Date.now.addingTimeInterval(100)
+        // New mail with a reminder waits in Snoozed, and the reminder survives a reload.
+        assert(store.send(threadID: nil, account: account, to: ["sam@example.com"], cc: [], subject: "Quote", body: "Any news?", followUp: due))
+        let sent = store.conversations[0].id
+        assert(store.conversation(sent)!.workflow == .snoozed && store.conversation(sent)!.snoozedUntil == due)
+        let reloaded = MailStore(persistence: SQLitePersistence(url: disk.url))
+        assert(reloaded.conversation(sent)!.followUp == .waiting)
+        // Nobody replied: it returns to Inbox marked. Settling it clears the mark.
+        store.wakeDue(now: due.addingTimeInterval(1))
+        assert(store.conversation(sent)!.workflow == .inbox && store.conversation(sent)!.followUp == .noReply)
+        store.move(sent, to: .settled)
+        assert(store.conversation(sent)!.followUp == nil)
+        store.undo()
+        assert(store.conversation(sent)!.followUp == .noReply)
+        // A reply cancels the reminder and returns the thread as usual.
+        let thread = store.list(.inbox).first { $0.id != sent && $0.messages.contains { !$0.outgoing } }!
+        assert(store.send(threadID: thread.id, account: store.account(thread.accountID), to: [thread.correspondent.address], cc: [],
+                          subject: thread.subject, body: "Following up.", followUp: due))
+        assert(store.conversation(thread.id)!.workflow == .snoozed && store.conversation(thread.id)!.followUp == .waiting)
+        store.receiveReply(thread.id)
+        assert(store.conversation(thread.id)!.workflow == .inbox && store.conversation(thread.id)!.unread && store.conversation(thread.id)!.followUp == nil)
+        // Snoozing a waiting thread by hand ends the reminder, so it returns unmarked.
+        assert(store.send(threadID: thread.id, account: store.account(thread.accountID), to: [thread.correspondent.address], cc: [],
+                          subject: thread.subject, body: "Again.", followUp: due))
+        store.move(thread.id, to: .snoozed, until: due.addingTimeInterval(50))
+        store.wakeDue(now: due.addingTimeInterval(51))
+        assert(store.conversation(thread.id)!.workflow == .inbox && store.conversation(thread.id)!.followUp == nil)
+        // A reminder time that already passed settles the mail like a plain send.
+        assert(store.send(threadID: nil, account: account, to: ["sam@example.com"], cc: [], subject: "Late", body: "x", followUp: .now.addingTimeInterval(-1)))
+        assert(store.conversations[0].workflow == .settled && store.conversations[0].followUp == nil)
+        print("PASS: follow-up reminders wait in Snoozed, return marked without a reply, end on reply or a manual move, undo, persistence")
     }
 
     @MainActor static func checkTrashAndJunk() throws {

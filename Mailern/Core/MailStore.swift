@@ -200,6 +200,7 @@ final class MailStore {
                 if old.workflow == .settled { conversations[i].unread = false }
                 conversations[i].workflow = old.workflow
                 conversations[i].snoozedUntil = old.snoozedUntil
+                conversations[i].followUp = old.followUp
             case .read: conversations[i].unread = old.unread
             case .pin: conversations[i].pinned = old.pinned
             case .remove, .restoreRemoved: conversations[i].removal = old.removal
@@ -229,7 +230,12 @@ final class MailStore {
     func wakeDue(now: Date = .now) {
         var changed = false
         for i in conversations.indices where conversations[i].workflow == .snoozed {
-            if let date = conversations[i].snoozedUntil, date <= now { conversations[i].move(to: .inbox); changed = true }
+            if let date = conversations[i].snoozedUntil, date <= now {
+                let waiting = conversations[i].followUp == .waiting
+                conversations[i].move(to: .inbox)
+                if waiting { conversations[i].followUp = .noReply }
+                changed = true
+            }
         }
         if changed { clearNotice(); save() }
         let expired = Set(conversations.filter {
@@ -336,8 +342,9 @@ final class MailStore {
     }
     @discardableResult
     /// Sends a message. With a `threadID`, it answers the message `replyingTo` in that conversation, or the latest one.
+    /// The conversation settles, or waits in Snoozed until `followUp` when that is still ahead.
     func send(threadID: UUID?, replyingTo: UUID? = nil, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
-              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = []) -> Bool {
+              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil) -> Bool {
         guard canWrite() else { return false }
         guard accounts.contains(where: { $0.id == account.id }) else {
             error = "The sending account no longer exists. Choose another From address."
@@ -354,10 +361,16 @@ final class MailStore {
         if let threadID, let i = conversations.firstIndex(where: { $0.id == threadID }) {
             message.answer(conversations[i].message(replyingTo))
             conversations[i].messages.append(message)
-            conversations[i].move(to: .settled)
             conversations[i].removal = nil
         } else {
-            conversations.insert(Conversation(accountID: account.id, subject: subject, workflow: .settled, unread: false, messages: [message]), at: 0)
+            conversations.insert(Conversation(accountID: account.id, subject: subject, unread: false, messages: [message]), at: 0)
+        }
+        let i = threadID.flatMap { id in conversations.firstIndex { $0.id == id } } ?? 0
+        if let followUp, followUp > .now {
+            conversations[i].move(to: .snoozed, until: followUp)
+            conversations[i].followUp = .waiting
+        } else {
+            conversations[i].move(to: .settled)
         }
         do {
             try persistence.save(data)
