@@ -333,7 +333,7 @@ struct ComposerView: View {
         editor.view?.window?.endEditing(true)
         do {
             let content = try snapshot(input)
-            guard store.send(threadID: content.mode.replyID, replyingTo: content.messageID, account: account, to: ComposerDraft.addresses(content.to), cc: ComposerDraft.addresses(content.cc),
+            guard store.send(threadID: content.mode.replyID, replyingTo: content.answering ?? content.messageID, account: account, to: ComposerDraft.addresses(content.to), cc: ComposerDraft.addresses(content.cc),
                        subject: content.subject.isEmpty ? "(No Subject)" : content.subject, body: content.text,
                        bcc: ComposerDraft.addresses(content.bcc), richText: content.richText, attachments: content.attachments) else {
                 error = store.error

@@ -63,6 +63,8 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     var snoozedUntil: Date?
     /// The message a reply or forward was started from. Nil means the latest message at that time.
     var messageID: UUID?
+    /// The message a reply answers, fixed when the draft is made, so mail that arrives later does not change it.
+    var answering: UUID?
     /// The signature the composer inserted. The composer replaces it on a sender change while it is still unedited.
     var signature: String?
 
@@ -127,6 +129,7 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
         let subject = c.subject(at: target)
         switch mode {
         case .reply, .replyAll:
+            draft.answering = target.id
             draft.to = target.outgoing ? target.to.joined(separator: ", ") : target.address
             draft.subject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
             if case .replyAll = mode {

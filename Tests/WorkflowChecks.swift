@@ -256,6 +256,15 @@ import SQLite3
         let reloaded = MailStore(persistence: SQLitePersistence(url: disk.url))
         assert(reloaded.conversation(dinner.id) == store.conversation(dinner.id), "Headers survive a reload")
 
+        // A saved toolbar reply keeps answering the message it quotes after newer mail arrives.
+        let project = store.conversations.first { $0.subject == "Course project feedback" }!
+        let draft = ComposerDraft.make(mode: .reply(project.id), conversation: project, accounts: store.accounts)
+        assert(draft.messageID == nil && draft.answering == project.latest.id)
+        store.receiveReply(project.id)
+        store.send(threadID: project.id, replyingTo: draft.answering ?? draft.messageID, account: store.account(project.accountID),
+                   to: [project.latest.address], cc: [], subject: draft.subject, body: "Thanks")
+        assert(store.conversation(project.id)!.latest.inReplyTo == project.latest.messageID)
+
         // Mail stored before Message-IDs existed still threads, through the local stand-in ID.
         let legacy = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-legacy-\(UUID())/mail.sqlite"))
         let old = MailMessage(sender: "Avery", address: "avery@example.com", to: [MailAccount.demo[0].address], date: .now, body: "Old")
