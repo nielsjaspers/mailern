@@ -4,6 +4,7 @@ import SwiftUI
 struct MailboxFilterToolbar: View {
     let filter: MailboxFilter
     let status: Workflow
+    let accounts: [MailAccount]
     let select: () -> Void
     let toggle: () -> Void
     let options: () -> Void
@@ -11,7 +12,7 @@ struct MailboxFilterToolbar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let control = MailboxFilterControl(filter: filter, status: status, toggle: toggle, options: options)
+        let control = MailboxFilterControl(filter: filter, status: status, accounts: accounts, toggle: toggle, options: options)
         GlassEffectContainer(spacing: 16) {
             FilterToolbarLayout(expansion: filter.enabled ? 1 : 0) {
                 Button(action: select) {
@@ -35,7 +36,7 @@ struct MailboxFilterToolbar: View {
                 control.toggleButton
                     .glassEffect(.regular.interactive(), in: .capsule)
                     .glassEffectUnion(id: "filter", namespace: glass)
-                MailboxFilterControl(filter: .initial(for: status), status: status, toggle: toggle, options: options)
+                MailboxFilterControl(filter: .initial(for: status), status: status, accounts: accounts, toggle: toggle, options: options)
                     .summary.hidden().accessibilityHidden(true)
             }
         }
@@ -79,6 +80,8 @@ private struct FilterToolbarLayout: Layout {
 struct MailboxFilterControl: View {
     let filter: MailboxFilter
     let status: Workflow
+    /// Passed in, because the toolbar reads `summary` from an instance that SwiftUI never installs.
+    let accounts: [MailAccount]
     let toggle: () -> Void
     let options: () -> Void
 
@@ -98,7 +101,7 @@ struct MailboxFilterControl: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 HStack(spacing: 3) {
-                    Text(filter.summary(for: status)).lineLimit(1)
+                    Text(filter.summary(for: status, accounts: accounts)).lineLimit(1)
                     Image(systemName: "chevron.down").font(.caption.weight(.semibold))
                 }
                 .font(.caption.weight(.medium))
@@ -110,7 +113,7 @@ struct MailboxFilterControl: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Filter options")
-        .accessibilityValue(filter.summary(for: status))
+        .accessibilityValue(filter.summary(for: status, accounts: accounts))
     }
 
     var toggleButton: some View {
@@ -127,12 +130,13 @@ struct MailboxFilterControl: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Filter")
-        .accessibilityValue(filter.enabled ? filter.summary(for: status) : "Off")
+        .accessibilityValue(filter.enabled ? filter.summary(for: status, accounts: accounts) : "Off")
         .accessibilityAddTraits(filter.enabled ? .isSelected : [])
     }
 }
 
 struct MailboxFilterView: View {
+    @Environment(MailStore.self) private var store
     let status: Workflow
     @Binding var filter: MailboxFilter
     @Environment(\.dismiss) private var dismiss
@@ -144,15 +148,18 @@ struct MailboxFilterView: View {
                     accountRow("All accounts", selected: filter.accountIDs == nil) {
                         update { $0.accountIDs = nil }
                     }
-                    ForEach(MailAccount.demo) { account in
+                    ForEach(store.accounts) { account in
                         Button {
                             update { filter in
-                                var ids = filter.accountIDs ?? Set(MailAccount.demo.map(\.id))
+                                // A removed account can remain in a stored filter. It no longer counts toward "all".
+                                let all = Set(store.accounts.map(\.id))
+                                var ids = filter.accountIDs?.intersection(all) ?? all
                                 if !ids.insert(account.id).inserted { ids.remove(account.id) }
-                                filter.accountIDs = ids == Set(MailAccount.demo.map(\.id)) ? nil : ids
+                                filter.accountIDs = ids == all ? nil : ids
                             }
                         } label: {
                             HStack {
+                                Circle().fill(account.color.color).frame(width: 10, height: 10)
                                 VStack(alignment: .leading) {
                                     Text(account.name).foregroundStyle(.primary)
                                     Text(account.address).font(.caption).foregroundStyle(.secondary)

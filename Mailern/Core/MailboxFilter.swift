@@ -30,14 +30,14 @@ struct MailboxFilter: Codable, Equatable {
         return true
     }
 
-    func summary(for status: Workflow) -> String {
+    func summary(for status: Workflow, accounts: [MailAccount]) -> String {
         var parts: [String] = []
         if status != .settled {
             if readStatus != .all { parts.append(readStatus.title) }
             if onlyDrafts { parts.append("Drafts") }
         } else if onlySent { parts.append("Sent") }
         if let accountIDs {
-            let accounts = MailAccount.demo.filter { accountIDs.contains($0.id) }
+            let accounts = accounts.filter { accountIDs.contains($0.id) }
             parts.append(accounts.count == 1 ? accounts[0].name : "\(accounts.count) accounts")
         }
         return parts.isEmpty ? "All mail" : parts.joined(separator: ", ")

@@ -47,7 +47,7 @@ struct MailboxRow: View {
     let date: Date
     let subject: String
     let snippet: String
-    let account: String
+    let account: MailAccount
     var unread = false
     var draft = false
     var pinned = false
@@ -88,7 +88,7 @@ struct MailboxRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(snippet).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 4)
-                    Text(account).font(.caption2).foregroundStyle(.secondary).fixedSize()
+                    AccountLabel(account: account)
                 }
             }
         }
@@ -97,14 +97,44 @@ struct MailboxRow: View {
     }
 }
 
+/// The account's name with its color, so mail from several accounts stays easy to tell apart.
+struct AccountLabel: View {
+    let account: MailAccount
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle().fill(account.color.color).frame(width: 7, height: 7)
+            Text(account.name).font(.caption2).foregroundStyle(.secondary)
+        }.fixedSize()
+    }
+}
+
+extension AccountColor {
+    var color: Color {
+        switch self {
+        case .blue: .blue
+        case .teal: .teal
+        case .green: .green
+        case .yellow: .yellow
+        case .orange: .orange
+        case .red: .red
+        case .pink: .pink
+        case .purple: .purple
+        case .indigo: .indigo
+        case .brown: .brown
+        case .gray: .gray
+        }
+    }
+}
+
 struct ConversationRow: View {
+    @Environment(MailStore.self) private var store
     let conversation: Conversation
     var hasDraft = false
     var body: some View {
         MailboxRow(
             avatar: SenderAvatar(name: conversation.avatarName),
             title: conversation.participants, count: conversation.messages.count, date: conversation.latest.date,
-            subject: conversation.subject, snippet: conversation.latest.body.snippet, account: conversation.account.name,
+            subject: conversation.subject, snippet: conversation.latest.body.snippet, account: store.account(conversation.accountID),
             unread: conversation.unread, draft: hasDraft, pinned: conversation.pinned, snoozedUntil: conversation.snoozedUntil
         )
         .accessibilityValue(conversation.unread ? "Unread" : "Read")

@@ -93,6 +93,96 @@ final class ComposeDefaultsToBottomRightUITests: MailernUITestCase {
     }
 }
 
+final class AccountsSignaturesAndDeletionUITests: MailernUITestCase {
+    @MainActor
+    func testAccountsSignaturesAndDeletion() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        func accounts() {
+            app.buttons["More"].tap()
+            XCTAssertTrue(app.buttons["Settings"].wait(for: \.isHittable, toEqual: true, timeout: 5))
+            app.buttons["Settings"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            XCTAssertTrue(app.buttons["Accounts"].existsOrWait(timeout: 5))
+            app.buttons["Accounts"].tap()
+            XCTAssertTrue(app.navigationBars["Accounts"].existsOrWait(timeout: 5))
+        }
+        func closeSettings() {
+            app.navigationBars.buttons["Settings"].tap()
+            app.buttons["Done"].tap()
+        }
+        accounts()
+        app.buttons["Add Account"].tap()
+        let add = app.navigationBars.buttons["Add"]
+        XCTAssertFalse(add.isEnabled)
+        app.textFields["Name"].tap(); app.textFields["Name"].typeText("Studio")
+        app.textFields["Email address"].tap(); app.textFields["Email address"].typeText("morgan@personal.example.com")
+        XCTAssertFalse(add.isEnabled)
+        XCTAssertTrue(app.staticTexts["Another account already uses this address."].exists)
+        app.textFields["Email address"].typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "personal.example.com".count))
+        app.textFields["Email address"].typeText("studio.example.com")
+        app.textFields["Signature"].tap(); app.textFields["Signature"].typeText("Morgan M.")
+        XCTAssertTrue(add.isEnabled)
+        capture("New account editor", in: app)
+        add.tap()
+        XCTAssertTrue(app.buttons.containing(.staticText, identifier: "morgan@studio.example.com").firstMatch.existsOrWait(timeout: 5))
+        capture("Accounts with a new account", in: app)
+        closeSettings()
+
+        app.buttons["Compose"].tap()
+        let body = app.textViews["Message body"]
+        XCTAssertTrue(body.existsOrWait(timeout: 5))
+        XCTAssertEqual(body.value as? String, "\n\nMorgan")
+        app.buttons["Cc/Bcc, From"].tap()
+        func sender(_ address: String) {
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'From, '")).firstMatch.tap()
+            XCTAssertTrue(app.buttons[address].existsOrWait(timeout: 3))
+            app.buttons[address].tap()
+        }
+        sender("morgan@studio.example.com")
+        XCTAssertEqual(body.value as? String, "\n\nMorgan M.")
+        // The cursor starts before the signature.
+        body.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.08)).tap()
+        body.typeText("Label proof")
+        XCTAssertEqual(body.value as? String, "Label proof\n\nMorgan M.")
+        sender("morgan@personal.example.com")
+        XCTAssertEqual(body.value as? String, "Label proof\n\nMorgan")
+        // A saved and reopened draft still swaps its unedited signature.
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText("Signature reopen")
+        app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
+        waitForComposerDismissal(in: app)
+        openDraft("Signature reopen", in: app)
+        XCTAssertTrue(body.existsOrWait(timeout: 5))
+        XCTAssertEqual(body.value as? String, "Label proof\n\nMorgan")
+        app.buttons["Cc/Bcc, From"].tap()
+        sender("morgan@studio.example.com")
+        XCTAssertEqual(body.value as? String, "Label proof\n\nMorgan M.")
+        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
+        to.tap(); to.typeText("client@example.com")
+        app.buttons["Send"].tap()
+        waitForComposerDismissal(in: app)
+        select("Settled", in: app)
+        let sent = row("Signature reopen", in: app)
+        XCTAssertTrue(sent.existsOrWait(timeout: 5))
+        XCTAssertTrue((sent.label).contains("Studio"))
+        capture("Settled row with the account label", in: app)
+
+        accounts()
+        app.buttons.containing(.staticText, identifier: "morgan@studio.example.com").firstMatch.tap()
+        app.buttons["Delete Account"].tap()
+        XCTAssertTrue(app.staticTexts["This removes 1 conversations and 0 drafts from this iPhone. This cannot be undone."].existsOrWait(timeout: 5))
+        app.sheets.buttons["Delete Account"].firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["Accounts"].existsOrWait(timeout: 5))
+        XCTAssertFalse(app.staticTexts["morgan@studio.example.com"].exists)
+        closeSettings()
+        waitForAbsence(row("Signature reopen", in: app))
+        app.terminate()
+        app.launch()
+        select("Settled", in: app)
+        XCTAssertFalse(row("Signature reopen", in: app).exists)
+    }
+}
+
 final class MailboxSelectButtonSizeUITests: MailernUITestCase {
     @MainActor
     func testSelectMatchesAdjacentToolbarHeight() {
@@ -553,7 +643,8 @@ final class ComposerDragDismissesKeyboardAndKeepsContentUITests: MailernUITestCa
             XCTAssertTrue(app.keyboards.firstMatch.existsOrWait(timeout: 5))
             field.typeText(text)
             dismissKeyboardByDragging()
-            XCTAssertEqual(field.value as? String, text)
+            // New mail starts with the default account's signature below the cursor.
+            XCTAssertEqual(field.value as? String, label == "Message body" ? text + "\n\nMorgan" : text)
             field.tap()
             XCTAssertTrue(app.keyboards.firstMatch.existsOrWait(timeout: 5))
             dismissKeyboardByDragging()
@@ -584,7 +675,7 @@ final class InboxDraftPreviewEditAndDiscardUITests: MailernUITestCase {
         XCTAssertFalse(app.textViews["Message body"].exists)
         capture("After - standalone draft reader", in: app)
         app.buttons["Edit draft"].tap()
-        XCTAssertEqual(app.textViews["Message body"].value as? String, "An unfinished new message")
+        XCTAssertEqual(app.textViews["Message body"].value as? String, "An unfinished new message\n\nMorgan")
         app.textViews["Message body"].tap()
         app.textViews["Message body"].typeText(" with an edit")
         app.buttons["Cancel"].tap(); app.buttons["Save Draft"].tap()
@@ -1054,7 +1145,7 @@ final class ComposerDraftSaveFailureKeepsEditorUITests: MailernUITestCase {
         app.launch()
         openDraft(subject, in: app)
         XCTAssertTrue(app.navigationBars[subject].existsOrWait(timeout: 5))
-        XCTAssertEqual(app.textViews["Message body"].value as? String, "Original text")
+        XCTAssertEqual(app.textViews["Message body"].value as? String, "Original text\n\nMorgan")
         app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
         waitForComposerDismissal(in: app)
     }
@@ -1180,7 +1271,7 @@ final class ComposerFormattingDraftAndSendUITests: MailernUITestCase {
         app.launch()
         openDraft("Composer proof", in: app)
         XCTAssertTrue(app.navigationBars["Composer proof"].existsOrWait(timeout: 5))
-        XCTAssertEqual(app.textViews["Message body"].value as? String, "Hello formatted world")
+        XCTAssertEqual(app.textViews["Message body"].value as? String, "Hello formatted world\n\nMorgan")
         app.buttons["Send"].tap()
         waitForAbsence(app.navigationBars["Composer proof"])
         select("Settled", in: app)
@@ -2161,7 +2252,7 @@ class MailernUITestCase: XCTestCase {
             recordedIssue = MainActor.assumeIsolated {
                 let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
                 attachment.name = "Failure state"
-                attachment.lifetime = .keepAlways
+                attachment.lifetime = .deleteOnSuccess
                 return XCTIssue(type: issue.type,
                                 compactDescription: issue.compactDescription,
                                 detailedDescription: issue.detailedDescription,

@@ -14,8 +14,8 @@ enum DemoData {
         project.messages[0].cc = ["coordinator@college.example.com"]
         var dinner = thread("icloud", "Casey Rivera", "casey@example.com", "Dinner on Saturday?",
                             "Hey! Are you free on Saturday? I was thinking we could cook at my place.\n\nCasey", minutes: 280, unread: false)
-        dinner.messages.append(MailMessage(sender: "Morgan", address: dinner.account.address, to: ["casey@example.com"], date: now.addingTimeInterval(-7200), body: "Sounds good. What time works for you?", outgoing: true))
-        dinner.messages.append(MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [dinner.account.address], date: now.addingTimeInterval(-1800), body: "Around 7? Bring something to drink. I'll take care of dinner.\n\nAlso, Jamie is joining us!"))
+        dinner.messages.append(MailMessage(sender: "Morgan", address: MailAccount.demo[0].address, to: ["casey@example.com"], date: now.addingTimeInterval(-7200), body: "Sounds good. What time works for you?", outgoing: true))
+        dinner.messages.append(MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [MailAccount.demo[0].address], date: now.addingTimeInterval(-1800), body: "Around 7? Bring something to drink. I'll take care of dinner.\n\nAlso, Jamie is joining us!"))
         return [project,
                 thread("gmail", "Sample Weekly", "newsletter@example.com", "A little less, but better",
                        "SAMPLE WEEKLY\nIssue 318\n\nThis week: tools that leave room for thought.\n\nWhen every app asks for your attention, choosing what to leave out becomes a design decision. We look at three small studios building useful things with restraint.\n\nWorth reading\n• Designing for a slower internet\n• The case for keeping a notebook\n• A library of everyday objects\n\nRead more at https://example.com\n\nHave a good weekend,\nThe editorial team", minutes: 35),

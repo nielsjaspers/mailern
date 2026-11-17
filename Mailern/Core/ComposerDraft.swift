@@ -24,6 +24,10 @@ struct MailAttachment: Codable, Equatable, Identifiable, Sendable {
         self.data = data
         self.contentType = contentType
     }
+    /// Attachment bytes never change after import, so the identity decides equality without reading the file.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.contentType == rhs.contentType
+    }
     private enum CodingKeys: String, CodingKey { case id, name, contentType }
     init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -44,7 +48,7 @@ struct MailAttachment: Codable, Equatable, Identifiable, Sendable {
 struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     var id = UUID()
     var mode: ComposeMode = .new
-    var accountID = MailAccount.demo[1].id
+    var accountID = MailAccount.demo[0].id
     var to = ""
     var cc = ""
     var bcc = ""
@@ -57,6 +61,8 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     var snoozedUntil: Date?
     /// The message a reply or forward was started from. Nil means the latest message at that time.
     var messageID: UUID?
+    /// The signature the composer inserted. The composer replaces it on a sender change while it is still unedited.
+    var signature: String?
 
     func matchesContent(of other: Self) -> Bool {
         // Pinning and snooze expiry do not change the editor's saved content.
@@ -72,15 +78,41 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     }
     var canSend: Bool {
         let recipients = Self.addresses(to) + Self.addresses(cc) + Self.addresses(bcc)
-        return !recipients.isEmpty && recipients.allSatisfy { address in
-            let parts = address.split(separator: "@", omittingEmptySubsequences: false)
-            return parts.count == 2 && !parts[0].isEmpty && parts[1].contains(".") && !address.contains(where: \.isWhitespace)
-        }
+        return !recipients.isEmpty && recipients.allSatisfy(Self.isAddress)
     }
-    static func make(mode: ComposeMode, conversation: Conversation?, message: UUID? = nil) -> Self {
+    static func isAddress(_ address: String) -> Bool {
+        let parts = address.split(separator: "@", omittingEmptySubsequences: false)
+        return parts.count == 2 && !parts[0].isEmpty && parts[1].contains(".") && !address.contains(where: \.isWhitespace)
+    }
+    /// The text a signature adds to a body. It sits above any quote, separated from the text you type by a blank line.
+    static func signatureBlock(_ signature: String) -> String { signature.isEmpty ? "" : "\n\n\(signature)" }
+
+    /// Swaps the block for `old` in `text` for `replacement` and returns the range it replaced.
+    /// The inserted signature is the last text above the quote that starts at `quoteStart`, or the end of a new
+    /// message. Any edit to it, or text typed below it, leaves it in place and returns nil. `unedited` checks the
+    /// block for changes the text does not show, such as formatting. With no old signature, the replacement goes
+    /// in that same spot.
+    static func swapSignature(in text: NSMutableAttributedString, old: String, replacement: NSAttributedString, quoteStart: Int?,
+                              unedited: (NSRange) -> Bool = { _ in true }) -> NSRange? {
+        let string = text.string as NSString
+        // A quote follows a blank line, which stays below the signature.
+        let end = quoteStart.map { min(max(0, $0 - 2), string.length) } ?? string.length
+        let block = signatureBlock(old) as NSString
+        guard end >= block.length, string.substring(with: NSRange(location: end - block.length, length: block.length)) == block as String else { return nil }
+        let range = NSRange(location: end - block.length, length: block.length)
+        guard unedited(range) else { return nil }
+        text.replaceCharacters(in: range, with: replacement)
+        return range
+    }
+
+    /// A new draft from `accounts[0]`, or a reply or forward from the conversation's account, with that account's signature.
+    static func make(mode: ComposeMode, conversation: Conversation?, message: UUID? = nil, accounts: [MailAccount]) -> Self {
         var draft = Self(mode: mode, messageID: message)
+        draft.accountID = conversation?.accountID ?? accounts.first?.id ?? draft.accountID
+        let signature = accounts.first { $0.id == draft.accountID }?.signature ?? ""
+        draft.signature = signature
+        draft.text = signatureBlock(signature)
         guard let c = conversation else { return draft }
-        draft.accountID = c.accountID
         let target = c.message(message)
         let subject = c.subject(at: target)
         switch mode {
@@ -88,13 +120,13 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
             draft.to = target.outgoing ? target.to.joined(separator: ", ") : target.address
             draft.subject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
             if case .replyAll = mode {
-                var seen = Set(MailAccount.demo.map { $0.address.lowercased() } + addresses(draft.to).map { $0.lowercased() })
+                var seen = Set(accounts.map { $0.address.lowercased() } + addresses(draft.to).map { $0.lowercased() })
                 draft.cc = (target.to + target.cc).filter { seen.insert($0.lowercased()).inserted }.joined(separator: ", ")
             }
-            draft.text = "\n\nOn \(target.date.formatted()), \(target.sender) <\(target.address)> wrote:\n\(target.body)"
+            draft.text += "\n\nOn \(target.date.formatted()), \(target.sender) <\(target.address)> wrote:\n\(target.body)"
         case .forward:
             draft.subject = subject.lowercased().hasPrefix("fwd:") ? subject : "Fwd: \(subject)"
-            draft.text = "\n\nBegin forwarded message:\n\nFrom: \(target.sender) <\(target.address)>\nDate: \(target.date.formatted())\nSubject: \(subject)\nTo: \(target.to.joined(separator: ", "))\n\n\(target.body)"
+            draft.text += "\n\nBegin forwarded message:\n\nFrom: \(target.sender) <\(target.address)>\nDate: \(target.date.formatted())\nSubject: \(subject)\nTo: \(target.to.joined(separator: ", "))\n\n\(target.body)"
             draft.attachments = target.attachments ?? []
         default: break
         }
@@ -162,6 +194,22 @@ final class DraftStore {
     func discardDrafts(for ids: Set<UUID>) async -> Bool {
         await enqueue {
             await self.persist(self.drafts.filter { !ids.contains($0.id) && !($0.mode.replyID.map(ids.contains) ?? false) })
+        }
+    }
+    /// Discards every draft sent from the given account.
+    func discardDrafts(accountID: String) async -> Bool {
+        await enqueue {
+            // An unreadable store can still hold this account's drafts.
+            guard self.loadFailure == nil else { self.error = self.loadFailure; return false }
+            guard self.drafts.contains(where: { $0.accountID == accountID }) else { return true }
+            return await self.persist(self.drafts.filter { $0.accountID != accountID })
+        }
+    }
+    /// Puts back drafts that `discardDrafts(accountID:)` removed.
+    func restore(_ restored: [ComposerDraft]) async -> Bool {
+        await enqueue {
+            let ids = Set(self.drafts.map(\.id))
+            return await self.persist(restored.filter { !ids.contains($0.id) } + self.drafts)
         }
     }
     func togglePin(_ id: UUID) async {

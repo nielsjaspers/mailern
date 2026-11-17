@@ -219,7 +219,7 @@ struct MailboxView: View {
         }
         if #available(iOS 26, *), !selecting {
             ToolbarItem(placement: .topBarTrailing) {
-                MailboxFilterToolbar(filter: filters[status], status: status,
+                MailboxFilterToolbar(filter: filters[status], status: status, accounts: store.accounts,
                                      select: { peeking = nil; pull.cancel(); selecting = true },
                                      toggle: { toggleFilter(status) }, options: { filtering = status })
             }
@@ -233,7 +233,7 @@ struct MailboxView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 if !selecting {
-                    MailboxFilterControl(filter: filters[status], status: status,
+                    MailboxFilterControl(filter: filters[status], status: status, accounts: store.accounts,
                                          toggle: { toggleFilter(status) }, options: { filtering = status })
                 }
             }
@@ -415,7 +415,7 @@ struct MailboxView: View {
     }
 
     private func items(_ status: Workflow, search: String? = nil) -> [MailboxItem] {
-        MailboxItem.list(conversations: store.conversations, drafts: drafts.drafts, status: status, search: search ?? self.search, filter: filters[status])
+        MailboxItem.list(conversations: store.conversations, drafts: drafts.drafts, status: status, search: store.search(search ?? self.search), filter: filters[status])
     }
     private var filters: MailboxFilters {
         (try? JSONDecoder().decode(MailboxFilters.self, from: filterData)) ?? MailboxFilters()

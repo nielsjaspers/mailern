@@ -23,6 +23,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
+                NavigationLink("Accounts") { AccountsSettingsView() }
                 NavigationLink("Snooze settings") { SnoozeSettingsView() }
                 NavigationLink("Swipe actions") { SwipeSettingsView() }
             }
