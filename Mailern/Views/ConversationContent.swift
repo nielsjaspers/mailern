@@ -340,7 +340,10 @@ private struct MessageSection: View {
                         if isPreview { recipientsLabel } else {
                             Button {
                                 withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { showsDetails.toggle() }
-                            } label: { recipientsLabel }
+                            } label: {
+                                // The caption stays compact, but the free width beside the reply controls, at their height, takes the tap.
+                                recipientsLabel.frame(maxWidth: .infinity, minHeight: 36, alignment: .leading).contentShape(Rectangle())
+                            }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel(recipients)
                                 .accessibilityHint(showsDetails ? "Hides the addresses" : "Shows the addresses")
