@@ -12,7 +12,7 @@ struct HTMLMessageView: View {
     @State private var blockerFailed = false
     @State private var remoteContent = false
     @State private var height: CGFloat = 1
-    private var document: HTMLDocument { HTMLDocument(html) }
+    private var document: HTMLDocument { HTMLDocument(html, remoteContent: remoteContent) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -35,34 +35,6 @@ struct HTMLMessageView: View {
             do { blocker = try await RemoteContentBlocker.shared.value }
             catch { blockerFailed = true }
         }
-    }
-}
-
-/// An email's HTML, prepared for the reader.
-struct HTMLDocument {
-    let html: String
-    /// True when the message styles itself for dark mode. Other mail is shown on white.
-    let adaptsToDarkMode: Bool
-    /// True when the message refers to images or styles on the network.
-    let hasRemoteContent: Bool
-
-    init(_ source: String) {
-        let lowered = source.lowercased()
-        adaptsToDarkMode = lowered.contains("color-scheme")
-        hasRemoteContent = lowered.range(of: #"(src|srcset|background)\s*=\s*["']?\s*(https?:)?//|url\(\s*["']?\s*(https?:)?//|<link\b"#,
-                                         options: .regularExpression) != nil
-        // The doctype comes first so every message renders in standards mode. The parser moves the message's own
-        // head elements into this head, and the message's styles come later, so they override these defaults.
-        html = """
-            <!doctype html><meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <meta name="color-scheme" content="\(adaptsToDarkMode ? "light dark" : "light")">
-            <style>
-            html { -webkit-text-size-adjust: 100%; background: \(adaptsToDarkMode ? "transparent" : "#fff"); }
-            body { margin: 0; font: -apple-system-body; overflow-wrap: break-word; }
-            img { max-width: 100% !important; height: auto; }
-            </style>
-            """ + source
     }
 }
 
@@ -144,7 +116,9 @@ private struct HTMLWebView: UIViewRepresentable {
         /// Only the message itself loads in the view. A tapped link goes to `openURL`; anything else is dropped.
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
             // loadHTMLString without a base URL loads the message as about:blank, and its #anchors stay on that page.
-            guard let url = action.request.url, url.scheme != "about" else { return .allow }
+            // Frames, including about:srcdoc, never load.
+            guard let url = action.request.url else { return .cancel }
+            if url.scheme == "about" && action.targetFrame?.isMainFrame == true { return .allow }
             if action.navigationType == .linkActivated { openURL?(url) }
             return .cancel
         }

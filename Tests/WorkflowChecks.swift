@@ -20,6 +20,7 @@ import SQLite3
         try await checkAccounts()
         try checkThreadingHeaders()
         checkMessageLinks()
+        checkHTMLDocument()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -274,6 +275,25 @@ import SQLite3
         legacyStore.receiveReply(conversation.id)
         assert(legacyStore.conversations.count == 1 && legacyStore.conversation(conversation.id)!.latest.inReplyTo == old.threadingID)
         print("PASS: Message-ID headers on demo and sent mail, threading by In-Reply-To and References within one account, legacy mail")
+    }
+
+    static func checkHTMLDocument() {
+        func dark(_ html: String) -> Bool { HTMLDocument(html, remoteContent: false).adaptsToDarkMode }
+        assert(dark("<style>@media (prefers-color-scheme: dark) { body { color: #fff } }</style>"))
+        assert(dark(#"<meta name="color-scheme" content="light dark">"#) && dark(":root { color-scheme: dark; }"))
+        assert(!dark(":root { color-scheme: only light; }") && !dark("<p>Plain</p>"), "Light-only mail keeps its white page")
+
+        func remote(_ html: String) -> Bool { HTMLDocument(html, remoteContent: false).hasRemoteContent }
+        assert(remote(#"<img src="https://example.com/a.png">"#) && remote("<div style=\"background:url('//cdn.example.com/b.png')\">"))
+        assert(remote(#"<style>@import "https://example.com/mail.css";</style>"#) && remote(#"<link rel="stylesheet" href="https://example.com/s.css">"#))
+        assert(!remote(#"<img src="data:image/png;base64,AAAA"><a href="https://example.com">Link</a>"#), "Links and data: images need no Load images")
+
+        let hints = #"<link rel="preconnect" href="https://t.example.com"><LINK href="https://t.example.com" REL=dns-prefetch><a rel="nofollow" href="x">"#
+        let blocked = HTMLDocument(hints, remoteContent: false).html
+        assert(!blocked.contains(#" rel="preconnect""#) && blocked.contains(#"<link data-rel="preconnect""#) && blocked.contains("data-rel=dns-prefetch"))
+        assert(blocked.contains(#"<a rel="nofollow""#), "Only link elements lose their rel")
+        assert(HTMLDocument(hints, remoteContent: true).html.hasSuffix(hints), "Loaded remote content keeps the message as sent")
+        print("PASS: HTML dark-mode opt-in, remote content detection incl. @import, connection hints disabled while blocked")
     }
 
     static func checkMessageLinks() {
