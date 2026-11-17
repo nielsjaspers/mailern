@@ -93,6 +93,26 @@ final class ComposeDefaultsToBottomRightUITests: MailernUITestCase {
     }
 }
 
+final class ThreadCountAlignmentUITests: MailernUITestCase {
+    @MainActor
+    func testCountStaysCenteredBesideReadAndUnreadSenders() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let thread = row("Dinner on Saturday?", in: app)
+        for unread in [false, true] {
+            XCTAssertEqual(thread.value as? String, unread ? "Unread" : "Read")
+            let sender = thread.staticTexts["Casey Rivera, Me"]
+            let count = thread.staticTexts["3 messages"]
+            XCTAssertTrue(count.exists)
+            capture("Thread count beside \(unread ? "unread" : "read") sender", in: app)
+            XCTAssertEqual(count.frame.midY, sender.frame.midY, accuracy: 1)
+            XCTAssertGreaterThan(count.frame.minX, sender.frame.maxX)
+            if !unread { fullSwipe(thread, right: true) }
+        }
+    }
+}
+
 final class ComposerSenderLayoutUITests: MailernUITestCase {
     @MainActor
     func testSenderUsesRowWidthAndStaysBetweenHeaders() {
