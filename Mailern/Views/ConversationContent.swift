@@ -84,23 +84,20 @@ struct ConversationContent: View {
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
-    // A peek opens the conversation on any tap, so it cannot unfold messages or offer
-    // per-message actions. It shows the newest message and sums up the rest.
+    // A peek opens the conversation on any tap, so it cannot fold messages or offer
+    // per-message actions. Every message is open, newest first: the peek opens on the
+    // new message, and scrolling down reads back through the thread.
     @ViewBuilder private var preview: some View {
-        if !earlier.isEmpty {
-            HStack(spacing: 10) {
-                HStack(spacing: -8) {
-                    ForEach(earlier.suffix(3)) {
-                        SenderAvatar(message: $0, size: 24).padding(1.5)
-                            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    }
-                }
-                Text(earlier.count == 1 ? "1 earlier message" : "\(earlier.count) earlier messages")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-        }
         Divider()
         MessageSection(message: latest, conversationID: conversation.id, threadSubject: conversation.subject, expanded: true)
+        if !earlier.isEmpty {
+            Text("Earlier messages").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(earlier.reversed()) { message in
+                Divider()
+                MessageSection(message: message, conversationID: conversation.id, threadSubject: conversation.subject, expanded: true)
+            }
+        }
     }
 }
 
