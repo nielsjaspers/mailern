@@ -23,6 +23,8 @@ Messages, workflow state, and drafts are saved as atomic JSON in the app's Appli
 
 Drag the composer content to hide the keyboard without closing the message. Tap any field to continue editing.
 
+Tap Add recipient beside To to browse known senders. Search recipients by name or email address, then tap a result to add it to To.
+
 ## Code
 
 `Mailern/Core` contains conversation models, demo messages, and the observable store. `ConversationPersistence` separates storage from state changes. `Mailern/Views` contains the native SwiftUI screens. Workflow status does not map to a provider folder or label. No provider integrations or backend are included.

@@ -25,6 +25,7 @@ struct ComposerView: View {
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
     @State private var contacts = false
+    @State private var recipientSearch = ""
     @State private var importsInFlight = 0
     @State private var error: String?
     @State private var savedInput: DraftInput?
@@ -194,15 +195,19 @@ struct ComposerView: View {
                     else { focus = .to }
                 }
             if add {
-                Button("Add recipient", systemImage: "plus.circle.fill") { contacts = true }
+                Button("Add recipient", systemImage: "plus.circle.fill") { recipientSearch = ""; contacts = true }
                     .labelStyle(.iconOnly).foregroundStyle(.secondary)
             }
         }.frame(minHeight: 48)
     }
     private var recipientPicker: some View {
-        NavigationStack {
+        let query = recipientSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = recipients.filter {
+            query.isEmpty || $0.name.localizedStandardContains(query) || $0.address.localizedStandardContains(query)
+        }
+        return NavigationStack {
             List {
-                ForEach(recipients, id: \.address) { person in
+                ForEach(matches, id: \.address) { person in
                     Button {
                         draft.to += draft.to.trimmingCharacters(in: .whitespaces).isEmpty ? person.address : ", \(person.address)"
                         contacts = false
@@ -211,6 +216,15 @@ struct ComposerView: View {
                     }.foregroundStyle(.primary)
                 }
             }
+            .accessibilityIdentifier("recipient-list")
+            .overlay {
+                if !query.isEmpty && matches.isEmpty {
+                    ContentUnavailableView("No recipients found", systemImage: "magnifyingglass")
+                }
+            }
+            .searchable(text: $recipientSearch, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search recipients")
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
             .navigationTitle("Recipients").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { contacts = false } } }
         }
