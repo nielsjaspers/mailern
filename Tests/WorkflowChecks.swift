@@ -23,6 +23,7 @@ import SQLite3
         checkHTMLDocument()
         try checkMute()
         try checkFollowUp()
+        try await checkOutbox()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -382,6 +383,73 @@ import SQLite3
         assert(store.send(threadID: nil, account: account, to: ["sam@example.com"], cc: [], subject: "Late", body: "x", followUp: .now.addingTimeInterval(-1)))
         assert(store.conversations[0].workflow == .settled && store.conversations[0].followUp == nil)
         print("PASS: follow-up reminders wait in Snoozed, return marked without a reply, end on reply or a manual move, undo, persistence")
+    }
+
+    @MainActor static func checkOutbox() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-outbox-\(UUID())")
+        let store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "outbox.sqlite")))
+        let url = directory.appending(path: "drafts.json")
+        let drafts = DraftStore(url: url)
+        let thread = store.list(.inbox).first { $0.messages.contains { !$0.outgoing } }!
+        let start = Date.now
+        var later = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        later.to = "sam@example.com"
+        later.subject = "Later"
+        later.followUp = start.addingTimeInterval(500)
+        let scheduledLater = await drafts.schedule(later, at: start.addingTimeInterval(100))
+        assert(scheduledLater)
+        var reply = ComposerDraft.make(mode: .reply(thread.id), conversation: thread, accounts: store.accounts)
+        reply.text = "On my way"
+        let scheduledReply = await drafts.schedule(reply, at: start.addingTimeInterval(200))
+        assert(scheduledReply)
+        // Scheduled mail leaves the draft list, persists, and survives Settle's draft discard.
+        assert(drafts.drafts.isEmpty && drafts.outbox.map(\.id) == [later.id, reply.id])
+        assert(DraftStore(url: url).outbox.count == 2)
+        let discarded = await drafts.discardDrafts(for: [thread.id])
+        assert(discarded && drafts.outbox.count == 2)
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(99))
+        assert(drafts.outbox.count == 2 && !store.conversations.contains { $0.subject == "Later" })
+        // A failed draft write after sending keeps the mail scheduled, and the retry does not send it twice.
+        let failing = DraftStore(url: url, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        await failing.sendDue(through: store, now: start.addingTimeInterval(101))
+        await failing.sendDue(through: store, now: start.addingTimeInterval(102))
+        assert(failing.outbox.count == 2 && store.conversations.filter { $0.subject == "Later" }.count == 1)
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(103))
+        let sent = store.conversations.first { $0.subject == "Later" }!
+        assert(drafts.outbox.map(\.id) == [reply.id] && sent.messages.map(\.id) == [later.id])
+        // The reminder starts when the mail goes out.
+        assert(sent.workflow == .snoozed && sent.followUp == .waiting)
+        // Send Now skips the wait. Taking back mail that already went out fails.
+        let sentNow = await drafts.sendNow(reply.id, through: store)
+        assert(sentNow)
+        assert(drafts.outbox.isEmpty && store.conversation(thread.id)!.latest.id == reply.id && store.conversation(thread.id)!.workflow == .settled)
+        let tookBackSent = await drafts.unschedule(reply.id)
+        assert(tookBackSent == false)
+        // Unschedule returns mail to Drafts. Edit also asks for the composer.
+        var undo = later
+        undo.id = UUID()
+        let scheduledUndo = await drafts.schedule(undo, at: .now.addingTimeInterval(10))
+        assert(scheduledUndo)
+        drafts.undoable = undo.id
+        await drafts.edit(undo.id)
+        assert(drafts.reopening == undo.id && drafts.undoable == nil && drafts.drafts.map(\.id) == [undo.id])
+        // Mail the store refuses goes back to Drafts with an explanation.
+        var orphan = reply
+        orphan.id = UUID()
+        orphan.mode = .reply(UUID())
+        let scheduledOrphan = await drafts.schedule(orphan, at: start)
+        assert(scheduledOrphan)
+        await drafts.sendDue(through: store)
+        assert(drafts.outbox.isEmpty && drafts.drafts.contains { $0.id == orphan.id } && store.error?.contains("back in Drafts") == true)
+        store.error = nil
+        // Deleting a conversation discards its scheduled replies too.
+        var pending = reply
+        pending.id = UUID()
+        let scheduledPending = await drafts.schedule(pending, at: start.addingTimeInterval(900))
+        assert(scheduledPending)
+        let discardedWithThread = await drafts.discardDrafts(for: [thread.id], scheduled: true)
+        assert(discardedWithThread && drafts.outbox.isEmpty)
+        print("PASS: outbox scheduling, persistence, due delivery, no duplicate after a failed draft write, reminders on send, send now, edit/unschedule, refused mail back in Drafts, discard with deleted conversation")
     }
 
     @MainActor static func checkTrashAndJunk() throws {

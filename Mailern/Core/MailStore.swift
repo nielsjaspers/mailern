@@ -278,7 +278,7 @@ final class MailStore {
     /// a draft left behind by a deleted account would have no sender address.
     func deleteAccount(_ id: String, drafts: DraftStore) async -> String? {
         guard canWrite(), accounts.count > 1 else { return error ?? "You need at least one account." }
-        let removed = drafts.drafts.filter { $0.accountID == id }
+        let removed = drafts.all.filter { $0.accountID == id }
         guard await drafts.discardDrafts(accountID: id) else {
             defer { drafts.error = nil }
             return drafts.error ?? "The account's drafts could not be deleted."
@@ -344,7 +344,7 @@ final class MailStore {
     /// Sends a message. With a `threadID`, it answers the message `replyingTo` in that conversation, or the latest one.
     /// The conversation settles, or waits in Snoozed until `followUp` when that is still ahead.
     func send(threadID: UUID?, replyingTo: UUID? = nil, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
-              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil) -> Bool {
+              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil, id: UUID = UUID()) -> Bool {
         guard canWrite() else { return false }
         guard accounts.contains(where: { $0.id == account.id }) else {
             error = "The sending account no longer exists. Choose another From address."
@@ -355,7 +355,7 @@ final class MailStore {
             return false
         }
         let before = conversations
-        var message = MailMessage(sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body,
+        var message = MailMessage(id: id, sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body,
                                   outgoing: true, bcc: bcc.isEmpty ? nil : bcc, richText: richText, attachments: attachments.isEmpty ? nil : attachments,
                                   subject: subject, messageID: MailMessage.newMessageID(from: account.address))
         if let threadID, let i = conversations.firstIndex(where: { $0.id == threadID }) {
@@ -384,6 +384,15 @@ final class MailStore {
             self.error = "Message could not be saved. Your draft has not been sent. \(error.localizedDescription)"
             return false
         }
+    }
+    /// Sends a composed draft as message `id`. A message with that ID that already went out is not sent again.
+    @discardableResult func send(_ draft: ComposerDraft, id: UUID = UUID()) -> Bool {
+        if conversations.contains(where: { $0.messages.contains { $0.id == id } }) { return true }
+        return send(threadID: draft.mode.replyID, replyingTo: draft.answering ?? draft.messageID, account: account(draft.accountID),
+                    to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
+                    subject: draft.subject.isEmpty ? "(No Subject)" : draft.subject, body: draft.text,
+                    bcc: ComposerDraft.addresses(draft.bcc), richText: draft.richText, attachments: draft.attachments,
+                    followUp: draft.followUp, id: id)
     }
     func reset() {
         let replacement = MailData(conversations: DemoData.conversations())

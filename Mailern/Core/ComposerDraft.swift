@@ -67,6 +67,10 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     var answering: UUID?
     /// The signature the composer inserted. The composer replaces it on a sender change while it is still unedited.
     var signature: String?
+    /// When scheduled mail goes out. Nil for a draft.
+    var sendAt: Date?
+    /// When to return the sent conversation to Inbox if nobody replied.
+    var followUp: Date?
 
     func matchesContent(of other: Self) -> Bool {
         // Pinning and snooze expiry do not change the editor's saved content.
@@ -149,7 +153,16 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
 
 @MainActor @Observable
 final class DraftStore {
-    private(set) var drafts: [ComposerDraft] = []
+    /// Drafts and scheduled mail, as stored.
+    private(set) var all: [ComposerDraft] = []
+    /// Drafts being written. Scheduled mail waits in `outbox` instead.
+    var drafts: [ComposerDraft] { all.filter { $0.sendAt == nil } }
+    /// Mail waiting to be sent, soonest first. Undo Send holds mail here for its short delay.
+    var outbox: [ComposerDraft] { all.filter { $0.sendAt != nil }.sorted { $0.sendAt! < $1.sendAt! } }
+    /// The outbox message that Undo Send can still take back.
+    var undoable: UUID?
+    /// A draft to open in the composer, set when Undo Send or Edit takes scheduled mail back.
+    var reopening: UUID?
     var error: String?
     private let url: URL
     private let write: @Sendable (Data, URL) throws -> Void
@@ -161,7 +174,7 @@ final class DraftStore {
          write: @escaping @Sendable (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }) {
         self.url = url
         self.write = write
-        do { drafts = try Self.read(url) }
+        do { all = try Self.read(url) }
         catch { failedToLoad(error) }
     }
     private nonisolated static func read(_ url: URL) throws -> [ComposerDraft] {
@@ -171,7 +184,7 @@ final class DraftStore {
         let url = url
         _ = await enqueue {
             do {
-                self.drafts = try await Task.detached { try Self.read(url) }.value
+                self.all = try await Task.detached { try Self.read(url) }.value
                 self.loadFailure = nil
                 self.error = nil
                 return true
@@ -181,32 +194,36 @@ final class DraftStore {
     @discardableResult func save(_ draft: ComposerDraft) async -> Bool {
         await enqueue {
             var draft = draft
-            if let existing = self.drafts.first(where: { $0.id == draft.id }) {
+            if let existing = self.all.first(where: { $0.id == draft.id }) {
                 // An open editor can hold mailbox state from before a snooze expired.
                 draft.pinned = existing.pinned
                 draft.snoozedUntil = existing.snoozedUntil
             }
-            var updated = self.drafts.filter { $0.id != draft.id }
+            var updated = self.all.filter { $0.id != draft.id }
             updated.insert(draft, at: 0)
             return await self.persist(updated)
         }
     }
     @discardableResult func delete(_ id: UUID) async -> Bool {
         await enqueue {
-            guard self.drafts.contains(where: { $0.id == id }) else {
+            guard self.all.contains(where: { $0.id == id }) else {
                 if self.loadFailure == nil {
                     let url = self.url
                     await Task.detached { AttachmentJSON.removeUnusedPayloads(for: url, as: [ComposerDraft].self) }.value
                 }
                 return true
             }
-            return await self.persist(self.drafts.filter { $0.id != id })
+            return await self.persist(self.all.filter { $0.id != id })
         }
     }
     /// Discards the given standalone drafts and every reply draft attached to the given conversations.
-    func discardDrafts(for ids: Set<UUID>) async -> Bool {
+    /// Scheduled replies stay unless `scheduled` is true, as when their conversation is deleted.
+    func discardDrafts(for ids: Set<UUID>, scheduled: Bool = false) async -> Bool {
         await enqueue {
-            await self.persist(self.drafts.filter { !ids.contains($0.id) && !($0.mode.replyID.map(ids.contains) ?? false) })
+            await self.persist(self.all.filter { draft in
+                guard scheduled || draft.sendAt == nil else { return true }
+                return !ids.contains(draft.id) && !(draft.mode.replyID.map(ids.contains) ?? false)
+            })
         }
     }
     /// Discards every draft sent from the given account.
@@ -214,15 +231,68 @@ final class DraftStore {
         await enqueue {
             // An unreadable store can still hold this account's drafts.
             guard self.loadFailure == nil else { self.error = self.loadFailure; return false }
-            guard self.drafts.contains(where: { $0.accountID == accountID }) else { return true }
-            return await self.persist(self.drafts.filter { $0.accountID != accountID })
+            guard self.all.contains(where: { $0.accountID == accountID }) else { return true }
+            return await self.persist(self.all.filter { $0.accountID != accountID })
         }
     }
     /// Puts back drafts that `discardDrafts(accountID:)` removed.
     func restore(_ restored: [ComposerDraft]) async -> Bool {
         await enqueue {
-            let ids = Set(self.drafts.map(\.id))
-            return await self.persist(restored.filter { !ids.contains($0.id) } + self.drafts)
+            let ids = Set(self.all.map(\.id))
+            return await self.persist(restored.filter { !ids.contains($0.id) } + self.all)
+        }
+    }
+    /// Saves `draft` to go out at `date`.
+    func schedule(_ draft: ComposerDraft, at date: Date) async -> Bool {
+        var draft = draft
+        draft.sendAt = date
+        return await save(draft)
+    }
+    /// Takes scheduled mail back into Drafts. False when it already went out.
+    func unschedule(_ id: UUID) async -> Bool {
+        await enqueue {
+            guard let i = self.all.firstIndex(where: { $0.id == id && $0.sendAt != nil }) else { return false }
+            var updated = self.all
+            updated[i].sendAt = nil
+            guard await self.persist(updated) else { return false }
+            if self.undoable == id { self.undoable = nil }
+            return true
+        }
+    }
+    /// Takes scheduled mail back and asks the app to open it in the composer.
+    func edit(_ id: UUID) async {
+        if await unschedule(id) { reopening = id }
+    }
+    /// Sends outbox mail that is due.
+    func sendDue(through store: MailStore, now: Date = .now) async {
+        guard all.contains(where: { ($0.sendAt ?? .distantFuture) <= now }) else { return }
+        _ = await deliver(through: store) { ($0.sendAt ?? .distantFuture) <= now }
+    }
+    /// Sends one scheduled message at once.
+    func sendNow(_ id: UUID, through store: MailStore) async -> Bool {
+        await deliver(through: store) { $0.id == id }
+    }
+    /// Sends the scheduled mail that `pick` selects. Each message goes out with its draft's ID, so a retry after a
+    /// failed draft write removes the draft without sending it again. Mail the store refuses goes back to Drafts.
+    private func deliver(through store: MailStore, pick: @escaping (ComposerDraft) -> Bool) async -> Bool {
+        await enqueue {
+            // Unreadable mail storage is temporary. The mail keeps waiting until it loads.
+            guard !store.needsReload else { return false }
+            var updated = self.all
+            var failure: String?
+            for draft in self.all where draft.sendAt != nil && pick(draft) {
+                if store.send(draft, id: draft.id) {
+                    updated.removeAll { $0.id == draft.id }
+                } else if let i = updated.firstIndex(where: { $0.id == draft.id }) {
+                    updated[i].sendAt = nil
+                    failure = "“\(draft.title)” could not be sent and is back in Drafts. \(store.error ?? "")"
+                }
+            }
+            guard updated != self.all else { return true }
+            let saved = await self.persist(updated)
+            if let undoable = self.undoable, !self.all.contains(where: { $0.id == undoable && $0.sendAt != nil }) { self.undoable = nil }
+            if let failure { store.error = failure }
+            return saved && failure == nil
         }
     }
     func togglePin(_ id: UUID) async {
@@ -236,19 +306,19 @@ final class DraftStore {
         await updateMailbox(ids: [id]) { $0.snoozedUntil = nil }
     }
     func wakeDue(now: Date = .now) async {
-        guard drafts.contains(where: { ($0.snoozedUntil ?? .distantFuture) <= now }) else { return }
+        guard all.contains(where: { ($0.snoozedUntil ?? .distantFuture) <= now }) else { return }
         _ = await enqueue {
-            var updated = self.drafts
+            var updated = self.all
             for i in updated.indices where (updated[i].snoozedUntil ?? .distantFuture) <= now {
                 updated[i].snoozedUntil = nil
             }
-            if updated == self.drafts { return true }
+            if updated == self.all { return true }
             return await self.persist(updated)
         }
     }
     private func updateMailbox(ids: Set<UUID>, change: @escaping (inout ComposerDraft) -> Void) async -> Bool {
         await enqueue {
-            var updated = self.drafts
+            var updated = self.all
             for i in updated.indices where ids.contains(updated[i].id) { change(&updated[i]) }
             return await self.persist(updated)
         }
@@ -271,7 +341,7 @@ final class DraftStore {
             try await Task.detached(priority: .utility) {
                 try AttachmentJSON.save(updated, to: url, write: write)
             }.value
-            drafts = updated
+            all = updated
             error = nil
             return true
         } catch { self.error = "Could not save drafts. \(error.localizedDescription)"; return false }
