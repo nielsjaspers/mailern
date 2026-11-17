@@ -245,6 +245,9 @@ final class HTMLMailUITests: MailernUITestCase {
         XCTAssertTrue(app.navigationBars["Tip for Sample Weekly"].existsOrWait(timeout: 5))
         let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
         XCTAssertEqual(to.value as? String, "editors@example.com")
+        // The fixture reset between cases does not close sheets presented from a thread.
+        app.buttons["Cancel"].tap()
+        waitForComposerDismissal(in: app)
     }
 }
 
