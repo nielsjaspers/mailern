@@ -777,6 +777,9 @@ final class ComposerDragDismissesKeyboardAndKeepsContentUITests: MailernUITestCa
             dismissKeyboardByDragging()
         }
         capture("Keyboard hidden with content intact", in: app)
+        // The fixture reset between cases does not close the composer. Left open, it blocks the next case's long press.
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+        waitForComposerDismissal(in: app)
     }
 }
 
