@@ -21,6 +21,7 @@ import SQLite3
         try checkThreadingHeaders()
         checkMessageLinks()
         checkHTMLDocument()
+        try checkMute()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -316,6 +317,32 @@ import SQLite3
         assert(String(text.characters).contains("*this*"), "Plain text is not read as Markdown")
         assert(MessageLinks.linked("Tuesday, 10:00–11:00\nOrder #10428").runs.allSatisfy { $0.link == nil })
         print("PASS: mailto parsing and drafts, web/email/phone links in plain text, no Markdown in plain text")
+    }
+
+    @MainActor static func checkMute() throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-mute-\(UUID())")
+        let disk = SQLitePersistence(url: directory.appending(path: "mute.sqlite"))
+        let store = MailStore(persistence: disk)
+        let settled = store.list(.settled)[0].id
+        let snoozed = store.list(.snoozed)[0]
+        store.toggleMute(settled)
+        store.toggleMute(snoozed.id)
+        let trashed = store.list(.inbox)[0].id
+        store.toggleMute(trashed)
+        store.apply(ids: [trashed], action: .remove(.trash))
+        store.receiveReply(settled)
+        store.receiveReply(snoozed.id)
+        store.receiveReply(trashed)
+        assert(store.conversation(trashed)!.removal?.mailbox == .trash)
+        // A reply joins a muted thread but leaves it where it was, read, and still snoozed.
+        let quiet = store.conversation(settled)!
+        assert(quiet.workflow == .settled && !quiet.unread && quiet.latest.body.contains("follow-up"))
+        assert(store.conversation(snoozed.id)!.workflow == .snoozed && store.conversation(snoozed.id)!.snoozedUntil == snoozed.snoozedUntil)
+        assert(MailStore(persistence: SQLitePersistence(url: disk.url)).conversation(settled)!.muted == true)
+        store.toggleMute(settled)
+        store.receiveReply(settled)
+        assert(store.conversation(settled)!.workflow == .inbox && store.conversation(settled)!.unread)
+        print("PASS: muted threads keep replies without moving or turning unread, mute persists, unmute restores delivery")
     }
 
     @MainActor static func checkTrashAndJunk() throws {

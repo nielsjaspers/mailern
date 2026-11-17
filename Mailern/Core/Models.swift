@@ -101,6 +101,8 @@ struct Conversation: Codable, Identifiable, Equatable {
     var pinned = false
     var snoozedUntil: Date?
     var removal: Removal?
+    /// Replies to a muted conversation join it without moving it or marking it unread.
+    var muted: Bool?
     var messages: [MailMessage]
     var latest: MailMessage { messages[messages.count - 1] }
     var effectiveSubject: String { subject(at: latest) }
@@ -135,7 +137,7 @@ struct Conversation: Codable, Identifiable, Equatable {
     }
     mutating func receive(_ message: MailMessage) {
         messages.append(message)
-        guard !message.outgoing else { return }
+        guard !message.outgoing, muted != true else { return }
         move(to: .inbox)
         unread = true
         // A reply rescues a thread from Trash. Junk keeps it until the sender is unblocked.

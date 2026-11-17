@@ -34,6 +34,7 @@ struct ConversationContent: View {
                             if conversation.messages.count > 1 {
                                 Text("· \(conversation.messages.count) messages")
                             }
+                            if conversation.muted == true { Text("· Muted") }
                         }.font(.caption).foregroundStyle(.secondary)
                         if workflow == .snoozed, conversation.removal == nil, let date = conversation.snoozedUntil {
                             Label(

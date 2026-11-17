@@ -55,6 +55,7 @@ struct ThreadView: View {
                                 if c.workflow != .inbox { Button("Restore to Inbox", systemImage: "tray") { store.move(id, to: .inbox); dismiss() } }
                                 Button("Move to Junk", systemImage: RemovedMailbox.junk.symbol) { remove(to: .junk) }
                             }
+                            Button(c.muted == true ? "Unmute" : "Mute", systemImage: c.muted == true ? "bell" : "bell.slash") { store.toggleMute(id) }
                             Divider()
                             Button("Simulate incoming reply", systemImage: "arrow.down.message") { store.receiveReply(id) }
                         } label: { Label("More actions", systemImage: "ellipsis.circle") }

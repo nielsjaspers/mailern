@@ -134,6 +134,9 @@ final class MailStore {
         if case .pin = undoAction { clearNotice() }
         update(id) { $0.pinned.toggle() }
     }
+    func toggleMute(_ id: UUID) {
+        update(id) { $0.muted = $0.muted == true ? nil : true }
+    }
     func move(_ id: UUID, to status: Workflow, until: Date? = nil) {
         apply(ids: [id], action: .move(status, until: until))
     }
