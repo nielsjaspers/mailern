@@ -1454,6 +1454,43 @@ final class TrashAndJunkMailboxesUITests: MailernUITestCase {
     }
 }
 
+final class DeletingJunkDiscardsItsReplyDraftUITests: MailernUITestCase {
+    @MainActor
+    func testDeletingJunkDiscardsItsReplyDraft() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let coffee = "Coffee this week?"
+        for _ in 0..<2 {
+            app.buttons["More"].tap()
+            app.buttons["Demo"].tap()
+            app.buttons["Receive a new email"].tap()
+            XCTAssertTrue(row(coffee, in: app).existsOrWait(timeout: 5))
+        }
+        saveReplyDraft(coffee, in: app)
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@ AND NOT label CONTAINS %@", coffee, "Draft")).firstMatch.tap()
+        app.buttons["More actions"].tap()
+        app.buttons["Move to Junk"].tap()
+        // The blocked sender replies to the thread that holds the draft, which moves it to Junk.
+        app.buttons["More"].tap()
+        app.buttons["Demo"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", coffee, "Inbox")).firstMatch.tap()
+        waitForAbsence(row(coffee, in: app))
+        app.buttons["More"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Junk")).firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["Junk"].existsOrWait(timeout: 5))
+        app.buttons["Select"].tap()
+        app.buttons["Select All"].tap()
+        app.toolbars.buttons["Delete Permanently"].tap()
+        XCTAssertTrue(app.staticTexts["Delete 2 conversations permanently?"].existsOrWait(timeout: 5))
+        app.buttons["Delete Permanently"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["No junk"].existsOrWait(timeout: 5))
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertTrue(row("Course project feedback", in: app).existsOrWait(timeout: 5))
+        XCTAssertFalse(row(coffee, in: app).exists, "Deleting a thread must not leave its reply draft behind")
+    }
+}
+
 final class BulkSelectionUITests: MailernUITestCase {
     @MainActor
     func testBulkSelection() {

@@ -3,12 +3,15 @@ import SwiftUI
 /// Junk or Trash, pushed from the Mailboxes menu onto the current tab's stack.
 struct RemovedMailboxView: View {
     @Environment(MailStore.self) private var store
+    @Environment(DraftStore.self) private var drafts
     let mailbox: RemovedMailbox
     @State private var search = ""
     @State private var selecting = false
     @State private var selectedIDs: Set<UUID> = []
     // Conversations waiting for confirmation before permanent deletion.
     @State private var deleting: Set<UUID> = []
+    // A thread pushed on top shows its own draft storage alert.
+    @State private var visible = false
 
     private var conversations: [Conversation] { store.list(mailbox, search: search) }
     private var restoreTitle: String { mailbox == .junk ? "Not Junk" : "Restore" }
@@ -59,11 +62,19 @@ struct RemovedMailboxView: View {
                 titleVisibility: .visible
             ) {
                 Button("Delete Permanently", role: .destructive) {
-                    store.deletePermanently(deleting)
+                    let ids = deleting
                     deleting = []
-                    endSelection()
+                    Task {
+                        // A blocked sender's reply can bring a thread here with its reply draft.
+                        guard await drafts.discardDrafts(for: ids) else { return }
+                        store.deletePermanently(ids)
+                        endSelection()
+                    }
                 }
             } message: { Text("This can't be undone.") }
+            .modifier(DraftStorageAlert(active: visible))
+            .onAppear { visible = true }
+            .onDisappear { visible = false }
             // Bulk actions apply only to visible conversations.
             .onChange(of: store.conversations) { _, _ in pruneSelection() }
             .onChange(of: search) { _, _ in pruneSelection() }

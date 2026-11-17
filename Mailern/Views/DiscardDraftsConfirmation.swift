@@ -26,7 +26,7 @@ struct DiscardDraftsConfirmation: ViewModifier {
                 guard let pending else { return }
                 Task {
                     guard !hasConversations || !store.needsReload else { store.reload(); return }
-                    guard await drafts.discardForSettling(pending.ids) else { return }
+                    guard await drafts.discardDrafts(for: pending.ids) else { return }
                     store.apply(ids: pending.ids, action: pending.action)
                     onDone()
                 }

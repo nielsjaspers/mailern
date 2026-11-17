@@ -158,7 +158,8 @@ final class DraftStore {
             return await self.persist(self.drafts.filter { $0.id != id })
         }
     }
-    func discardForSettling(_ ids: Set<UUID>) async -> Bool {
+    /// Discards the given standalone drafts and every reply draft attached to the given conversations.
+    func discardDrafts(for ids: Set<UUID>) async -> Bool {
         await enqueue {
             await self.persist(self.drafts.filter { !ids.contains($0.id) && !($0.mode.replyID.map(ids.contains) ?? false) })
         }

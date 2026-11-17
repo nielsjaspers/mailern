@@ -96,7 +96,13 @@ struct ThreadView: View {
         .modifier(DraftStorageAlert(active: mode == nil))
         .modifier(DiscardDraftsConfirmation(request: $settling, onDone: { dismiss() }))
         .confirmationDialog("Delete this conversation permanently?", isPresented: $deletingConversation, titleVisibility: .visible) {
-            Button("Delete Permanently", role: .destructive) { store.deletePermanently([id]); dismiss() }
+            Button("Delete Permanently", role: .destructive) {
+                Task {
+                    guard await drafts.discardDrafts(for: [id]) else { return }
+                    store.deletePermanently([id])
+                    dismiss()
+                }
+            }
         } message: { Text("This can't be undone.") }
         .sheet(isPresented: $snooze) { SnoozeView(ids: [id], onSnooze: { dismiss() }) }
     }
