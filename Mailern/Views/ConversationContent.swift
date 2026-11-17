@@ -126,7 +126,7 @@ struct ConversationContent: View {
                             if row > 0 { Divider().padding(.leading, 60) }
                             switch item {
                             case .message(let message):
-                                FoldedMessageRow(message: message, snippet: visibleBody(of: message).snippet) { toggle(message) }
+                                FoldedMessageRow(message: message) { toggle(message) }
                                     .id(message.id)
                             case .middle(let count):
                                 Button { withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { showsMiddle = true } } label: {
@@ -174,32 +174,28 @@ struct ConversationContent: View {
         }
     }
 
-    private func visibleBody(of message: MailMessage) -> String {
-        guard let start = conversation.quoteStart(of: message) else { return message.body }
-        return (message.body as NSString).substring(to: start)
-    }
 }
 
 /// A folded message: who wrote it, when, and the first line of what they wrote.
 private struct FoldedMessageRow: View {
     let message: MailMessage
-    let snippet: String
     let expand: () -> Void
+    private var firstLine: String {
+        message.body.split(whereSeparator: \.isNewline).lazy
+            .map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? ""
+    }
 
     var body: some View {
         Button(action: expand) {
             HStack(alignment: .top, spacing: 12) {
                 SenderAvatar(message: message, size: 32)
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(message.sender).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-                        Spacer(minLength: 8)
-                        if message.attachments?.isEmpty == false {
-                            Image(systemName: "paperclip").accessibilityLabel("Attachments")
-                        }
-                        Text(message.date.mailboxStamp).fixedSize()
+                    // At large text sizes the date moves below the sender instead of squeezing it.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .firstTextBaseline) { sender; Spacer(minLength: 8); stamp }
+                        VStack(alignment: .leading, spacing: 2) { sender; stamp }
                     }
-                    Text(snippet).font(.footnote).lineLimit(1)
+                    Text(firstLine).font(.footnote).lineLimit(1)
                 }
                 .font(.caption).foregroundStyle(.secondary)
             }
@@ -208,6 +204,17 @@ private struct FoldedMessageRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint("Expands the message")
+    }
+    private var sender: some View {
+        Text(message.sender).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
+    }
+    private var stamp: some View {
+        HStack(spacing: 4) {
+            if message.attachments?.isEmpty == false {
+                Image(systemName: "paperclip").accessibilityLabel("Attachments")
+            }
+            Text(message.date.mailboxStamp)
+        }.fixedSize()
     }
 }
 
@@ -229,7 +236,7 @@ private struct MessageSection: View {
     var compose: ((ComposeMode) -> Void)?
     @State private var showsDetails = false
     @State private var showsQuote = false
-    private var hidesQuote: Bool { quoteStart != nil && !showsQuote }
+    private var richText: NSAttributedString? { message.richText.map { RichText.decode($0, fallback: message.body) } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -243,14 +250,18 @@ private struct MessageSection: View {
                 // HTML uses the full width. Its own page sets the margins.
                 HTMLMessageView(html: html, fallback: message.body, margin: margin, isPreview: isPreview).allowsHitTesting(!isPreview)
             } else {
+                let rich = richText
+                // Rich text folds at the plain body's offsets, so it folds only when it holds exactly the same characters.
+                let foldable = quoteStart != nil && (rich.map { $0.string.utf16.elementsEqual(message.body.utf16) } ?? true)
+                let length = foldable && !showsQuote ? visibleLength : nil
                 Group {
-                    if let richText = message.richText {
-                        RichMessageText(text: visible(RichText.decode(richText, fallback: message.body)))
-                    } else { Text(MessageLinks.linked(visible(message.body))) }
+                    if let rich {
+                        RichMessageText(text: length.map { rich.attributedSubstring(from: NSRange(location: 0, length: $0)) } ?? rich)
+                    } else { Text(MessageLinks.linked(length.map { (message.body as NSString).substring(to: $0) } ?? message.body)) }
                 }.font(.body).lineSpacing(5).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, margin)
-                if quoteStart != nil, !isPreview {
+                if foldable, !isPreview {
                     Button {
                         withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { showsQuote.toggle() }
                     } label: {
@@ -268,19 +279,11 @@ private struct MessageSection: View {
         .padding(.vertical, 14)
     }
 
-    /// The text above the quote, without the blank lines that separated them.
+    /// The UTF-16 length of the text above the quote, without the blank lines that separated them.
     private var visibleLength: Int? {
-        guard hidesQuote, let quoteStart else { return nil }
+        guard let quoteStart else { return nil }
         let above = (message.body as NSString).substring(to: quoteStart)
         return above.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression).utf16.count
-    }
-    private func visible(_ body: String) -> String {
-        visibleLength.map { (body as NSString).substring(to: $0) } ?? body
-    }
-    /// Rich text shares its characters with the plain body. Text that differs keeps its quote, so nothing is cut wrongly.
-    private func visible(_ text: NSAttributedString) -> NSAttributedString {
-        guard let visibleLength, text.string == message.body else { return text }
-        return text.attributedSubstring(from: NSRange(location: 0, length: visibleLength))
     }
 
     @ViewBuilder private var controls: some View {
@@ -307,6 +310,8 @@ private struct MessageSection: View {
         var seen = Set<String>()
         let names = (message.to + message.cc).map { ownAddresses.contains($0.lowercased()) ? "me" : $0 }
             .filter { seen.insert($0.lowercased()).inserted }
+        // Mail sent only to Bcc has no visible recipients. The details list them.
+        if names.isEmpty { return "Recipient details" }
         guard names.count > 2 else { return "to \(names.joined(separator: ", "))" }
         return "to \(names.prefix(2).joined(separator: ", ")) +\(names.count - 2)"
     }
