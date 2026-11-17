@@ -286,12 +286,14 @@ import SQLite3
         func remote(_ html: String) -> Bool { HTMLDocument(html, remoteContent: false).hasRemoteContent }
         assert(remote(#"<img src="https://example.com/a.png">"#) && remote("<div style=\"background:url('//cdn.example.com/b.png')\">"))
         assert(remote(#"<style>@import "https://example.com/mail.css";</style>"#) && remote(#"<link rel="stylesheet" href="https://example.com/s.css">"#))
+        assert(remote(#"<td style="background-image:url(&quot;https://example.com/h.jpg&quot;)">"#), "Entity-quoted CSS URLs count")
         assert(!remote(#"<img src="data:image/png;base64,AAAA"><a href="https://example.com">Link</a>"#), "Links and data: images need no Load images")
 
-        let hints = #"<link rel="preconnect" href="https://t.example.com"><LINK href="https://t.example.com" REL=dns-prefetch><a rel="nofollow" href="x">"#
+        let hints = #"<link title="a > b" rel="preconnect" href="https://t.example.com"><LINK\#nhref="https://t.example.com" REL=dns-prefetch/><a rel="nofollow" href="x">&lt;link&gt;</a>"#
         let blocked = HTMLDocument(hints, remoteContent: false).html
-        assert(!blocked.contains(#" rel="preconnect""#) && blocked.contains(#"<link data-rel="preconnect""#) && blocked.contains("data-rel=dns-prefetch"))
-        assert(blocked.contains(#"<a rel="nofollow""#), "Only link elements lose their rel")
+        assert(!blocked.lowercased().contains("<link ") && !blocked.lowercased().contains("<link\n"), "No link element survives while blocked")
+        assert(blocked.contains(#"<x-link title="a > b" rel="preconnect""#) && blocked.contains("<x-link\nhref"))
+        assert(blocked.contains(#"<a rel="nofollow" href="x">&lt;link&gt;</a>"#), "Other elements and escaped text stay")
         assert(HTMLDocument(hints, remoteContent: true).html.hasSuffix(hints), "Loaded remote content keeps the message as sent")
         print("PASS: HTML dark-mode opt-in, remote content detection incl. @import, connection hints disabled while blocked")
     }

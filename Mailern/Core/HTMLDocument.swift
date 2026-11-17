@@ -12,12 +12,13 @@ struct HTMLDocument {
         let lowered = source.lowercased()
         // A dark style or a color-scheme that includes dark opts in. `color-scheme: only light` does not.
         adaptsToDarkMode = lowered.range(of: #"color-scheme[^;>{]*\bdark"#, options: .regularExpression) != nil
-        hasRemoteContent = lowered.range(of: #"(src|srcset|background)\s*=\s*["']?\s*(https?:)?//|url\(\s*["']?\s*(https?:)?//|<link\b|@import\b"#,
+        hasRemoteContent = lowered.range(of: #"(src|srcset|background)\s*=\s*["']?\s*(https?:)?//|url\(\s*(["']|&quot;|&#0*39;)?\s*(https?:)?//|<link\b|@import\b"#,
                                          options: .regularExpression) != nil
         // Early iOS 18 WebKit opens preconnect and DNS prefetch connections without asking the content blocker.
-        // While remote content is blocked, links lose their rel, so they cannot connect. Their stylesheets are blocked anyway.
+        // While remote content is blocked, every link element becomes an unknown, inert element, so it cannot connect.
+        // Its stylesheet would be blocked anyway. Text cannot contain a raw `<link`, so this needs no attribute parsing.
         let shown = remoteContent ? source : source.replacingOccurrences(
-            of: #"(<link\b[^>]*?\s)rel\s*="#, with: "$1data-rel=", options: [.regularExpression, .caseInsensitive])
+            of: #"<(/?)link(?=[\s/>])"#, with: "<$1x-link", options: [.regularExpression, .caseInsensitive])
         // The doctype comes first so every message renders in standards mode. The parser moves the message's own
         // head elements into this head, and the message's styles come later, so they override these defaults.
         html = """
