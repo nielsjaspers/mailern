@@ -146,9 +146,12 @@ struct Conversation: Codable, Identifiable, Equatable {
     mutating func receive(_ message: MailMessage) {
         messages.append(message)
         guard !message.outgoing else { return }
-        // A reply ends the reminder, also in a muted thread.
-        followUp = nil
-        guard muted != true else { return }
+        guard muted != true else {
+            // The reply answers a reminder. The thread waited in Snoozed only for it, so it settles quietly.
+            if followUp == .waiting { move(to: .settled) }
+            followUp = nil
+            return
+        }
         move(to: .inbox)
         unread = true
         // A reply rescues a thread from Trash. Junk keeps it until the sender is unblocked.

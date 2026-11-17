@@ -341,6 +341,14 @@ import SQLite3
         assert(quiet.workflow == .settled && !quiet.unread && quiet.latest.body.contains("follow-up"))
         assert(store.conversation(snoozed.id)!.workflow == .snoozed && store.conversation(snoozed.id)!.snoozedUntil == snoozed.snoozedUntil)
         assert(MailStore(persistence: SQLitePersistence(url: disk.url)).conversation(settled)!.muted == true)
+        // A reply to a muted thread that waits for one ends the reminder and settles it, so it never returns.
+        let inbox = store.list(.inbox).first { $0.id != trashed && $0.messages.contains { !$0.outgoing } }!
+        store.toggleMute(inbox.id)
+        assert(store.send(threadID: inbox.id, account: store.account(inbox.accountID), to: [inbox.correspondent.address], cc: [],
+                          subject: inbox.subject, body: "Any news?", followUp: .now.addingTimeInterval(100)))
+        store.receiveReply(inbox.id)
+        store.wakeDue(now: .now.addingTimeInterval(101))
+        assert(store.conversation(inbox.id)!.workflow == .settled && store.conversation(inbox.id)!.followUp == nil && !store.conversation(inbox.id)!.unread)
         store.toggleMute(settled)
         store.receiveReply(settled)
         assert(store.conversation(settled)!.workflow == .inbox && store.conversation(settled)!.unread)
