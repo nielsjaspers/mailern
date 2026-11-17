@@ -152,6 +152,11 @@ import SQLite3
         assert(swapped("Hi\n\nMorgan M.", old: "Morgan", new: "Avery") == nil)
         assert(swapped("Hi\n\nMorgan M. and Morgan\n\nOn Monday", old: "Morgan", new: "Avery") == nil)
         assert(swapped("Hi\n\nMorgan\n\nOn Monday", old: "Morgan", new: "Avery") == "Hi\n\nAvery\n\nOn Monday")
+        // The quote can contain the old signature's text. An edited signature must not redirect the swap into the quote.
+        let forwardBody = "\n\nMorgan (edited)\n\nBegin forwarded message:\n\nThanks\n\nMorgan"
+        assert(swapped(forwardBody, old: "Morgan", new: "Avery", quote: 19) == nil)
+        assert(swapped("\n\nMorgan\n\nBegin forwarded message:\n\nThanks\n\nMorgan", old: "Morgan", new: "Avery", quote: 10)
+               == "\n\nAvery\n\nBegin forwarded message:\n\nThanks\n\nMorgan")
         assert(swapped("Hi\n\nMorgan", old: "Morgan", new: "") == "Hi")
         assert(swapped("Hi", old: "", new: "Morgan") == "Hi\n\nMorgan")
         assert(swapped("Hi\n\nOn Monday, Avery wrote:", old: "", new: "Morgan", quote: 4) == "Hi\n\nMorgan\n\nOn Monday, Avery wrote:")
@@ -161,9 +166,12 @@ import SQLite3
         let savedDraft = await drafts.save(studioDraft)
         let keptDraft = await drafts.save(ComposerDraft(subject: "Personal draft"))
         assert(savedDraft && keptDraft)
-        assert(store.deleteAccount("work"))
-        let discarded = await drafts.discardDrafts(accountID: "work")
-        assert(discarded && drafts.drafts.map(\.subject) == ["Personal draft"])
+        // A failed draft write keeps the account, its mail, and its drafts, so no draft is left without a sender.
+        let failingDrafts = DraftStore(url: directory.appending(path: "drafts.json"), write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let failure = await store.deleteAccount("work", drafts: failingDrafts)
+        assert(failure != nil && store.account("work").name == "Studio" && store.conversation(sent.id) != nil && failingDrafts.drafts.count == 2)
+        let deleted = await store.deleteAccount("work", drafts: drafts)
+        assert(deleted == nil && drafts.drafts.map(\.subject) == ["Personal draft"])
         assert(store.conversation(sent.id) == nil && store.account("work").name == "Removed account")
         let reopened = MailStore(persistence: SQLitePersistence(url: url))
         assert(reopened.accounts == MailAccount.demo && reopened.conversation(sent.id) == nil)

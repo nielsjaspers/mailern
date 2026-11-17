@@ -101,10 +101,6 @@ private struct AccountEditor: View {
     }
 
     private func delete() async {
-        let id = account.id
-        guard store.deleteAccount(id) else { error = store.error ?? "This account could not be deleted."; return }
-        dismiss()
-        // The account is gone already. A failed draft write leaves its drafts listed under "Removed account".
-        _ = await drafts.discardDrafts(accountID: id)
+        if let problem = await store.deleteAccount(account.id, drafts: drafts) { error = problem } else { dismiss() }
     }
 }

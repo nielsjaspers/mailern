@@ -97,12 +97,14 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
             // The quote follows a blank line, which stays below the inserted signature.
             range = NSRange(location: quoteStart.map { max(0, $0 - 2) } ?? text.length, length: 0)
         } else {
-            // Text typed onto the signature's last line is an edit, so the block must end at a line break or the end.
+            // Only text above the quote can hold the inserted signature. Text typed onto its last line is an edit,
+            // so the block must end at a line break or at the end of that text.
             let string = text.string as NSString
-            var search = NSRange(location: 0, length: string.length)
+            let end = min(quoteStart ?? string.length, string.length)
+            var search = NSRange(location: 0, length: end)
             var match = string.range(of: block, range: search)
-            while match.location != NSNotFound, NSMaxRange(match) < string.length, string.character(at: NSMaxRange(match)) != 10 {
-                search = NSRange(location: match.location + 1, length: string.length - match.location - 1)
+            while match.location != NSNotFound, NSMaxRange(match) < end, string.character(at: NSMaxRange(match)) != 10 {
+                search = NSRange(location: match.location + 1, length: end - match.location - 1)
                 match = string.range(of: block, range: search)
             }
             guard match.location != NSNotFound else { return nil }

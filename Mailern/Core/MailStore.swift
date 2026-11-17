@@ -265,6 +265,16 @@ final class MailStore {
         error = nil
         return true
     }
+    /// Removes an account with its drafts and conversations, and returns why it failed. Drafts go first:
+    /// a draft left behind by a deleted account would have no sender address.
+    func deleteAccount(_ id: String, drafts: DraftStore) async -> String? {
+        guard canWrite(), accounts.count > 1 else { return error ?? "You need at least one account." }
+        guard await drafts.discardDrafts(accountID: id) else {
+            defer { drafts.error = nil }
+            return drafts.error ?? "The account's drafts could not be deleted."
+        }
+        return deleteAccount(id) ? nil : error ?? "This account could not be deleted."
+    }
     /// Removes an account and its conversations without Undo. Callers confirm first. The last account stays.
     @discardableResult func deleteAccount(_ id: String) -> Bool {
         guard canWrite(), accounts.count > 1, accounts.contains(where: { $0.id == id }) else { return false }
