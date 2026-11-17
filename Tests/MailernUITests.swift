@@ -964,10 +964,11 @@ final class ComposerFileAttachmentUITests: MailernUITestCase {
         app.buttons["Attach"].tap()
         capture("Native attachment menu", in: app)
         app.buttons["Attach File"].tap()
-        XCTAssertTrue(app.buttons.matching(identifier: "Browse").firstMatch.existsOrWait(timeout: 10))
-        app.buttons.matching(identifier: "Browse").firstMatch.tap()
+        let browse = app.tabBars["DOC.browsingModeTabBar"].buttons["Browse"]
+        XCTAssertTrue(browse.existsOrWait(timeout: 10))
+        browse.tap()
         let local = app.descendants(matching: .any).matching(identifier: "On My iPhone").firstMatch
-        if !local.exists { app.buttons.matching(identifier: "Browse").firstMatch.tap() }
+        if !local.exists { browse.tap() }
         XCTAssertTrue(local.existsOrWait(timeout: 5))
         local.tap()
         app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND elementType != 2", "Mailern")).firstMatch.tap()
@@ -1780,6 +1781,19 @@ final class PeekMenuResizeAndTapsUITests: MailernUITestCase {
 }
 
 class MailernUITestCase: XCTestCase {
+    override func record(_ issue: XCTIssue) {
+        // UI assertions run on the main actor. Capture failures without recording every event.
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                attachment.name = "Failure state"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+        }
+        super.record(issue)
+    }
+
     @MainActor
     func enterText(_ text: String, in editor: XCUIElement) {
         editor.tap()

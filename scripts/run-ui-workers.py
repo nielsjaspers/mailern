@@ -60,7 +60,7 @@ def devices():
 
 
 def timings(log):
-    cases = re.findall(r"Test Case '-\[(MailernUITests|MailernTests)\.(\w+) (\w+)\]' passed \(([\d.]+) seconds\)", log)
+    cases = re.findall(r"Test Case '-\[(MailernUITests|MailernTests)\.(\w+) (\w+)\]' started.\(([\d.]+) seconds\)", log)
     result = {}
     for (module, cls, method), seconds in {(m, c, t): float(s) for m, c, t, s in cases}.items():
         key = cls if module == "MailernUITests" else "MailernTests"
@@ -92,10 +92,13 @@ def main():
     classes = re.findall(r"^final class (\w+): MailernUITestCase \{", source, re.M)
     if not classes or len(classes) != len(re.findall(r"^    func test\w+\(", source, re.M)):
         raise RuntimeError("Each UI test must have its own class")
+    methods = re.findall(r"^    func (test\w+)\(", source, re.M)
+    ui_cases = dict(zip(classes, methods))
     pickers = ["ComposerFileAttachmentUITests", "ComposerPhotoAttachmentUITests"]
     if not set(pickers) <= set(classes):
         raise RuntimeError("Native picker test classes are missing")
-    editor_count = len(re.findall(r"^    func test\w+\(", Path("Tests/ComposerEditorTests.swift").read_text(), re.M))
+    editor_methods = re.findall(r"^    func (test\w+)\(", Path("Tests/ComposerEditorTests.swift").read_text(), re.M)
+    editor_count = len(editor_methods)
     with (derived / ".run.lock").open("a") as build_lock, pool_lock_path.open("a") as pool_lock:
         for lock, resource in [(build_lock, "build products"), (pool_lock, "Simulator pool")]:
             try:
@@ -114,6 +117,7 @@ def main():
             plan = plistlib.loads(max(test_runs, key=lambda path: path.stat().st_mtime_ns).read_bytes())
             for name in ["MailernUITests", "MailernTests"]:
                 plan[name]["PreferredScreenCaptureFormat"] = "screenshots"
+                plan[name]["SystemAttachmentLifetime"] = "keepNever"
             test_run = products / f"Mailern-ui-{run_id}.xctestrun"
             test_run.write_bytes(plistlib.dumps(plan))
             app = Path(plan["MailernUITests"]["UITargetAppPath"].replace("__TESTROOT__", str(products)))
@@ -169,17 +173,19 @@ def main():
             print(f"Pool preparation: {time.monotonic() - started:.1f}s", flush=True)
             cache = derived / "test-durations.json"
             costs = json.loads(cache.read_text()) if cache.exists() else {}
-            batches = [[] for _ in pool]
-            loads = [0.0 for _ in pool]
+            # The fixture Simulator also takes ordinary cases instead of sitting idle after imports.
+            batches = [pickers.copy(), *[[] for _ in pool]]
+            loads = [sum(costs.get(name, 60) for name in pickers), *[0.0 for _ in pool]]
             jobs = [name for name in classes if name not in pickers] + ["MailernTests"]
             known = [costs[name] for name in classes if name in costs]
             fallback = sum(known) / len(known) if known else 1
             for name in sorted(jobs, key=lambda name: costs.get(name, fallback), reverse=True):
-                index = min(range(workers), key=loads.__getitem__)
+                index = min(range(workers + 1), key=loads.__getitem__)
                 batches[index].append(name)
                 loads[index] += costs.get(name, fallback)
 
             def batch(name, destination, tests):
+                batch_started = time.monotonic()
                 prefix = f"build/ui-{run_id}-{name}"
                 expected = sum(editor_count if test == "MailernTests" else 1 for test in tests)
                 selectors = [f"-only-testing:{test}" if test == "MailernTests" else f"-only-testing:MailernUITests/{test}" for test in tests]
@@ -191,7 +197,20 @@ def main():
                     summary = json.loads(output("xcrun", "xcresulttool", "get", "test-results", "summary", "--path", f"{prefix}.xcresult"))
                     if summary["passedTests"] != expected or summary["failedTests"] or summary["skippedTests"]:
                         raise RuntimeError(f"{name}: expected {expected} passes, got {summary}")
-                    print(f"Passed {name}: {expected} tests", flush=True)
+                    expected_cases = {
+                        ("MailernTests", "ComposerEditorTests", method)
+                        for method in editor_methods if "MailernTests" in tests
+                    } | {
+                        ("MailernUITests", test, ui_cases[test])
+                        for test in tests if test != "MailernTests"
+                    }
+                    started_cases = re.findall(
+                        r"Test Case '-\[(MailernUITests|MailernTests)\.(\w+) (\w+)\]' started\.",
+                        Path(f"{prefix}.log").read_text(),
+                    )
+                    if len(started_cases) != expected or set(started_cases) != expected_cases:
+                        raise RuntimeError(f"{name}: missing, duplicate, or unexpected test executions")
+                    print(f"Passed {name}: {expected} unique tests, no retries, {time.monotonic() - batch_started:.1f}s including validation", flush=True)
                 return f"{prefix}.xcresult", timings(Path(f"{prefix}.log").read_text())
 
             failures = []
@@ -203,9 +222,13 @@ def main():
                 result, durations = batch("pickers", simulator, pickers)
                 results.append(result)
                 measured.update(durations)
+                batches[0] = [name for name in batches[0] if name not in pickers]
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, 3) if cold_start else workers + 1) as executor:
-                futures = {} if cold_start else {executor.submit(batch, "pickers", simulator, pickers): "pickers"}
-                futures.update({executor.submit(batch, f"worker-{i + 1}", device, batches[i]): f"worker-{i + 1}" for i, device in enumerate(pool)})
+                futures = {
+                    executor.submit(batch, "fixture-worker" if i == 0 else f"worker-{i}", device, batches[i]):
+                    "fixture-worker" if i == 0 else f"worker-{i}"
+                    for i, device in enumerate([simulator, *pool]) if batches[i]
+                }
                 for future in concurrent.futures.as_completed(futures):
                     try:
                         result, durations = future.result()
@@ -221,6 +244,9 @@ def main():
             next_cache.write_text(json.dumps(measured, sort_keys=True, indent=2) + "\n")
             next_cache.replace(cache)
             run("xcrun", "xcresulttool", "merge", "--output-path", f"build/ui-{run_id}.xcresult", *results)
+            summary = json.loads(output("xcrun", "xcresulttool", "get", "test-results", "summary", "--path", f"build/ui-{run_id}.xcresult"))
+            if summary["passedTests"] != len(classes) + editor_count or summary["failedTests"] or summary["skippedTests"]:
+                raise RuntimeError(f"Merged suite has incomplete coverage: {summary}")
             print(f"Passed {len(classes)} UI tests and {editor_count} editor tests", flush=True)
             return 0
         finally:
