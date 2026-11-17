@@ -2591,6 +2591,34 @@ final class AllMailSearchUITests: MailernUITestCase {
     }
 }
 
+final class SettleAndNextUITests: MailernUITestCase {
+    @MainActor
+    func testSettleOpensTheNextConversationWhenChosen() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["More"].tap(); app.buttons["Settings"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "After settling")).firstMatch.tap()
+        app.buttons["Open next conversation"].tap()
+        app.buttons["Done"].tap()
+        let dinner = "Dinner on Saturday?", weekly = "A little less, but better", presentations = "Project presentations · Tuesday 10:00"
+        row(dinner, in: app).tap()
+        XCTAssertTrue(app.staticTexts[dinner].existsOrWait(timeout: 5))
+        app.buttons["Settle"].tap()
+        XCTAssertTrue(app.staticTexts[weekly].existsOrWait(timeout: 5))
+        XCTAssertFalse(app.staticTexts[dinner].exists)
+        capture("Next conversation after Settle", in: app)
+        app.buttons["Settle"].tap()
+        XCTAssertTrue(app.staticTexts[presentations].existsOrWait(timeout: 5))
+        // Back goes to the list, not to the settled conversations.
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.navigationBars["Inbox"].existsOrWait(timeout: 5))
+        XCTAssertFalse(row(dinner, in: app).exists)
+        XCTAssertFalse(row(weekly, in: app).exists)
+        expectReadStatus(presentations, unread: false, in: app)
+    }
+}
+
 class MailernUITestCase: XCTestCase {
     override func record(_ issue: XCTIssue) {
         // Attach the main-thread failure screen to the issue so failure-only exports include it.

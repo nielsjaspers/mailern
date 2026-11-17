@@ -19,10 +19,21 @@ enum UndoSend {
     static let choices = [0, 5, 10, 20]
 }
 
+/// What a thread shows after Settle.
+enum AfterSettle: String, CaseIterable, Identifiable {
+    case returnToList, openNext
+    static let key = "afterSettle"
+    var id: Self { self }
+    var title: String {
+        switch self { case .returnToList: "Return to list"; case .openNext: "Open next conversation" }
+    }
+}
+
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var pullAction: InboxPullAction
     @AppStorage(UndoSend.key) private var undoDelay = UndoSend.defaultDelay
+    @AppStorage(AfterSettle.key) private var afterSettle = AfterSettle.returnToList
 
     private var supportsPull: Bool {
         if #available(iOS 18, *) { return true }
@@ -36,6 +47,9 @@ struct SettingsView: View {
                 NavigationLink("Swipe actions") { SwipeSettingsView() }
                 Picker("Undo send", selection: $undoDelay) {
                     ForEach(UndoSend.choices, id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
+                }
+                Picker("After settling", selection: $afterSettle) {
+                    ForEach(AfterSettle.allCases) { Text($0.title).tag($0) }
                 }
             }
             Section("Labs") {

@@ -48,6 +48,14 @@ enum MailboxItem: Identifiable {
         }
     }
 
+    /// The conversation to open after `id` leaves `items`: the one below it, or the one above when it was last.
+    /// Standalone drafts are skipped, because they cannot be settled with a conversation's Settle.
+    static func conversation(after id: UUID, in items: [Self]) -> UUID? {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return nil }
+        let below = items[(index + 1)...].first { $0.conversation != nil }
+        let above = items[..<index].last { $0.conversation != nil }
+        return (below ?? above)?.id
+    }
 }
 
 extension ComposerDraft {

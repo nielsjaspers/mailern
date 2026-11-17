@@ -26,6 +26,7 @@ import SQLite3
         try await checkOutbox()
         try checkActionHaptics()
         checkAllMailSearch()
+        checkNextConversation()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -121,6 +122,17 @@ import SQLite3
         assert(!everything.contains { $0.id == conversations[2].id })
         assert(zip(everything, everything.dropFirst()).allSatisfy { $0.date >= $1.date }, "Pins and snooze order belong to one section")
         print("PASS: all-mail search spans Inbox, Snoozed, and Settled with drafts, newest first, without filters, Junk, or Trash")
+    }
+
+    static func checkNextConversation() {
+        let conversations = DemoData.conversations()
+        let draft = ComposerDraft(subject: "Between conversations")
+        let items = [MailboxItem.thread(conversations[0], []), .draft(draft), .thread(conversations[1], []), .thread(conversations[2], [])]
+        assert(MailboxItem.conversation(after: conversations[0].id, in: items) == conversations[1].id, "Drafts are skipped")
+        assert(MailboxItem.conversation(after: conversations[2].id, in: items) == conversations[1].id, "The last one goes up")
+        assert(MailboxItem.conversation(after: conversations[0].id, in: [items[0], items[1]]) == nil, "Only drafts left")
+        assert(MailboxItem.conversation(after: conversations[3].id, in: items) == nil, "Not in the list")
+        print("PASS: next conversation after Settle goes down, then up, skips drafts, and stops outside the list")
     }
 
     @MainActor static func checkSQLiteStorage() throws {

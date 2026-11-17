@@ -210,7 +210,15 @@ struct MailboxView: View {
                 .navigationDestination(for: MailboxRoute.self) { route in
                     switch route {
                     case .conversation(let id):
-                        if store.conversation(id) != nil { ThreadView(id: id) }
+                        if store.conversation(id) != nil {
+                            ThreadView(id: id, next: { MailboxItem.conversation(after: id, in: items(status)) }, open: { next in
+                                guard paths[status]?.last == .conversation(id) else { return }
+                                paths[status]?.removeLast()
+                                paths[status]?.append(.conversation(next))
+                            })
+                            // A replaced thread is a new view, so it marks the next conversation read and drops the old one's state.
+                            .id(id)
+                        }
                         else { DraftThreadView(id: id) }
                     case .removed(let mailbox): RemovedMailboxView(mailbox: mailbox)
                     case .scheduled: ScheduledMailboxView()
