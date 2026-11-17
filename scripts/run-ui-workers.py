@@ -119,6 +119,7 @@ def main():
             for name in ["MailernUITests", "MailernTests"]:
                 plan[name]["PreferredScreenCaptureFormat"] = "screenshots"
                 plan[name]["SystemAttachmentLifetime"] = "keepNever"
+            plan["MailernUITests"].setdefault("UITargetAppEnvironmentVariables", {})["OS_ACTIVITY_MODE"] = "disable"
             app = Path(plan["MailernUITests"]["UITargetAppPath"].replace("__TESTROOT__", str(products)))
             app_id = plistlib.loads((app / "Info.plist").read_bytes())["CFBundleIdentifier"]
             run("xcrun", "simctl", "bootstatus", simulator, "-b")
