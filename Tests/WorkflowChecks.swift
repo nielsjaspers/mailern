@@ -18,6 +18,7 @@ import SQLite3
         try checkTrashAndJunk()
         try checkSQLiteStorage()
         try await checkAccounts()
+        try checkThreadingHeaders()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -211,6 +212,58 @@ import SQLite3
         reopened.reset()
         assert(reopened.accounts == MailAccount.demo && MailStore(persistence: SQLitePersistence(url: url)).accounts == MailAccount.demo)
         print("PASS: account validation, trimming, edit and persistence, renamed-account search, signatures in new/reply/forward, signature swap rules, account deletion with mail and drafts, last account kept, demo mail follows remaining accounts, reset")
+    }
+
+    @MainActor static func checkThreadingHeaders() throws {
+        let disk = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-threading-\(UUID())/mail.sqlite"))
+        let store = MailStore(persistence: disk)
+        let dinner = store.conversations.first { $0.subject == "Dinner on Saturday?" }!
+        let (first, answer, followUp) = (dinner.messages[0], dinner.messages[1], dinner.messages[2])
+        assert(first.messageID != nil && answer.inReplyTo == first.messageID && followUp.references == [first.threadingID, answer.threadingID])
+
+        let count = store.conversations.count
+        store.receiveReply(dinner.id)
+        let reply = store.conversation(dinner.id)!.latest
+        assert(store.conversations.count == count && reply.inReplyTo == followUp.messageID)
+        assert(reply.references == [first.threadingID, answer.threadingID, followUp.threadingID])
+
+        store.send(threadID: dinner.id, replyingTo: first.id, account: store.account(dinner.accountID), to: [first.address], cc: [], subject: "Re: Dinner", body: "Yes")
+        let sent = store.conversation(dinner.id)!.latest
+        assert(sent.outgoing && sent.messageID!.hasSuffix("@personal.example.com>") && sent.inReplyTo == first.messageID && sent.references == [first.threadingID])
+        store.send(threadID: nil, account: store.accounts[0], to: ["a@example.com"], cc: [], subject: "New", body: "Hello")
+        assert(store.conversations[0].latest.inReplyTo == nil && store.conversations[0].latest.messageID != nil)
+
+        // A reply joins only a thread in its own account. An unknown parent starts a new conversation.
+        var stray = MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [store.accounts[1].address], date: .now, body: "Hi",
+                                subject: "Re: Dinner on Saturday?", messageID: "<other@example.com>")
+        stray.answer(followUp)
+        store.receive(stray, accountID: store.accounts[1].id)
+        assert(store.conversations.count == count + 2 && store.conversations[0].messages.map(\.id) == [stray.id])
+        var unknown = stray
+        unknown.id = UUID()
+        unknown.inReplyTo = "<missing@example.com>"
+        unknown.references = ["<missing@example.com>"]
+        store.receive(unknown, accountID: dinner.accountID)
+        assert(store.conversations.count == count + 3 && store.conversations[0].subject == "Re: Dinner on Saturday?")
+        var byReference = unknown
+        byReference.id = UUID()
+        byReference.inReplyTo = nil
+        byReference.references = [first.threadingID]
+        store.receive(byReference, accountID: dinner.accountID)
+        assert(store.conversation(dinner.id)!.latest.id == byReference.id, "References alone thread a message")
+
+        let reloaded = MailStore(persistence: SQLitePersistence(url: disk.url))
+        assert(reloaded.conversation(dinner.id) == store.conversation(dinner.id), "Headers survive a reload")
+
+        // Mail stored before Message-IDs existed still threads, through the local stand-in ID.
+        let legacy = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-legacy-\(UUID())/mail.sqlite"))
+        let old = MailMessage(sender: "Avery", address: "avery@example.com", to: [MailAccount.demo[0].address], date: .now, body: "Old")
+        let conversation = Conversation(accountID: MailAccount.demo[0].id, subject: "Old thread", messages: [old])
+        try legacy.save(MailData(conversations: [conversation]))
+        let legacyStore = MailStore(persistence: SQLitePersistence(url: legacy.url))
+        legacyStore.receiveReply(conversation.id)
+        assert(legacyStore.conversations.count == 1 && legacyStore.conversation(conversation.id)!.latest.inReplyTo == old.threadingID)
+        print("PASS: Message-ID headers on demo and sent mail, threading by In-Reply-To and References within one account, legacy mail")
     }
 
     @MainActor static func checkTrashAndJunk() throws {

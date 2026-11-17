@@ -7,15 +7,22 @@ enum DemoData {
             Conversation(accountID: account, subject: subject, workflow: status, unread: unread, pinned: pinned,
                          snoozedUntil: status == .snoozed ? now.addingTimeInterval(3600) : nil,
                          messages: [MailMessage(sender: sender, address: address, to: [MailAccount.demo.first(where: { $0.id == account })!.address],
-                                                date: now.addingTimeInterval(-minutes * 60), body: body)])
+                                                date: now.addingTimeInterval(-minutes * 60), body: body,
+                                                messageID: MailMessage.newMessageID(from: address))])
         }
         var project = thread("university", "Dr. Jordan Lee", "jordan@college.example.com", "Course project feedback",
                              "Hi Morgan,\n\nI read your project outline. The scope is much clearer now. Before we can schedule the presentation, could you send me a short explanation of which reference materials you plan to use?\n\nA paragraph and a rough timeline are enough. Please send these before Friday.\n\nBest,\nJordan", minutes: 12, pinned: true)
         project.messages[0].cc = ["coordinator@college.example.com"]
         var dinner = thread("icloud", "Casey Rivera", "casey@example.com", "Dinner on Saturday?",
                             "Hey! Are you free on Saturday? I was thinking we could cook at my place.\n\nCasey", minutes: 280, unread: false)
-        dinner.messages.append(MailMessage(sender: "Morgan", address: MailAccount.demo[0].address, to: ["casey@example.com"], date: now.addingTimeInterval(-7200), body: "Sounds good. What time works for you?", outgoing: true))
-        dinner.messages.append(MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [MailAccount.demo[0].address], date: now.addingTimeInterval(-1800), body: "Around 7? Bring something to drink. I'll take care of dinner.\n\nAlso, Jamie is joining us!"))
+        var answer = MailMessage(sender: "Morgan", address: MailAccount.demo[0].address, to: ["casey@example.com"], date: now.addingTimeInterval(-7200),
+                                 body: "Sounds good. What time works for you?", outgoing: true, messageID: MailMessage.newMessageID(from: MailAccount.demo[0].address))
+        answer.answer(dinner.messages[0])
+        var followUp = MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [MailAccount.demo[0].address], date: now.addingTimeInterval(-1800),
+                                   body: "Around 7? Bring something to drink. I'll take care of dinner.\n\nAlso, Jamie is joining us!",
+                                   messageID: MailMessage.newMessageID(from: "casey@example.com"))
+        followUp.answer(answer)
+        dinner.messages += [answer, followUp]
         return [project,
                 thread("gmail", "Sample Weekly", "newsletter@example.com", "A little less, but better",
                        "SAMPLE WEEKLY\nIssue 318\n\nThis week: tools that leave room for thought.\n\nWhen every app asks for your attention, choosing what to leave out becomes a design decision. We look at three small studios building useful things with restraint.\n\nWorth reading\n• Designing for a slower internet\n• The case for keeping a notebook\n• A library of everyday objects\n\nRead more at https://example.com\n\nHave a good weekend,\nThe editorial team", minutes: 35),

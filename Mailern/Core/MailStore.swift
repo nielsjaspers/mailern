@@ -293,37 +293,47 @@ final class MailStore {
         error = nil
         return true
     }
-    private func deliver(_ message: MailMessage, to id: UUID) {
-        update(id) {
-            $0.receive(message)
-            if blockedSenders.contains(message.address.lowercased()) { $0.removal = .junk }
+    /// Delivers an incoming message. It joins the conversation in `accountID` that holds a message it answers,
+    /// by its In-Reply-To or References headers, or it starts a new conversation. `junk` marks mail a spam filter caught.
+    func receive(_ message: MailMessage, accountID: String, junk: Bool = false) {
+        guard canWrite() else { return }
+        clearNotice()
+        let junk = junk || blockedSenders.contains(message.address.lowercased())
+        let answered = Set([message.inReplyTo].compactMap { $0 } + (message.references ?? []))
+        if !answered.isEmpty, let i = conversations.firstIndex(where: { $0.accountID == accountID && $0.contains(messageIDs: answered) }) {
+            conversations[i].receive(message)
+            if junk { conversations[i].removal = .junk }
+        } else {
+            conversations.insert(Conversation(accountID: accountID, subject: message.subject ?? "(No Subject)",
+                                              removal: junk ? .junk : nil, messages: [message]), at: 0)
         }
+        save()
     }
     func receiveReply(_ id: UUID) {
         guard let c = conversation(id) else { return }
-        clearNotice()
-        deliver(MailMessage(sender: c.correspondent.sender, address: c.correspondent.address, to: [account(c.accountID).address], date: .now,
-                            body: "Hi Morgan,\n\nA quick follow-up on this. Have you had a chance to take a look? Let me know what you think.\n\nThanks,\n\(c.correspondent.sender)", subject: c.effectiveSubject), to: id)
+        var reply = MailMessage(sender: c.correspondent.sender, address: c.correspondent.address, to: [account(c.accountID).address], date: .now,
+                                body: "Hi Morgan,\n\nA quick follow-up on this. Have you had a chance to take a look? Let me know what you think.\n\nThanks,\n\(c.correspondent.sender)",
+                                subject: c.effectiveSubject, messageID: MailMessage.newMessageID(from: c.correspondent.address))
+        reply.answer(c.latest)
+        receive(reply, accountID: c.accountID)
     }
     func receiveNew() {
         let account = accounts[0]
-        receive(Conversation(accountID: account.id, subject: "Coffee this week?", messages: [MailMessage(sender: "Riley", address: "riley@example.com", to: [account.address], date: .now, body: "Hi Morgan,\n\nI'll be in town on Thursday. Do you have time for a coffee around 11?\n\nRiley")]))
+        receive(MailMessage(sender: "Riley", address: "riley@example.com", to: [account.address], date: .now,
+                            body: "Hi Morgan,\n\nI'll be in town on Thursday. Do you have time for a coffee around 11?\n\nRiley",
+                            subject: "Coffee this week?", messageID: MailMessage.newMessageID(from: "riley@example.com")), accountID: account.id)
     }
     /// Demo mail that a spam filter caught before it reached the Inbox.
     func receiveJunk() {
         let account = accounts[accounts.count - 1]
-        receive(Conversation(accountID: account.id, subject: "You have been selected", removal: .junk, messages: [MailMessage(sender: "Prize Desk", address: "winner@prizes.example.net", to: [account.address], date: .now, body: "Congratulations!\n\nYour address was selected for an exclusive reward. Confirm your details within 24 hours to claim it.\n\nPrize Desk")]))
-    }
-    private func receive(_ conversation: Conversation) {
-        guard canWrite() else { return }
-        clearNotice()
-        var conversation = conversation
-        if !conversation.senderAddresses.isDisjoint(with: blockedSenders) { conversation.removal = .junk }
-        conversations.insert(conversation, at: 0)
-        save()
+        receive(MailMessage(sender: "Prize Desk", address: "winner@prizes.example.net", to: [account.address], date: .now,
+                            body: "Congratulations!\n\nYour address was selected for an exclusive reward. Confirm your details within 24 hours to claim it.\n\nPrize Desk",
+                            subject: "You have been selected", messageID: MailMessage.newMessageID(from: "winner@prizes.example.net")),
+                accountID: account.id, junk: true)
     }
     @discardableResult
-    func send(threadID: UUID?, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
+    /// Sends a message. With a `threadID`, it answers the message `replyingTo` in that conversation, or the latest one.
+    func send(threadID: UUID?, replyingTo: UUID? = nil, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
               bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = []) -> Bool {
         guard canWrite() else { return false }
         guard accounts.contains(where: { $0.id == account.id }) else {
@@ -335,9 +345,11 @@ final class MailStore {
             return false
         }
         let before = conversations
-        let message = MailMessage(sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body,
-                                  outgoing: true, bcc: bcc.isEmpty ? nil : bcc, richText: richText, attachments: attachments.isEmpty ? nil : attachments, subject: subject)
+        var message = MailMessage(sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body,
+                                  outgoing: true, bcc: bcc.isEmpty ? nil : bcc, richText: richText, attachments: attachments.isEmpty ? nil : attachments,
+                                  subject: subject, messageID: MailMessage.newMessageID(from: account.address))
         if let threadID, let i = conversations.firstIndex(where: { $0.id == threadID }) {
+            message.answer(conversations[i].message(replyingTo))
             conversations[i].messages.append(message)
             conversations[i].move(to: .settled)
             conversations[i].removal = nil

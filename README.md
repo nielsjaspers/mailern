@@ -32,7 +32,7 @@ Tap Add recipient beside To to browse known senders. Search recipients by name o
 
 ## Code
 
-`Mailern/Core` contains conversation models, demo messages, and the observable store. `ConversationPersistence` separates storage from state changes; `SQLitePersistence` uses the SQLite library that ships with iOS, so no packages are needed. `Mailern/Views` contains the native SwiftUI screens. Workflow status does not map to a provider folder or label. No provider integrations or backend are included.
+`Mailern/Core` contains conversation models, demo messages, and the observable store. `ConversationPersistence` separates storage from state changes; `SQLitePersistence` uses the SQLite library that ships with iOS, so no packages are needed. `Mailern/Views` contains the native SwiftUI screens. Messages carry Message-ID, In-Reply-To, and References headers, and incoming mail joins the conversation in the same account that holds the message it answers. Workflow status is local. When providers are added, Settle maps to archive (Gmail removes the Inbox label; IMAP moves mail to the Archive folder), and Snooze stays on the device, so snoozed mail remains in the provider's inbox. No provider integrations or backend are included.
 
 Run `scripts/check-workflow.sh` for isolated state and persistence checks. It creates a unique temporary data file, separate from the app's demo data.
 
