@@ -310,6 +310,14 @@ final class HTMLMailUITests: MailernUITestCase {
         continueAfterFailure = false
         let app = TestApplication()
         app.launch()
+        // A peek takes no touches, so it says that images are hidden without an inert button.
+        peek("A little less, but better", in: app)
+        XCTAssertTrue(app.staticTexts["Remote images are hidden"].existsOrWait(timeout: 10))
+        XCTAssertFalse(app.buttons["Load images"].exists)
+        XCTAssertTrue(app.webViews.firstMatch.staticTexts["A little less, but better"].existsOrWait(timeout: 10))
+        capture("HTML newsletter in a peek", in: app)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.5)).tap()
+        waitForAbsence(preview(in: app))
         row("A little less, but better", in: app).tap()
         let page = app.webViews.firstMatch
         XCTAssertTrue(page.staticTexts["A little less, but better"].existsOrWait(timeout: 10))
