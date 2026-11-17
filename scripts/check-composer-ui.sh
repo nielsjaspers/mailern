@@ -11,16 +11,16 @@ cp 'Tests/Fixtures/Sample attachment.txt' "$app_data/Documents/Sample attachment
 xcrun simctl addmedia "$simulator_id" 'Tests/Fixtures/Sample photo.png'
 xcodebuild -project Mailern.xcodeproj -scheme Mailern -destination "id=$simulator_id" -derivedDataPath "$derived_data" test-without-building -parallel-testing-enabled NO \
   -only-testing:MailernTests \
-  -only-testing:MailernUITests/ComposerInteractionUITests/testComposerSelectionHandleDragKeepsEditing \
-  -only-testing:MailernUITests/ComposerInteractionUITests/testAttachmentMenuDismissalKeepsEditorUsable \
-  -only-testing:MailernUITests/DraftReaderUITests/testInboxDraftPreviewEditAndDiscard \
-  -only-testing:MailernUITests/DraftReaderUITests/testSettledReplyDraftStaysInSettledAndSends \
-  -only-testing:MailernUITests/ComposerInteractionUITests/testComposerDragDismissesKeyboardAndKeepsContent \
-  -only-testing:MailernUITests/ComposerUITests/testComposerPhotoAttachment \
-  -only-testing:MailernUITests/ComposerUITests/testComposerRevertedHeadersPersistAndStayProtected \
-  -only-testing:MailernUITests/ComposerUITests/testComposerCleanupFailureClosesAfterAcknowledgement \
-  -only-testing:MailernUITests/ComposerUITests/testComposerDraftSaveFailureKeepsEditor \
-  -only-testing:MailernUITests/ComposerUITests/testComposerFileAttachment \
-  -only-testing:MailernUITests/ComposerUITests/testComposerFormattingDraftAndSend \
-  -only-testing:MailernUITests/ComposerUITests/testComposerReplyAndForwardSend \
-  -only-testing:MailernUITests/ComposerUITests/testComposerSwipeSavesDraft
+  -only-testing:MailernUITests/ComposerSelectionHandleDragKeepsEditingUITests/testComposerSelectionHandleDragKeepsEditing \
+  -only-testing:MailernUITests/AttachmentMenuDismissalKeepsEditorUsableUITests/testAttachmentMenuDismissalKeepsEditorUsable \
+  -only-testing:MailernUITests/InboxDraftPreviewEditAndDiscardUITests/testInboxDraftPreviewEditAndDiscard \
+  -only-testing:MailernUITests/SettledReplyDraftStaysInSettledAndSendsUITests/testSettledReplyDraftStaysInSettledAndSends \
+  -only-testing:MailernUITests/ComposerDragDismissesKeyboardAndKeepsContentUITests/testComposerDragDismissesKeyboardAndKeepsContent \
+  -only-testing:MailernUITests/ComposerPhotoAttachmentUITests/testComposerPhotoAttachment \
+  -only-testing:MailernUITests/ComposerRevertedHeadersPersistAndStayProtectedUITests/testComposerRevertedHeadersPersistAndStayProtected \
+  -only-testing:MailernUITests/ComposerCleanupFailureClosesAfterAcknowledgementUITests/testComposerCleanupFailureClosesAfterAcknowledgement \
+  -only-testing:MailernUITests/ComposerDraftSaveFailureKeepsEditorUITests/testComposerDraftSaveFailureKeepsEditor \
+  -only-testing:MailernUITests/ComposerFileAttachmentUITests/testComposerFileAttachment \
+  -only-testing:MailernUITests/ComposerFormattingDraftAndSendUITests/testComposerFormattingDraftAndSend \
+  -only-testing:MailernUITests/ComposerReplyAndForwardSendUITests/testComposerReplyAndForwardSend \
+  -only-testing:MailernUITests/ComposerSwipeSavesDraftUITests/testComposerSwipeSavesDraft
