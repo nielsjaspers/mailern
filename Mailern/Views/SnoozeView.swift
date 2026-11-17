@@ -34,7 +34,6 @@ struct SnoozeView: View {
             if !draftIDs.isEmpty, !(await drafts.snooze(draftIDs, until: date)) { return }
             beforeSnooze()
             store.apply(ids: ids, action: .move(.snoozed, until: date))
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
             dismiss(); onSnooze()
         }
     }

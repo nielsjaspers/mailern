@@ -15,6 +15,7 @@ struct MailboxView: View {
     @State private var bulkSnooze = false
     @State private var settings = false
     @State private var searching = false
+    @State private var searchScope = SearchScope.section
     @State private var pull = InboxPullInteraction()
     @State private var toolbarBottom: CGFloat = 0
     @State private var overlayTop: CGFloat?
@@ -32,6 +33,9 @@ struct MailboxView: View {
     @State private var snoozing: Conversation?
     @State private var peeking: UUID?
     @State private var paths: [Workflow: [MailboxRoute]] = [:]
+    /// Each section's list as it was when a conversation opened from it. Opening can drop a conversation from a
+    /// filtered list, so Settle and next walks this order.
+    @State private var openedOrder: [Workflow: [UUID]] = [:]
     var body: some View {
         let pullDistance = pull.distance
         let armCount = pull.armCount
@@ -53,6 +57,8 @@ struct MailboxView: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
+        // One place for the haptic of every move, including those made in a thread, a sheet, or a confirmation.
+        .sensoryFeedback(.impact(weight: .light), trigger: store.actionCount + drafts.actionCount)
         .blur(radius: peeking == nil ? 0 : 6)
         .allowsHitTesting(peeking == nil)
         .accessibilityHidden(peeking != nil)
@@ -63,7 +69,7 @@ struct MailboxView: View {
                     onDismiss: { peeking = nil },
                     onOpen: {
                         peeking = nil
-                        paths[selection, default: []].append(.conversation(id))
+                        open(id, in: selection)
                     },
                     onCompose: { mode in
                         peeking = nil
@@ -76,6 +82,9 @@ struct MailboxView: View {
         }
         .animation(.easeOut(duration: reduceMotion ? 0 : 0.18), value: peeking)
         .onChange(of: selection) { _, _ in peeking = nil; searching = false; endSelection() }
+        .onChange(of: searching) { _, active in if !active { searchScope = .section } }
+        // Bulk actions and filters belong to one section, so All mail leaves selection.
+        .onChange(of: searchScope) { _, _ in peeking = nil; endSelection() }
         .onChange(of: search) { _, _ in pruneSelection() }
         .onChange(of: filterData) { _, _ in peeking = nil; pruneSelection() }
         .onChange(of: drafts.drafts) { _, saved in
@@ -122,6 +131,16 @@ struct MailboxView: View {
             Text(store.error ?? "")
         }
     }
+    private enum SearchScope: CaseIterable, Identifiable {
+        case section, allMail
+        var id: Self { self }
+        var title: String {
+            switch self { case .section: "This section"; case .allMail: "All mail" }
+        }
+    }
+    /// True when `status` shows search results from Inbox, Snoozed, and Settled together.
+    private func allMail(_ status: Workflow) -> Bool { status == selection && searching && searchScope == .allMail }
+
     private enum MailboxTab: Hashable {
         case workflow(Workflow), compose
     }
@@ -170,7 +189,10 @@ struct MailboxView: View {
                 .searchable(text: $search, isPresented: Binding(
                     get: { searching && selection == status },
                     set: { if selection == status { searching = $0 } }
-                ), prompt: "Search this section")
+                ), prompt: allMail(status) ? "Search all mail" : "Search \(status.title)")
+                .searchScopes($searchScope, activation: .onSearchPresentation) {
+                    ForEach(SearchScope.allCases) { Text($0.title).tag($0) }
+                }
                 .modifier(MailboxSearchToolbar())
                 .toolbar { mailboxToolbar(status) }
                 .toolbar {
@@ -191,7 +213,18 @@ struct MailboxView: View {
                 .navigationDestination(for: MailboxRoute.self) { route in
                     switch route {
                     case .conversation(let id):
-                        if store.conversation(id) != nil { ThreadView(id: id) }
+                        if store.conversation(id) != nil {
+                            ThreadView(id: id, next: {
+                                let available = Set(items(status).compactMap { $0.conversation?.id })
+                                return MailboxItem.conversation(after: id, in: openedOrder[status] ?? [], available: available)
+                            }, open: { next in
+                                guard paths[status]?.last == .conversation(id) else { return }
+                                paths[status]?.removeLast()
+                                paths[status]?.append(.conversation(next))
+                            })
+                            // A replaced thread is a new view, so it marks the next conversation read and drops the old one's state.
+                            .id(id)
+                        }
                         else { DraftThreadView(id: id) }
                     case .removed(let mailbox): RemovedMailboxView(mailbox: mailbox)
                     case .scheduled: ScheduledMailboxView()
@@ -232,14 +265,14 @@ struct MailboxView: View {
                 } label: { Label("More", systemImage: "ellipsis.circle") }
             }
         }
-        if #available(iOS 26, *), !selecting {
+        if #available(iOS 26, *), !selecting, !allMail(status) {
             ToolbarItem(placement: .topBarTrailing) {
                 MailboxFilterToolbar(filter: filters[status], status: status, accounts: store.accounts,
                                      select: { peeking = nil; pull.cancel(); selecting = true },
                                      toggle: { toggleFilter(status) }, options: { filtering = status })
             }
             .sharedBackgroundVisibility(.hidden)
-        } else {
+        } else if !allMail(status) {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(selecting ? "Cancel" : "Select") {
                     if selecting { endSelection() }
@@ -271,12 +304,12 @@ struct MailboxView: View {
     @ViewBuilder private func mailbox(_ status: Workflow) -> some View {
         let items = items(status)
         if items.isEmpty {
-            let filtered = filters[status].enabled
+            let filtered = filters[status].enabled && !allMail(status)
             let empty = ContentUnavailableView(
                 filtered ? "No matching mail" : search.isEmpty
                     ? (status == .inbox ? "You're all caught up" : "No \(status.rawValue) mail") : "No results",
                 systemImage: filtered ? "line.3.horizontal.decrease.circle" : search.isEmpty ? status.symbol : "magnifyingglass",
-                description: Text(filtered ? "Change your filters or turn filtering off." : search.isEmpty ? "" : "Try another search in this section.")
+                description: Text(filtered ? "Change your filters or turn filtering off." : search.isEmpty ? "" : allMail(status) ? "Try another search." : "Try another search in this section.")
             )
             if status == .inbox && pullAction != .off && search.isEmpty && !selecting {
                 ScrollView {
@@ -291,75 +324,37 @@ struct MailboxView: View {
             }
         } else {
             List(selection: selecting ? $selectedIDs : nil) {
-                Section {
-                    ForEach(items) { item in
-                        if let conversation = item.conversation {
-                            let background: Color = item.hasDraft ? .orange : conversation.unread ? .blue : .clear
-                            Button {
-                                if selecting {
-                                    if selectedIDs.contains(conversation.id) { selectedIDs.remove(conversation.id) }
-                                    else { selectedIDs.insert(conversation.id) }
-                                } else if peeking == nil { paths[status, default: []].append(.conversation(conversation.id)) }
-                            } label: {
-                                ConversationRow(conversation: conversation, hasDraft: item.hasDraft)
+                if allMail(status) {
+                    // Results keep their own mailbox, so each one gets a section that names it.
+                    ForEach(Workflow.allCases) { mailbox in
+                        let found = items.filter { $0.workflow == mailbox }
+                        if !found.isEmpty {
+                            Section {
+                                ForEach(found) { row($0, status: status) }
+                            } header: {
+                                Label("\(mailbox.title) · \(found.count)", systemImage: mailbox.symbol).textCase(nil)
                             }
-                                .buttonStyle(.plain)
-                                .listRowBackground(background.opacity(0.07))
-                                .tag(conversation.id)
-                                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                                .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && (leftPrimary != .read || conversation.workflow != .settled)) {
-                                    swipeButtons(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, conversation: conversation, hasDraft: item.hasDraft)
-                                }
-                                .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && (rightPrimary != .read || conversation.workflow != .settled)) {
-                                    swipeButtons(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, conversation: conversation, hasDraft: item.hasDraft)
-                                }
-                                .gesture(EmptySwipeGuard(
-                                    left: conversationSwipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, conversation: conversation).isEmpty,
-                                    right: conversationSwipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, conversation: conversation).isEmpty
-                                ))
-                                .simultaneousGesture(
-                                    LongPressGesture().onEnded { _ in
-                                        guard !selecting else { return }
-                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                        peeking = conversation.id
-                                    }
-                                )
-                                .accessibilityAction(named: "Peek") { if !selecting { peeking = conversation.id } }
-                                .accessibilityAction(named: "Move to Trash") { if !selecting { trash(conversation.id, hasDraft: item.hasDraft) } }
-                        } else if let draft = item.drafts.first {
-                            Button { paths[status, default: []].append(.conversation(draft.id)) } label: {
-                                DraftRow(draft: draft)
-                            }
-                                .buttonStyle(.plain)
-                                .disabled(selecting)
-                                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                                .listRowBackground(Color.orange.opacity(0.07))
-                                .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && leftPrimary != .read) { draftSwipeButtons(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, draft: draft) }
-                                .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && rightPrimary != .read) { draftSwipeButtons(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, draft: draft) }
-                                .gesture(EmptySwipeGuard(
-                                    left: draftSwipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary).isEmpty,
-                                    right: draftSwipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary).isEmpty
-                                ))
-                                .accessibilityAction(named: draft.pinned == true ? "Unpin" : "Pin") { Task { await drafts.togglePin(draft.id) } }
-                                .accessibilityAction(named: "Snooze") { snoozingDraft = draft }
-                                .accessibilityAction(named: "Settle") { settling = DraftDiscard(ids: [draft.id], action: .move(.settled)) }
                         }
                     }
-                } header: {
-                    VStack(alignment: .leading, spacing: 0) {
-                        if selecting {
-                            Text("\(selectedIDs.count) selected").textCase(nil)
-                        } else if status == .inbox {
-                            let unreadCount = items.filter(\.unread).count
-                            Text(unreadCount > 0 ? "\(unreadCount) unread" : "All read").textCase(nil)
-                        } else {
-                            Text(items.count == 1 ? "1 item" : "\(items.count) items").textCase(nil)
+                } else {
+                    Section {
+                        ForEach(items) { row($0, status: status) }
+                    } header: {
+                        VStack(alignment: .leading, spacing: 0) {
+                            if selecting {
+                                Text("\(selectedIDs.count) selected").textCase(nil)
+                            } else if status == .inbox {
+                                let unreadCount = items.filter(\.unread).count
+                                Text(unreadCount > 0 ? "\(unreadCount) unread" : "All read").textCase(nil)
+                            } else {
+                                Text(items.count == 1 ? "1 item" : "\(items.count) items").textCase(nil)
+                            }
+                            Color.clear.frame(height: 0)
                         }
-                        Color.clear.frame(height: 0)
-                    }
-                    .background {
-                        if status == .inbox && pullAction != .off && !selecting {
-                            PullScrollObserver(interaction: pull, action: performPull)
+                        .background {
+                            if status == .inbox && pullAction != .off && !selecting {
+                                PullScrollObserver(interaction: pull, action: performPull)
+                            }
                         }
                     }
                 }
@@ -367,6 +362,59 @@ struct MailboxView: View {
             .listStyle(.plain)
             .environment(\.editMode, .constant(selecting ? .active : .inactive))
             .modifier(InboxPullModifier(mode: status == .inbox && !selecting ? pullAction : .off, interaction: pull))
+        }
+    }
+    @ViewBuilder private func row(_ item: MailboxItem, status: Workflow) -> some View {
+        if let conversation = item.conversation {
+            let background: Color = item.hasDraft ? .orange : conversation.unread ? .blue : .clear
+            Button {
+                if selecting {
+                    if selectedIDs.contains(conversation.id) { selectedIDs.remove(conversation.id) }
+                    else { selectedIDs.insert(conversation.id) }
+                } else if peeking == nil { open(conversation.id, in: status) }
+            } label: {
+                ConversationRow(conversation: conversation, hasDraft: item.hasDraft)
+            }
+                .buttonStyle(.plain)
+                .listRowBackground(background.opacity(0.07))
+                .tag(conversation.id)
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && (leftPrimary != .read || conversation.workflow != .settled)) {
+                    swipeButtons(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, conversation: conversation, hasDraft: item.hasDraft)
+                }
+                .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && (rightPrimary != .read || conversation.workflow != .settled)) {
+                    swipeButtons(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, conversation: conversation, hasDraft: item.hasDraft)
+                }
+                .gesture(EmptySwipeGuard(
+                    left: conversationSwipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, conversation: conversation).isEmpty,
+                    right: conversationSwipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, conversation: conversation).isEmpty
+                ))
+                .simultaneousGesture(
+                    LongPressGesture().onEnded { _ in
+                        guard !selecting else { return }
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        peeking = conversation.id
+                    }
+                )
+                .accessibilityAction(named: "Peek") { if !selecting { peeking = conversation.id } }
+                .accessibilityAction(named: "Move to Trash") { if !selecting { trash(conversation.id, hasDraft: item.hasDraft) } }
+        } else if let draft = item.drafts.first {
+            Button { paths[status, default: []].append(.conversation(draft.id)) } label: {
+                DraftRow(draft: draft)
+            }
+                .buttonStyle(.plain)
+                .disabled(selecting)
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                .listRowBackground(Color.orange.opacity(0.07))
+                .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && leftPrimary != .read) { draftSwipeButtons(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, draft: draft) }
+                .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && rightPrimary != .read) { draftSwipeButtons(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, draft: draft) }
+                .gesture(EmptySwipeGuard(
+                    left: draftSwipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary).isEmpty,
+                    right: draftSwipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary).isEmpty
+                ))
+                .accessibilityAction(named: draft.pinned == true ? "Unpin" : "Pin") { Task { await drafts.togglePin(draft.id) } }
+                .accessibilityAction(named: "Snooze") { snoozingDraft = draft }
+                .accessibilityAction(named: "Settle") { settling = DraftDiscard(ids: [draft.id], action: .move(.settled)) }
         }
     }
     private func swipeActions(
@@ -409,7 +457,7 @@ struct MailboxView: View {
             if conversation.workflow != .settled {
                 Button(conversation.unread ? "Read" : "Unread",
                        systemImage: conversation.unread ? "envelope.open" : "envelope.badge") {
-                    act { store.markRead(conversation.id, unread: !conversation.unread) }
+                    act { store.setUnread(conversation.id, !conversation.unread) }
                 }.tint(.blue)
             }
         case .snooze:
@@ -430,8 +478,11 @@ struct MailboxView: View {
         else { act { store.apply(ids: [id], action: .remove(.trash)) } }
     }
 
-    private func items(_ status: Workflow, search: String? = nil) -> [MailboxItem] {
-        MailboxItem.list(conversations: store.conversations, drafts: drafts.drafts, status: status, search: store.search(search ?? self.search), filter: filters[status])
+    /// What `status` lists now: its own items, or all mail while that search scope is active.
+    private func items(_ status: Workflow) -> [MailboxItem] {
+        let scope: Workflow? = allMail(status) ? nil : status
+        return MailboxItem.list(conversations: store.conversations, drafts: drafts.drafts, status: scope,
+                                search: store.search(search), filter: scope.map { filters[$0] } ?? MailboxFilter())
     }
     private var filters: MailboxFilters {
         (try? JSONDecoder().decode(MailboxFilters.self, from: filterData)) ?? MailboxFilters()
@@ -497,12 +548,15 @@ struct MailboxView: View {
         if pullAction == .search { withTransaction(transaction) { searching = true } }
         if pullAction == .compose { openComposer(.new) }
     }
+    private func open(_ id: UUID, in status: Workflow) {
+        openedOrder[status] = items(status).map(\.id)
+        paths[status, default: []].append(.conversation(id))
+    }
     private func openComposer(_ mode: ComposeMode) {
         composer = mode
     }
     private func act(_ action: () -> Void) {
         withAnimation { action() }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 }
 

@@ -24,6 +24,10 @@ import SQLite3
         try checkMute()
         try checkFollowUp()
         try await checkOutbox()
+        try checkActionHaptics()
+        await checkDraftDiscardHaptics()
+        checkAllMailSearch()
+        checkNextConversation()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -74,6 +78,85 @@ import SQLite3
         assert(store.list(.inbox)[0].pinned)
         assert(store.error == nil)
         print("PASS: settled mail is read, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
+    }
+
+    /// The mailbox plays a haptic when `actionCount` changes, so only moves a person makes may change it.
+    @MainActor static func checkActionHaptics() throws {
+        let store = MailStore(persistence: SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-haptics-\(UUID()).sqlite")))
+        let id = store.list(.inbox).first { $0.unread }!.id
+        func changes(_ action: () -> Void) -> Bool {
+            let before = store.actionCount
+            action()
+            return store.actionCount != before
+        }
+        assert(!changes { store.markRead(id) }, "Opening a conversation must not play a haptic")
+        assert(changes { store.setUnread(id, true) })
+        assert(changes { store.togglePin(id) })
+        assert(changes { store.move(id, to: .snoozed, until: .now.addingTimeInterval(60)) })
+        assert(!changes { store.move(id, to: .snoozed, until: .now.addingTimeInterval(-60)) }, "A refused snooze must not play a haptic")
+        assert(changes { store.move(id, to: .settled) })
+        assert(!changes { store.setUnread(id, true) }, "Settled mail cannot become unread")
+        assert(changes { store.apply(ids: [id], action: .remove(.trash)) })
+        assert(!changes { store.apply(ids: [id], action: .remove(.trash)) }, "Trashing trashed mail changes nothing")
+        assert(changes { store.apply(ids: [id], action: .restoreRemoved) })
+        assert(!changes { store.receiveReply(id) }, "Incoming mail is not a move")
+        print("PASS: haptics follow moves a person makes, not opening mail, refused moves, or incoming mail")
+    }
+
+    @MainActor static func checkDraftDiscardHaptics() async {
+        let drafts = DraftStore(url: URL.temporaryDirectory.appending(path: "mailern-draft-haptics-\(UUID()).json"))
+        let source = DemoData.conversations()[0]
+        let reply = ComposerDraft.make(mode: .reply(source.id), conversation: source, accounts: MailAccount.demo)
+        let standalone = ComposerDraft(subject: "Standalone haptic")
+        await drafts.save(reply)
+        await drafts.save(standalone)
+        let before = drafts.actionCount
+        let replyDiscarded = await drafts.discardDrafts(for: [source.id])
+        assert(replyDiscarded && drafts.actionCount == before, "The conversation's own move plays the haptic")
+        let draftDiscarded = await drafts.discardDrafts(for: [standalone.id])
+        assert(draftDiscarded && drafts.actionCount == before + 1, "Settling a draft row plays one")
+        print("PASS: discarding a standalone draft plays one haptic; reply drafts leave it to their conversation's move")
+    }
+
+    static func checkAllMailSearch() {
+        let now = Date.now
+        var conversations = DemoData.conversations(now: now)
+        conversations[1].move(to: .snoozed, until: now.addingTimeInterval(600))
+        conversations[2].removal = .trash(since: now)
+        let photos = conversations.first { $0.subject == "The photos from our trip" }!
+        var draft = ComposerDraft(subject: "Weekend photos draft")
+        draft.updatedAt = now.addingTimeInterval(60)
+        func all(_ text: String) -> [MailboxItem] {
+            MailboxItem.list(conversations: conversations, drafts: [draft], status: nil, search: MailSearch(text: text),
+                             filter: MailboxFilter(enabled: true, accountIDs: []))
+        }
+        assert(MailboxItem.list(conversations: conversations, drafts: [draft], status: .inbox, search: MailSearch(text: "photos")).map(\.id) == [draft.id])
+        assert(all("photos").map(\.id) == [draft.id, photos.id], "All mail finds settled mail and drafts, newest first, and ignores filters")
+        let everything = all("")
+        assert(Set(everything.map(\.workflow)) == [.inbox, .snoozed, .settled])
+        assert(everything.count == conversations.count, "All mail leaves out Trash and adds the standalone draft")
+        assert(!everything.contains { $0.id == conversations[2].id })
+        assert(everything.map(\.workflow) == everything.map(\.workflow).sorted { Workflow.allCases.firstIndex(of: $0)! < Workflow.allCases.firstIndex(of: $1)! },
+               "All mail lists its sections in the order the list shows them")
+        for status in Workflow.allCases {
+            let section = everything.filter { $0.workflow == status }
+            assert(zip(section, section.dropFirst()).allSatisfy { $0.date >= $1.date }, "Pins and snooze order belong to one section")
+        }
+        print("PASS: all-mail search spans Inbox, Snoozed, and Settled with drafts, grouped by section and newest first, without filters, Junk, or Trash")
+    }
+
+    static func checkNextConversation() {
+        let (a, draft, b, c, d) = (UUID(), UUID(), UUID(), UUID(), UUID())
+        let order = [a, draft, b, c]
+        func next(_ id: UUID, _ available: Set<UUID>) -> UUID? { MailboxItem.conversation(after: id, in: order, available: available) }
+        assert(next(a, [a, b, c]) == b, "Drafts are skipped")
+        assert(next(c, [a, b, c]) == b, "The last one goes up")
+        // An Unread filter drops the opened conversation once it is read. Its place in the order still counts.
+        assert(next(a, [b, c]) == b && next(b, [c]) == c)
+        assert(next(b, [a, c]) == c, "Conversations that left the list are skipped")
+        assert(next(a, []) == nil, "Nothing left")
+        assert(next(d, [a, b, c]) == nil, "Not opened from this list")
+        print("PASS: next conversation after Settle goes down, then up, keeps the opened conversation's place, skips drafts and departed mail")
     }
 
     @MainActor static func checkSQLiteStorage() throws {

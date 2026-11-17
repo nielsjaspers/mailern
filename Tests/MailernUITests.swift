@@ -777,6 +777,9 @@ final class ComposerDragDismissesKeyboardAndKeepsContentUITests: MailernUITestCa
             dismissKeyboardByDragging()
         }
         capture("Keyboard hidden with content intact", in: app)
+        // The fixture reset between cases does not close the composer. Left open, it blocks the next case's long press.
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+        waitForComposerDismissal(in: app)
     }
 }
 
@@ -2553,6 +2556,85 @@ final class MuteThreadUITests: MailernUITestCase {
         waitForAbsence(row(dinner, in: app))
         select("Inbox", in: app)
         expectReadStatus(dinner, in: app)
+    }
+}
+
+final class AllMailSearchUITests: MailernUITestCase {
+    @MainActor
+    func testAllMailFindsSettledMailAndNamesItsMailbox() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let photos = "The photos from our trip"
+        app.collectionViews.firstMatch.swipeDown(velocity: .slow)
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.existsOrWait(timeout: 5))
+        search.tap()
+        search.typeText("photos")
+        XCTAssertTrue(app.staticTexts["No results"].existsOrWait(timeout: 5))
+        app.buttons["All mail"].tap()
+        XCTAssertTrue(row(photos, in: app).existsOrWait(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Settled · 1"].exists)
+        capture("All mail search result in Settled", in: app)
+        row(photos, in: app).tap()
+        XCTAssertTrue(app.buttons["Restore"].existsOrWait(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(row(photos, in: app).existsOrWait(timeout: 5))
+        app.buttons["This section"].tap()
+        XCTAssertTrue(app.staticTexts["No results"].existsOrWait(timeout: 5))
+        // Leaving search returns to this section, so the next search starts there.
+        app.buttons["All mail"].tap()
+        XCTAssertTrue(row(photos, in: app).existsOrWait(timeout: 5))
+        app.buttons["Close"].tap()
+        waitForAbsence(row(photos, in: app))
+        app.collectionViews.firstMatch.swipeDown(velocity: .slow)
+        search.tap()
+        XCTAssertTrue(app.buttons["This section"].existsOrWait(timeout: 5))
+        XCTAssertTrue(app.buttons["This section"].isSelected)
+    }
+}
+
+final class SettleAndNextUITests: MailernUITestCase {
+    @MainActor
+    func testSettleOpensTheNextConversationWhenChosen() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["More"].tap(); app.buttons["Settings"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "After settling")).firstMatch.tap()
+        app.buttons["Open next conversation"].tap()
+        capture("After settling in Settings", in: app)
+        app.buttons["Done"].tap()
+        let dinner = "Dinner on Saturday?", weekly = "A little less, but better", presentations = "Project presentations · Tuesday 10:00"
+        row(dinner, in: app).tap()
+        XCTAssertTrue(app.staticTexts[dinner].existsOrWait(timeout: 5))
+        app.buttons["Settle"].tap()
+        XCTAssertTrue(app.staticTexts[weekly].existsOrWait(timeout: 5))
+        XCTAssertFalse(app.staticTexts[dinner].exists)
+        XCTAssertTrue(app.webViews.firstMatch.staticTexts[weekly].existsOrWait(timeout: 10), "The next conversation renders its HTML")
+        capture("Next conversation after Settle", in: app)
+        app.buttons["Settle"].tap()
+        XCTAssertTrue(app.staticTexts[presentations].existsOrWait(timeout: 5))
+        // Back goes to the list, not to the settled conversations.
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.navigationBars["Inbox"].existsOrWait(timeout: 5))
+        XCTAssertFalse(row(dinner, in: app).exists)
+        XCTAssertFalse(row(weekly, in: app).exists)
+        expectReadStatus(presentations, unread: false, in: app)
+        // With the Unread filter on, opening a conversation drops it from the list. Settle still finds the next one.
+        openFilterOptions(in: app)
+        app.buttons["filter-read-unread"].tap()
+        app.buttons["Done"].tap()
+        let course = "Course project feedback"
+        row(course, in: app).tap()
+        XCTAssertTrue(app.staticTexts[course].existsOrWait(timeout: 5))
+        app.buttons["Settle"].tap()
+        waitForAbsence(app.staticTexts[course])
+        XCTAssertTrue(app.buttons["Settle"].existsOrWait(timeout: 5), "The next unread conversation opens instead of the list")
+        app.navigationBars.buttons["Inbox"].tap()
+        openFilterOptions(in: app)
+        app.buttons["Reset filters"].tap()
+        app.buttons["Done"].tap()
     }
 }
 

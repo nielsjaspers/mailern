@@ -164,6 +164,8 @@ final class DraftStore {
     /// A draft to open in the composer, set when Undo Send or Edit takes scheduled mail back.
     var reopening: UUID?
     var error: String?
+    /// Counts Pin, Snooze, Restore, Settle, and Discard on standalone drafts, like `MailStore.actionCount`.
+    private(set) var actionCount = 0
     private let url: URL
     private let write: @Sendable (Data, URL) throws -> Void
     private var loadFailure: String?
@@ -218,13 +220,18 @@ final class DraftStore {
     }
     /// Discards the given standalone drafts and every reply draft attached to the given conversations.
     /// Scheduled replies stay unless `scheduled` is true, as when their conversation is deleted.
+    /// Discards the drafts in `ids` and the reply drafts of conversations in `ids`. Settling or trashing a standalone
+    /// draft row counts as a move. Reply drafts do not, because their conversation's move counts already.
     func discardDrafts(for ids: Set<UUID>, scheduled: Bool = false) async -> Bool {
-        await enqueue {
+        let standalone = drafts.contains { ids.contains($0.id) }
+        let discarded = await enqueue {
             await self.persist(self.all.filter { draft in
                 guard scheduled || draft.sendAt == nil else { return true }
                 return !ids.contains(draft.id) && !(draft.mode.replyID.map(ids.contains) ?? false)
             })
         }
+        if discarded && standalone { actionCount += 1 }
+        return discarded
     }
     /// Discards every draft sent from the given account.
     func discardDrafts(accountID: String) async -> Bool {
@@ -296,14 +303,18 @@ final class DraftStore {
         }
     }
     func togglePin(_ id: UUID) async {
-        _ = await updateMailbox(ids: [id]) { $0.pinned = !($0.pinned ?? false) }
+        if await updateMailbox(ids: [id], change: { $0.pinned = !($0.pinned ?? false) }) { actionCount += 1 }
     }
     func snooze(_ ids: Set<UUID>, until date: Date) async -> Bool {
         guard date > .now else { return false }
-        return await updateMailbox(ids: ids) { $0.snoozedUntil = date }
+        guard await updateMailbox(ids: ids, change: { $0.snoozedUntil = date }) else { return false }
+        actionCount += 1
+        return true
     }
     func restore(_ id: UUID) async -> Bool {
-        await updateMailbox(ids: [id]) { $0.snoozedUntil = nil }
+        guard await updateMailbox(ids: [id], change: { $0.snoozedUntil = nil }) else { return false }
+        actionCount += 1
+        return true
     }
     func wakeDue(now: Date = .now) async {
         guard all.contains(where: { ($0.snoozedUntil ?? .distantFuture) <= now }) else { return }

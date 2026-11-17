@@ -129,7 +129,6 @@ struct RemovedMailboxView: View {
 
     private func apply(_ ids: Set<UUID>) {
         withAnimation { store.apply(ids: ids, action: .restoreRemoved) }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
     private func endSelection() { selecting = false; selectedIDs = [] }
     private func pruneSelection() { selectedIDs.formIntersection(conversations.map(\.id)) }

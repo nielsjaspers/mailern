@@ -5,6 +5,13 @@ struct ThreadView: View {
     @Environment(DraftStore.self) private var drafts
     @Environment(\.dismiss) private var dismiss
     let id: UUID
+    /// The conversation below this one in the list it was opened from, read before Settle removes it.
+    let next: () -> UUID?
+    /// Replaces this thread with another conversation.
+    let open: (UUID) -> Void
+    @AppStorage(AfterSettle.key) private var afterSettle = AfterSettle.returnToList
+    // The conversation to open after Settle waits for the discard-drafts confirmation.
+    @State private var settleNext: UUID?
     @Namespace private var composeTransition
     @State private var mode: ComposeMode?
     // The message a per-message reply targets. Nil for the toolbar, which targets the latest.
@@ -19,10 +26,12 @@ struct ThreadView: View {
         target = message
         self.mode = mode
     }
+    private func leave(after next: UUID?) {
+        if afterSettle == .openNext, let next { open(next) } else { dismiss() }
+    }
     private func remove(to mailbox: RemovedMailbox) {
-        if !attachedDrafts.isEmpty { settling = DraftDiscard(ids: [id], action: .remove(mailbox)); return }
+        if !attachedDrafts.isEmpty { settleNext = nil; settling = DraftDiscard(ids: [id], action: .remove(mailbox)); return }
         store.apply(ids: [id], action: .remove(mailbox))
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         dismiss()
     }
     var body: some View {
@@ -49,7 +58,7 @@ struct ThreadView: View {
                                 Button(c.pinned ? "Unpin" : "Pin", systemImage: "pin") { store.togglePin(id) }
                             }
                             if c.workflow != .settled {
-                                Button("Mark unread", systemImage: "envelope.badge") { store.markRead(id, unread: true); dismiss() }
+                                Button("Mark unread", systemImage: "envelope.badge") { store.setUnread(id, true); dismiss() }
                             }
                             if c.removal == nil {
                                 Button("Snooze", systemImage: "clock") { snooze = true }
@@ -65,17 +74,17 @@ struct ThreadView: View {
                         if let mailbox = c.removal?.mailbox {
                             Button(mailbox == .junk ? "Not Junk" : "Restore", systemImage: "arrow.uturn.backward") {
                                 store.apply(ids: [id], action: .restoreRemoved)
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                 dismiss()
                             }
                             Spacer()
                             Button("Delete Permanently", systemImage: "trash") { deletingConversation = true }
                         } else {
                             Button(c.workflow == .settled ? "Restore" : "Settle", systemImage: c.workflow == .settled ? "tray" : "checkmark") {
-                                if c.workflow != .settled && !attachedDrafts.isEmpty { settling = DraftDiscard(ids: [id], action: .move(.settled)); return }
-                                store.move(id, to: c.workflow == .settled ? .inbox : .settled)
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                dismiss()
+                                guard c.workflow != .settled else { store.move(id, to: .inbox); dismiss(); return }
+                                let next = next()
+                                if !attachedDrafts.isEmpty { settleNext = next; settling = DraftDiscard(ids: [id], action: .move(.settled)); return }
+                                store.move(id, to: .settled)
+                                leave(after: next)
                             }
                             Spacer()
                             Button("Snooze", systemImage: "clock") { snooze = true }
@@ -106,7 +115,7 @@ struct ThreadView: View {
             }
         }
         .modifier(DraftStorageAlert(active: mode == nil))
-        .modifier(DiscardDraftsConfirmation(request: $settling, onDone: { dismiss() }))
+        .modifier(DiscardDraftsConfirmation(request: $settling, onDone: { leave(after: settleNext) }))
         .confirmationDialog("Delete this conversation permanently?", isPresented: $deletingConversation, titleVisibility: .visible) {
             Button("Delete Permanently", role: .destructive) {
                 Task {
