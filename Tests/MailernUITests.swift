@@ -1419,14 +1419,12 @@ final class TrashAndJunkMailboxesUITests: MailernUITestCase {
         let search = app.searchFields["Search Trash"]
         if !search.isHittable { app.swipeDown() }
         search.tap()
-        search.typeText("Dinner")
+        // Return closes the keyboard, which otherwise covers the bottom toolbar.
+        search.typeText("Dinner\n")
         XCTAssertTrue(selectable(dinner).existsOrWait(timeout: 5))
         waitForAbsence(selectable(course))
         selectable(dinner).tap()
-        let delete = app.toolbars.buttons["Delete Permanently"]
-        delete.tap()
-        // The first tap can end search editing instead of reaching the toolbar.
-        if !app.alerts.firstMatch.existsOrWait(timeout: 2) && !app.sheets.firstMatch.exists { delete.tap() }
+        app.toolbars.buttons["Delete Permanently"].tap()
         XCTAssertFalse(app.staticTexts["Delete 2 conversations permanently?"].exists)
         XCTAssertTrue(app.staticTexts["Delete this conversation permanently?"].existsOrWait(timeout: 5))
         capture("Search drops hidden selections", in: app)
