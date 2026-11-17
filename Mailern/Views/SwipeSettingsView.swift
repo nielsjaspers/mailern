@@ -20,17 +20,21 @@ struct SwipeSettingsView: View {
     @AppStorage("leftSwipeSecondary") private var leftSecondary: MailboxSwipeAction = .snooze
     @AppStorage("rightSwipePrimary") private var rightPrimary: MailboxSwipeAction = .read
     @AppStorage("rightSwipeSecondary") private var rightSecondary: MailboxSwipeAction = .pin
+    @AppStorage("leftSwipeTertiary") private var leftTertiary: MailboxSwipeAction = .none
+    @AppStorage("rightSwipeTertiary") private var rightTertiary: MailboxSwipeAction = .none
 
     var body: some View {
         Form {
-            direction("Swipe left", primary: $leftPrimary, secondary: $leftSecondary)
-            direction("Swipe right", primary: $rightPrimary, secondary: $rightSecondary)
+            direction("Swipe left", primary: $leftPrimary, secondary: $leftSecondary, tertiary: $leftTertiary)
+            direction("Swipe right", primary: $rightPrimary, secondary: $rightSecondary, tertiary: $rightTertiary)
             Section {
                 Button("Reset Swipe Actions") {
                     leftPrimary = .workflow
                     leftSecondary = .snooze
                     rightPrimary = .read
                     rightSecondary = .pin
+                    leftTertiary = .none
+                    rightTertiary = .none
                 }
             }
         }
@@ -39,28 +43,31 @@ struct SwipeSettingsView: View {
     }
 
     private func direction(
-        _ title: String, primary: Binding<MailboxSwipeAction>, secondary: Binding<MailboxSwipeAction>
+        _ title: String, primary: Binding<MailboxSwipeAction>, secondary: Binding<MailboxSwipeAction>,
+        tertiary: Binding<MailboxSwipeAction>
     ) -> some View {
         Section {
-            Picker("Full swipe", selection: Binding(get: { primary.wrappedValue }, set: { value in
-                if secondary.wrappedValue == value { secondary.wrappedValue = .none }
-                primary.wrappedValue = value
-            })) {
-                ForEach(MailboxSwipeAction.allCases) { Text($0.title).tag($0) }
-            }
-            .accessibilityIdentifier("\(title)-primary")
-            if primary.wrappedValue != .none {
-                Picker("Additional action", selection: secondary) {
-                    ForEach(MailboxSwipeAction.allCases.filter { $0 != primary.wrappedValue }) {
-                        Text($0.title).tag($0)
-                    }
-                }
-                .accessibilityIdentifier("\(title)-secondary")
-            }
+            actionPicker("Full Swipe", id: "\(title)-primary", selection: primary, others: [secondary, tertiary])
+            actionPicker("Additional Action 1", id: "\(title)-secondary", selection: secondary, others: [primary, tertiary])
+            actionPicker("Additional Action 2", id: "\(title)-tertiary", selection: tertiary, others: [primary, secondary])
         } header: {
             Text(title)
         } footer: {
-            Text("The full-swipe action also appears as the first button. Choose None to disable this direction. Applies to all mailboxes.")
+            Text("Full Swipe also appears as the first button. Set it to None to use only buttons. Applies to Inbox, Snoozed, and Settled.")
         }
+    }
+
+    private func actionPicker(
+        _ title: String, id: String, selection: Binding<MailboxSwipeAction>, others: [Binding<MailboxSwipeAction>]
+    ) -> some View {
+        Picker(title, selection: Binding(get: { selection.wrappedValue }, set: { value in
+            if value != .none {
+                for other in others where other.wrappedValue == value { other.wrappedValue = .none }
+            }
+            selection.wrappedValue = value
+        })) {
+            ForEach(MailboxSwipeAction.allCases) { Text($0.title).tag($0) }
+        }
+        .accessibilityIdentifier(id)
     }
 }
