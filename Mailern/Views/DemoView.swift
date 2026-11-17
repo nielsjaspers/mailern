@@ -9,6 +9,7 @@ struct DemoView: View {
             List {
                 Section {
                     Button("Receive a new email", systemImage: "envelope.badge") { store.receiveNew(); dismiss() }
+                    Button("Receive junk mail", systemImage: "xmark.bin") { store.receiveJunk(); dismiss() }
                 } footer: { Text("All accounts and messages are fictional. No email providers are connected.") }
                 Section("Receive a reply") {
                     ForEach(store.conversations.sorted { $0.workflow.rawValue > $1.workflow.rawValue }) { c in
@@ -17,7 +18,7 @@ struct DemoView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(c.subject).foregroundStyle(.primary)
-                                Text("\(c.workflow.title) · \(c.account.name)").font(.caption).foregroundStyle(.secondary)
+                                Text("\(c.removal?.mailbox.title ?? c.workflow.title) · \(c.account.name)").font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }

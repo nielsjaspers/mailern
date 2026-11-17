@@ -59,7 +59,7 @@ struct DraftThreadView: View {
     let id: UUID
     @State private var mode: ComposeMode?
     @State private var deleting = false
-    @State private var settling: Set<UUID> = []
+    @State private var settling: DraftDiscard?
     @State private var snoozing = false
 
     var body: some View {
@@ -87,7 +87,7 @@ struct DraftThreadView: View {
                         } label: { Label("More actions", systemImage: "ellipsis.circle") }
                     }
                     ToolbarItemGroup(placement: .bottomBar) {
-                        Button("Settle", systemImage: "checkmark") { settling = [id] }
+                        Button("Settle", systemImage: "checkmark") { settling = DraftDiscard(ids: [id], action: .move(.settled)) }
                         Spacer()
                         Button("Snooze", systemImage: "clock") { snoozing = true }
                     }
@@ -97,7 +97,7 @@ struct DraftThreadView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .modifier(DraftStorageAlert(active: mode == nil))
-        .modifier(SettleDraftConfirmation(ids: $settling, onSettle: { dismiss() }))
+        .modifier(DiscardDraftsConfirmation(request: $settling, onDone: { dismiss() }))
         .sheet(isPresented: $snoozing) { SnoozeView(ids: [], draftIDs: [id], onSnooze: { dismiss() }) }
         .sheet(item: $mode, onDismiss: {
             if !drafts.drafts.contains(where: { $0.id == id }) { dismiss() }

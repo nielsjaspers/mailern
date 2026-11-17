@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum PeekTool {
-    case reply, replyAll, forward, read, settle, snooze, pin, restore
+    case reply, replyAll, forward, read, settle, snooze, pin, restore, trash
 }
 
 struct PeekToolsView: UIViewRepresentable {
@@ -131,6 +131,7 @@ final class PeekToolsSurface: UIView {
         stack.addArrangedSubview(row(.snooze, "Snooze", "clock"))
         stack.addArrangedSubview(row(.pin, conversation.pinned ? "Unpin" : "Pin", conversation.pinned ? "pin.slash" : "pin"))
         if conversation.workflow == .snoozed { stack.addArrangedSubview(row(.restore, "Restore to Inbox", "tray")) }
+        stack.addArrangedSubview(row(.trash, "Move to Trash", "trash", destructive: true))
         let bottom = UIView()
         bottom.heightAnchor.constraint(equalToConstant: 14).isActive = true
         stack.addArrangedSubview(bottom)
@@ -160,8 +161,9 @@ final class PeekToolsSurface: UIView {
         return button
     }
 
-    private func row(_ tool: PeekTool, _ title: String, _ symbol: String) -> UIButton {
+    private func row(_ tool: PeekTool, _ title: String, _ symbol: String, destructive: Bool = false) -> UIButton {
         let button = button(tool, title)
+        if destructive { button.tintColor = .systemRed }
         let image = UIImageView(image: UIImage(systemName: symbol))
         image.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 17)
         image.contentMode = .center
@@ -172,6 +174,7 @@ final class PeekToolsSurface: UIView {
         label.font = .preferredFont(forTextStyle: .body)
         label.adjustsFontForContentSizeCategory = true
         label.numberOfLines = 0
+        if destructive { label.textColor = .systemRed }
         let content = UIStackView(arrangedSubviews: [image, label])
         content.spacing = 16
         content.alignment = .center

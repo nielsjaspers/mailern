@@ -1357,6 +1357,80 @@ final class UndoBannerExpiresUITests: MailernUITestCase {
     }
 }
 
+final class TrashAndJunkMailboxesUITests: MailernUITestCase {
+    @MainActor
+    func testTrashAndJunkFromMailboxesMenu() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let course = "Course project feedback"
+        let dinner = "Dinner on Saturday?"
+        XCTAssertFalse(app.tabBars.buttons["Trash"].exists)
+        XCTAssertFalse(app.tabBars.buttons["Junk"].exists)
+
+        row(course, in: app).tap()
+        app.buttons["Move to Trash"].tap()
+        XCTAssertTrue(app.staticTexts["Moved to Trash"].existsOrWait(timeout: 5))
+        waitForAbsence(row(course, in: app))
+        openMailbox("Trash", in: app)
+        XCTAssertFalse(app.tabBars.buttons["Inbox"].isHittable)
+        XCTAssertTrue(row(course, in: app).existsOrWait(timeout: 5))
+        capture("Trash pushed from the Mailboxes menu", in: app)
+        row(course, in: app).swipeLeft()
+        app.buttons["Restore"].tap()
+        waitForAbsence(row(course, in: app))
+        XCTAssertTrue(app.staticTexts["No trash"].existsOrWait(timeout: 5))
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertTrue(row(course, in: app).existsOrWait(timeout: 5))
+        XCTAssertTrue(app.tabBars.buttons["Inbox"].isHittable)
+
+        row(dinner, in: app).tap()
+        app.buttons["More actions"].tap()
+        app.buttons["Move to Junk"].tap()
+        waitForAbsence(row(dinner, in: app))
+        app.buttons["More"].tap()
+        app.buttons["Demo"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", dinner)).firstMatch.tap()
+        XCTAssertFalse(row(dinner, in: app).exists, "A reply from a blocked sender stays in Junk")
+        openMailbox("Junk", in: app)
+        expectReadStatus(dinner, in: app)
+        row(dinner, in: app).tap()
+        XCTAssertTrue(app.buttons["Not Junk"].existsOrWait(timeout: 5))
+        XCTAssertFalse(app.buttons["Reply"].exists)
+        capture("Junk conversation actions", in: app)
+        app.buttons["Not Junk"].tap()
+        XCTAssertTrue(app.staticTexts["No junk"].existsOrWait(timeout: 5))
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertTrue(row(dinner, in: app).existsOrWait(timeout: 5))
+
+        app.buttons["Select"].tap()
+        row(course, in: app).tap()
+        row(dinner, in: app).tap()
+        app.buttons["Move to Trash"].tap()
+        waitForAbsence(row(course, in: app))
+        openMailbox("Trash", in: app)
+        XCTAssertTrue(row(dinner, in: app).existsOrWait(timeout: 5))
+        app.buttons["Empty Trash"].tap()
+        XCTAssertTrue(app.staticTexts["Delete 2 conversations permanently?"].existsOrWait(timeout: 5))
+        app.buttons["Delete Permanently"].tap()
+        XCTAssertTrue(app.staticTexts["No trash"].existsOrWait(timeout: 5))
+        app.terminate()
+        app.launch()
+        XCTAssertFalse(row(course, in: app).exists)
+        openMailbox("Trash", in: app)
+        XCTAssertTrue(app.staticTexts["No trash"].existsOrWait(timeout: 5))
+    }
+
+    @MainActor
+    private func openMailbox(_ name: String, in app: XCUIApplication) {
+        app.buttons["More"].tap()
+        let item = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", name)).firstMatch
+        XCTAssertTrue(item.existsOrWait(timeout: 5))
+        item.tap()
+        XCTAssertTrue(app.navigationBars[name].existsOrWait(timeout: 5))
+    }
+}
+
 final class BulkSelectionUITests: MailernUITestCase {
     @MainActor
     func testBulkSelection() {

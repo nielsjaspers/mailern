@@ -6,7 +6,7 @@ struct MailboxView: View {
     @State private var search = ""
     @AppStorage("mailboxFilters") private var filterData = Data()
     @State private var filtering: Workflow?
-    @State private var settling: Set<UUID> = []
+    @State private var settling: DraftDiscard?
     @State private var snoozingDraft: ComposerDraft?
     @Namespace private var composeTransition
     @Environment(DraftStore.self) private var drafts
@@ -28,7 +28,7 @@ struct MailboxView: View {
     @State private var demo = false
     @State private var snoozing: Conversation?
     @State private var peeking: UUID?
-    @State private var paths: [Workflow: [UUID]] = [:]
+    @State private var paths: [Workflow: [MailboxRoute]] = [:]
     var body: some View {
         let pullDistance = pull.distance
         let armCount = pull.armCount
@@ -60,7 +60,7 @@ struct MailboxView: View {
                     onDismiss: { peeking = nil },
                     onOpen: {
                         peeking = nil
-                        paths[selection, default: []].append(id)
+                        paths[selection, default: []].append(.conversation(id))
                     },
                     onCompose: { mode in
                         peeking = nil
@@ -96,7 +96,7 @@ struct MailboxView: View {
         .sheet(item: $filtering) { status in
             MailboxFilterView(status: status, filter: filterBinding(status))
         }
-        .modifier(SettleDraftConfirmation(ids: $settling, onSettle: endSelection))
+        .modifier(DiscardDraftsConfirmation(request: $settling, onDone: endSelection))
         .sheet(isPresented: $bulkSnooze) {
             SnoozeView(ids: selectedIDs, beforeSnooze: endSelection)
         }
@@ -155,7 +155,7 @@ struct MailboxView: View {
             path: Binding(get: { paths[status, default: []] }, set: { paths[status] = $0 })
         ) {
             mailbox(status)
-                .safeAreaInset(edge: .bottom, spacing: 0) { undoBanner }
+                .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner() }
                 .navigationTitle(status.title)
                 .searchable(text: $search, isPresented: Binding(
                     get: { searching && selection == status },
@@ -178,9 +178,13 @@ struct MailboxView: View {
                                          apply: applySelection, snooze: { bulkSnooze = true })
                 }
                 .toolbar(selecting || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
-                .navigationDestination(for: UUID.self) { id in
-                    if store.conversation(id) != nil { ThreadView(id: id) }
-                    else { DraftThreadView(id: id) }
+                .navigationDestination(for: MailboxRoute.self) { route in
+                    switch route {
+                    case .conversation(let id):
+                        if store.conversation(id) != nil { ThreadView(id: id) }
+                        else { DraftThreadView(id: id) }
+                    case .removed(let mailbox): RemovedMailboxView(mailbox: mailbox)
+                    }
                 }
         }
     }
@@ -195,6 +199,15 @@ struct MailboxView: View {
                 .disabled(visibleIDs.isEmpty)
             } else {
                 Menu {
+                    Section("Mailboxes") {
+                        ForEach(RemovedMailbox.allCases) { mailbox in
+                            Button { paths[status, default: []].append(.removed(mailbox)) } label: {
+                                Label(mailbox.title, systemImage: mailbox.symbol)
+                                let count = store.list(mailbox).count
+                                Text(count == 0 ? "Empty" : count == 1 ? "1 conversation" : "\(count) conversations")
+                            }
+                        }
+                    }
                     Button("Demo", systemImage: "play.circle") { demo = true }
                     if drafts.needsReload { Button("Retry loading drafts", systemImage: "arrow.clockwise") { Task { await drafts.reload() } } }
                     Button("Settings", systemImage: "gearshape") { settings = true }
@@ -238,18 +251,6 @@ struct MailboxView: View {
         return true
     }
 
-    @ViewBuilder private var undoBanner: some View {
-        if let notice = store.notice {
-            HStack {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.teal)
-                Text(notice).font(.subheadline)
-                Spacer()
-                Button("Undo") { withAnimation { store.undo() } }.fontWeight(.semibold)
-                Button("Dismiss", systemImage: "xmark") { store.clearNotice() }.labelStyle(.iconOnly)
-            }
-            .padding().background(.regularMaterial)
-        }
-    }
     @ViewBuilder private func mailbox(_ status: Workflow) -> some View {
         let items = items(status)
         if items.isEmpty {
@@ -280,7 +281,7 @@ struct MailboxView: View {
                                 if selecting {
                                     if selectedIDs.contains(conversation.id) { selectedIDs.remove(conversation.id) }
                                     else { selectedIDs.insert(conversation.id) }
-                                } else if peeking == nil { paths[status, default: []].append(conversation.id) }
+                                } else if peeking == nil { paths[status, default: []].append(.conversation(conversation.id)) }
                             } label: {
                                 ConversationRow(conversation: conversation, hasDraft: item.hasDraft)
                             }
@@ -306,8 +307,9 @@ struct MailboxView: View {
                                     }
                                 )
                                 .accessibilityAction(named: "Peek") { if !selecting { peeking = conversation.id } }
+                                .accessibilityAction(named: "Move to Trash") { if !selecting { trash(conversation.id, hasDraft: item.hasDraft) } }
                         } else if let draft = item.drafts.first {
-                            Button { paths[status, default: []].append(draft.id) } label: {
+                            Button { paths[status, default: []].append(.conversation(draft.id)) } label: {
                                 DraftRow(draft: draft)
                             }
                                 .buttonStyle(.plain)
@@ -322,7 +324,7 @@ struct MailboxView: View {
                                 ))
                                 .accessibilityAction(named: draft.pinned == true ? "Unpin" : "Pin") { Task { await drafts.togglePin(draft.id) } }
                                 .accessibilityAction(named: "Snooze") { snoozingDraft = draft }
-                                .accessibilityAction(named: "Settle") { settling = [draft.id] }
+                                .accessibilityAction(named: "Settle") { settling = DraftDiscard(ids: [draft.id], action: .move(.settled)) }
                         }
                     }
                 } header: {
@@ -369,7 +371,7 @@ struct MailboxView: View {
         case .workflow:
             Button(conversation.workflow == .settled ? "Restore" : "Settle",
                    systemImage: conversation.workflow == .settled ? "tray" : "checkmark") {
-                if conversation.workflow != .settled && hasDraft { settling = [conversation.id] }
+                if conversation.workflow != .settled && hasDraft { settling = DraftDiscard(ids: [conversation.id], action: .move(.settled)) }
                 else { act { store.move(conversation.id, to: conversation.workflow == .settled ? .inbox : .settled) } }
             }.tint(conversation.workflow == .settled ? .blue : .teal)
         case .read:
@@ -386,9 +388,15 @@ struct MailboxView: View {
                    systemImage: conversation.pinned ? "pin.slash" : "pin") {
                 act { store.togglePin(conversation.id) }
             }.tint(.orange)
+        case .trash:
+            Button("Trash", systemImage: RemovedMailbox.trash.symbol) { trash(conversation.id, hasDraft: hasDraft) }.tint(.red)
         case .none:
             EmptyView()
         }
+    }
+    private func trash(_ id: UUID, hasDraft: Bool) {
+        if hasDraft { settling = DraftDiscard(ids: [id], action: .remove(.trash)) }
+        else { act { store.apply(ids: [id], action: .remove(.trash)) } }
     }
 
     private func items(_ status: Workflow, search: String? = nil) -> [MailboxItem] {
@@ -416,8 +424,12 @@ struct MailboxView: View {
                     }.tint(.orange)
                 } else if action == .snooze {
                     Button("Snooze", systemImage: "clock") { snoozingDraft = draft }.tint(.orange)
+                } else if action == .trash {
+                    Button("Discard", systemImage: RemovedMailbox.trash.symbol) {
+                        settling = DraftDiscard(ids: [draft.id], action: .remove(.trash))
+                    }.tint(.red)
                 } else {
-                    Button("Settle", systemImage: "checkmark") { settling = [draft.id] }.tint(.teal)
+                    Button("Settle", systemImage: "checkmark") { settling = DraftDiscard(ids: [draft.id], action: .move(.settled)) }.tint(.teal)
                 }
             }
         }
@@ -437,8 +449,12 @@ struct MailboxView: View {
     }
     private func applySelection(_ action: ConversationAction) {
         let ids = selectedIDs
-        if case .move(.settled, _) = action, drafts.drafts.contains(where: { $0.mode.replyID.map(ids.contains) ?? false }) {
-            settling = ids
+        let leavesDrafts = switch action {
+        case .move(.settled, _), .remove: true
+        default: false
+        }
+        if leavesDrafts, drafts.drafts.contains(where: { $0.mode.replyID.map(ids.contains) ?? false }) {
+            settling = DraftDiscard(ids: ids, action: action)
             return
         }
         endSelection()
@@ -457,6 +473,27 @@ struct MailboxView: View {
     private func act(_ action: () -> Void) {
         withAnimation { action() }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+}
+
+enum MailboxRoute: Hashable {
+    case conversation(UUID)
+    case removed(RemovedMailbox)
+}
+
+struct UndoBanner: View {
+    @Environment(MailStore.self) private var store
+    var body: some View {
+        if let notice = store.notice {
+            HStack {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.teal)
+                Text(notice).font(.subheadline)
+                Spacer()
+                Button("Undo") { withAnimation { store.undo() } }.fontWeight(.semibold)
+                Button("Dismiss", systemImage: "xmark") { store.clearNotice() }.labelStyle(.iconOnly)
+            }
+            .padding().background(.regularMaterial)
+        }
     }
 }
 
@@ -486,6 +523,8 @@ struct BulkSelectionToolbar: ToolbarContent {
                 Spacer()
                 Button("Snooze", systemImage: "clock", action: snooze).disabled(count == 0)
                 Spacer()
+                Button("Move to Trash", systemImage: RemovedMailbox.trash.symbol) { apply(.remove(.trash)) }.disabled(count == 0)
+                Spacer()
                 Menu {
                     if status != .settled {
                         Button(hasUnread ? "Mark read" : "Mark unread",
@@ -499,6 +538,7 @@ struct BulkSelectionToolbar: ToolbarContent {
                     Button(allPinned ? "Unpin" : "Pin", systemImage: allPinned ? "pin.slash" : "pin") {
                         apply(.pin(!allPinned))
                     }
+                    Button("Move to Junk", systemImage: RemovedMailbox.junk.symbol) { apply(.remove(.junk)) }
                 } label: { Label("Mark", systemImage: "ellipsis.circle") }
                 .disabled(count == 0)
             }

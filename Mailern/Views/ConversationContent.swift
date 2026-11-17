@@ -24,13 +24,17 @@ struct ConversationContent: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(conversation.subject).font(.title2.bold()).textSelection(.enabled)
                         HStack {
-                            Label(workflow.title, systemImage: workflow.symbol)
+                            if let mailbox = conversation.removal?.mailbox {
+                                Label(mailbox.title, systemImage: mailbox.symbol)
+                            } else {
+                                Label(workflow.title, systemImage: workflow.symbol)
+                            }
                             Text("· \(conversation.account.name)")
                             if conversation.messages.count > 1 {
                                 Text("· \(conversation.messages.count) messages")
                             }
                         }.font(.caption).foregroundStyle(.secondary)
-                        if workflow == .snoozed, let date = conversation.snoozedUntil {
+                        if workflow == .snoozed, conversation.removal == nil, let date = conversation.snoozedUntil {
                             Label(
                                 "Returns \(date.formatted(date: .abbreviated, time: .shortened))",
                                 systemImage: "clock"
