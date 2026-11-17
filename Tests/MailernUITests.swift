@@ -2600,6 +2600,7 @@ final class SettleAndNextUITests: MailernUITestCase {
         app.buttons["More"].tap(); app.buttons["Settings"].tap()
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "After settling")).firstMatch.tap()
         app.buttons["Open next conversation"].tap()
+        capture("After settling in Settings", in: app)
         app.buttons["Done"].tap()
         let dinner = "Dinner on Saturday?", weekly = "A little less, but better", presentations = "Project presentations · Tuesday 10:00"
         row(dinner, in: app).tap()
