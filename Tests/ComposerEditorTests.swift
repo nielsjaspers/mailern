@@ -4,6 +4,18 @@ import SwiftUI
 @testable import Mailern
 
 @MainActor final class ComposerEditorTests: XCTestCase {
+    func testFormattedSignatureCountsAsEdited() {
+        let text = NSMutableAttributedString(attributedString: RichText.plain("Hi\n\nMorgan"))
+        let signature = NSRange(location: 2, length: 8)
+        XCTAssertTrue(RichText.isPlain(text, in: signature))
+        let bold = UIFont.preferredFont(forTextStyle: .body).fontDescriptor.withSymbolicTraits(.traitBold)!
+        text.addAttribute(.font, value: UIFont(descriptor: bold, size: 0), range: NSRange(location: 4, length: 6))
+        XCTAssertFalse(RichText.isPlain(text, in: signature))
+        text.setAttributes(RichText.plain("x").attributes(at: 0, effectiveRange: nil), range: signature)
+        text.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: NSRange(location: 4, length: 6))
+        XCTAssertFalse(RichText.isPlain(text, in: signature))
+    }
+
     func testReplyActionsResumePlainSavedDraftAfterIncomingMail() async throws {
         let directory = URL.temporaryDirectory.appending(path: "reply-draft-resume-\(UUID())")
         let store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite")))

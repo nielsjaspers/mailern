@@ -89,15 +89,18 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
 
     /// Swaps the block for `old` in `text` for `replacement` and returns the range it replaced.
     /// The inserted signature is the last text above the quote that starts at `quoteStart`, or the end of a new
-    /// message. Any edit to it, or text typed below it, leaves it in place and returns nil. With no old signature,
-    /// the replacement goes in that same spot.
-    static func swapSignature(in text: NSMutableAttributedString, old: String, replacement: NSAttributedString, quoteStart: Int?) -> NSRange? {
+    /// message. Any edit to it, or text typed below it, leaves it in place and returns nil. `unedited` checks the
+    /// block for changes the text does not show, such as formatting. With no old signature, the replacement goes
+    /// in that same spot.
+    static func swapSignature(in text: NSMutableAttributedString, old: String, replacement: NSAttributedString, quoteStart: Int?,
+                              unedited: (NSRange) -> Bool = { _ in true }) -> NSRange? {
         let string = text.string as NSString
         // A quote follows a blank line, which stays below the signature.
         let end = quoteStart.map { min(max(0, $0 - 2), string.length) } ?? string.length
         let block = signatureBlock(old) as NSString
         guard end >= block.length, string.substring(with: NSRange(location: end - block.length, length: block.length)) == block as String else { return nil }
         let range = NSRange(location: end - block.length, length: block.length)
+        guard unedited(range) else { return nil }
         text.replaceCharacters(in: range, with: replacement)
         return range
     }

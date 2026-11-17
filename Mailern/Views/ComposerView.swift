@@ -292,7 +292,8 @@ struct ComposerView: View {
             if value as? Bool == true { quote = span.location; stop.pointee = true }
         }
         let replacement = RichText.plain(ComposerDraft.signatureBlock(signature))
-        guard let range = ComposerDraft.swapSignature(in: text, old: draft.signature ?? "", replacement: replacement, quoteStart: quote) else { return }
+        guard let range = ComposerDraft.swapSignature(in: text, old: draft.signature ?? "", replacement: replacement, quoteStart: quote,
+                                                      unedited: { RichText.isPlain(text, in: $0) }) else { return }
         if editor.selection.location >= NSMaxRange(range) { editor.selection.location += replacement.length - range.length }
         editor.text = text
         draft.signature = signature

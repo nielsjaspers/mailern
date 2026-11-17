@@ -106,6 +106,10 @@ import SQLite3
         assert(store.search("Personal").indexed?.contains(coffee) == false && store.list(.inbox, search: "Personal").contains { $0.id == coffee })
         store.receiveReply(coffee)
         assert(store.search("A quick follow-up").indexed == [coffee])
+        // The index folds case and accents like the in-memory search does.
+        assert(store.send(threadID: nil, account: store.accounts[0], to: ["café@example.com"], cc: [], subject: "Straße Café", body: "Hi"))
+        let sent = store.conversations[0].id
+        assert(store.search("STRASSE").indexed?.contains(sent) == true && store.search("Cafe\u{0301}").indexed?.contains(sent) == true)
         print("PASS: SQLite rewrites only changed rows, keeps load order, removes deleted rows, and trigram search with short-query and account-name fallback")
     }
 
@@ -156,6 +160,9 @@ import SQLite3
         assert(swapped("Hi\n\nMorgan\n\nPlease call me.\n\nMorgan", old: "Morgan", new: "Avery") == "Hi\n\nMorgan\n\nPlease call me.\n\nAvery")
         assert(swapped("Participants:\n\nMorgan\nAvery\n\nMorgan (edited)", old: "Morgan", new: "Avery") == nil)
         assert(swapped("Hi\n\nMorgan\n\nP.S. Call me", old: "Morgan", new: "Avery") == nil)
+        let formatted = NSMutableAttributedString(string: "Hi\n\nMorgan")
+        assert(ComposerDraft.swapSignature(in: formatted, old: "Morgan", replacement: NSAttributedString(string: "\n\nAvery"), quoteStart: nil,
+                                           unedited: { _ in false }) == nil && formatted.string == "Hi\n\nMorgan")
         // The quote can contain the old signature's text. An edited signature must not redirect the swap into the quote.
         let forwardBody = "\n\nMorgan (edited)\n\nBegin forwarded message:\n\nThanks\n\nMorgan"
         assert(swapped(forwardBody, old: "Morgan", new: "Avery", quote: 19) == nil)

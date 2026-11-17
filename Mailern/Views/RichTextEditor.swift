@@ -9,6 +9,19 @@ enum RichText {
     static func plain(_ text: String) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label])
     }
+    /// Whether `range` still has only the attributes that `plain` gives text, so no formatting was applied.
+    static func isPlain(_ text: NSAttributedString, in range: NSRange) -> Bool {
+        let body = UIFont.preferredFont(forTextStyle: .body).fontDescriptor
+        var unchanged = true
+        text.enumerateAttributes(in: range) { attributes, _, stop in
+            let font = (attributes[.font] as? UIFont)?.fontDescriptor ?? body
+            let color = attributes[.foregroundColor] as? UIColor ?? .label
+            let paragraph = attributes[.paragraphStyle] as? NSParagraphStyle ?? .default
+            let other = Set(attributes.keys).subtracting([.font, .foregroundColor, .paragraphStyle])
+            if font != body || color != .label || paragraph != .default || !other.isEmpty { unchanged = false; stop.pointee = true }
+        }
+        return unchanged
+    }
     static func decode(_ data: Data?, fallback: String) -> NSAttributedString {
         guard let data, let document = try? JSONDecoder().decode(Document.self, from: data),
               let result = try? NSMutableAttributedString(data: document.data, options: [.documentType: NSAttributedString.DocumentType.rtfd], documentAttributes: nil)

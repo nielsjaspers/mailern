@@ -70,7 +70,7 @@ final class SQLitePersistence: ConversationPersistence {
                     ON CONFLICT (id) DO UPDATE SET payload = excluded.payload
                     """, [id, .integer(positions[conversation.id]!), .blob(encoder.encode(conversation))])
                 try run(db, "DELETE FROM search WHERE id = ?", [id])
-                try run(db, "INSERT INTO search (id, content) VALUES (?, ?)", [id, .text(conversation.searchText)])
+                try run(db, "INSERT INTO search (id, content) VALUES (?, ?)", [id, .text(Self.folded(conversation.searchText))])
             }
             if previous?.accounts != data.accounts {
                 try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('accounts', ?)", [.blob(encoder.encode(data.accounts))])
@@ -91,6 +91,7 @@ final class SQLitePersistence: ConversationPersistence {
     }
 
     func search(_ text: String) throws -> Set<UUID>? {
+        let text = Self.folded(text)
         // Trigrams need at least three characters. Shorter queries are matched in memory.
         guard text.unicodeScalars.count >= 3 else { return nil }
         let db = try open()
@@ -101,6 +102,12 @@ final class SQLitePersistence: ConversationPersistence {
             if let id = UUID(uuidString: String(cString: sqlite3_column_text(row, 0))) { ids.insert(id) }
         }
         return ids
+    }
+
+    /// Index and queries share one form, so "STRASSE" finds "Straße" and composed and decomposed accents match,
+    /// as they do in the in-memory search.
+    private static func folded(_ text: String) -> String {
+        text.folding(options: .caseInsensitive, locale: nil).precomposedStringWithCanonicalMapping
     }
 
     // MARK: SQLite
@@ -127,7 +134,7 @@ final class SQLitePersistence: ConversationPersistence {
                 PRAGMA journal_mode = WAL;
                 CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, position INTEGER NOT NULL, payload BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, payload BLOB NOT NULL);
-                CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(id UNINDEXED, content, tokenize = 'trigram case_sensitive 0');
+                CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(id UNINDEXED, content, tokenize = 'trigram case_sensitive 1');
                 """)
         } catch {
             sqlite3_close(handle)
