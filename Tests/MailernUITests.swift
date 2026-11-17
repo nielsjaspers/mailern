@@ -350,6 +350,7 @@ final class StandaloneDraftSwipeActionsUITests: MailernUITestCase {
         saveNewDraft(subject, in: app)
         app.buttons["More"].tap(); app.buttons["Settings"].tap(); app.buttons["Swipe actions"].tap()
         app.buttons["Swipe left-primary"].tap(); app.buttons["None"].tap()
+        app.buttons["Swipe left-secondary"].tap(); app.buttons["None"].tap()
         app.navigationBars.buttons["Settings"].tap(); app.buttons["Done"].tap()
         fullSwipe(row(subject, in: app), right: false)
         XCTAssertTrue(row(subject, in: app).exists)
@@ -359,6 +360,9 @@ final class StandaloneDraftSwipeActionsUITests: MailernUITestCase {
         app.buttons["Reset Swipe Actions"].tap()
         app.navigationBars.buttons["Settings"].tap(); app.buttons["Done"].tap()
         fullSwipe(row(subject, in: app), right: true)
+        XCTAssertFalse(row(subject, in: app).label.contains("Pinned"))
+        XCTAssertTrue(app.buttons["Pin"].exists)
+        app.buttons["Pin"].tap()
         XCTAssertTrue(row(subject, in: app).label.contains("Pinned"))
         row(subject, in: app).swipeLeft()
         XCTAssertTrue(app.buttons["Settle"].exists)
@@ -1606,6 +1610,76 @@ final class FilteredBulkSelectionUITests: MailernUITestCase {
         app.buttons["Restore"].tap()
         select("Inbox", in: app)
         expectReadStatus("Course project feedback", unread: false, in: app)
+    }
+}
+
+final class ThreeSwipeActionsUITests: MailernUITestCase {
+    @MainActor
+    func testThreeIndependentSwipeActions() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        func settings() {
+            app.buttons["More"].tap()
+            app.buttons["Settings"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            app.buttons["Swipe actions"].tap()
+        }
+        func choose(_ slot: String, _ action: String) {
+            app.buttons["Swipe left-\(slot)"].tap()
+            app.buttons[action].tap()
+        }
+        func close() {
+            app.navigationBars.buttons["Settings"].tap()
+            app.buttons["Done"].tap()
+        }
+        app.buttons["More"].tap(); app.buttons["Settings"].tap()
+        XCTAssertLessThan(app.buttons["Swipe actions"].frame.minY, app.staticTexts["Labs"].frame.minY)
+        capture("After - Settings", in: app)
+        app.buttons["Swipe actions"].tap()
+        app.buttons["Reset Swipe Actions"].tap()
+        choose("tertiary", "Move to Trash")
+        capture("After - Swipe actions", in: app)
+        close()
+        app.terminate(); app.launch()
+        let subject = "Course project feedback"
+        row(subject, in: app).swipeLeft()
+        XCTAssertTrue(app.buttons["Settle"].exists)
+        XCTAssertTrue(app.buttons["Snooze"].exists)
+        XCTAssertTrue(app.buttons["Trash"].exists)
+        capture("After - Three swipe buttons", in: app)
+        app.buttons["Trash"].tap()
+        waitForAbsence(row(subject, in: app))
+        app.buttons["Undo"].tap()
+        settings()
+        choose("primary", "None")
+        close()
+        fullSwipe(row(subject, in: app), right: false)
+        XCTAssertTrue(row(subject, in: app).exists)
+        XCTAssertFalse(app.navigationBars["Snooze"].exists)
+        XCTAssertTrue(app.buttons["Snooze"].exists)
+        XCTAssertTrue(app.buttons["Trash"].exists)
+        app.buttons["Snooze"].tap()
+        XCTAssertTrue(app.navigationBars["Snooze"].existsOrWait(timeout: 5))
+        app.buttons["Cancel"].tap()
+        settings()
+        choose("secondary", "None")
+        close()
+        row(subject, in: app).swipeLeft()
+        XCTAssertTrue(app.buttons["Trash"].exists)
+        app.buttons["Trash"].tap()
+        waitForAbsence(row(subject, in: app))
+        app.buttons["Undo"].tap()
+        settings()
+        choose("primary", "Move to Trash")
+        XCTAssertTrue(app.buttons["Swipe left-tertiary"].label.contains("None"))
+        choose("secondary", "Move to Trash")
+        XCTAssertTrue(app.buttons["Swipe left-primary"].label.contains("None"))
+        choose("tertiary", "Move to Trash")
+        XCTAssertTrue(app.buttons["Swipe left-secondary"].label.contains("None"))
+        app.buttons["Reset Swipe Actions"].tap()
+        XCTAssertTrue(app.buttons["Swipe left-tertiary"].label.contains("None"))
+        XCTAssertTrue(app.buttons["Swipe right-tertiary"].label.contains("None"))
+        close()
     }
 }
 

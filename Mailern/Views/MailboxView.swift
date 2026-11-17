@@ -23,6 +23,8 @@ struct MailboxView: View {
     @AppStorage("leftSwipeSecondary") private var leftSecondary: MailboxSwipeAction = .snooze
     @AppStorage("rightSwipePrimary") private var rightPrimary: MailboxSwipeAction = .read
     @AppStorage("rightSwipeSecondary") private var rightSecondary: MailboxSwipeAction = .pin
+    @AppStorage("leftSwipeTertiary") private var leftTertiary: MailboxSwipeAction = .none
+    @AppStorage("rightSwipeTertiary") private var rightTertiary: MailboxSwipeAction = .none
     @State private var composer: ComposeMode?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var demo = false
@@ -289,15 +291,15 @@ struct MailboxView: View {
                                 .listRowBackground(item.hasDraft ? Color.orange.opacity(0.07) : Color.clear)
                                 .tag(conversation.id)
                                 .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    swipeButtons(primary: leftPrimary, secondary: leftSecondary, conversation: conversation, hasDraft: item.hasDraft)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && (leftPrimary != .read || conversation.workflow != .settled)) {
+                                    swipeButtons(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, conversation: conversation, hasDraft: item.hasDraft)
                                 }
-                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                    swipeButtons(primary: rightPrimary, secondary: rightSecondary, conversation: conversation, hasDraft: item.hasDraft)
+                                .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && (rightPrimary != .read || conversation.workflow != .settled)) {
+                                    swipeButtons(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, conversation: conversation, hasDraft: item.hasDraft)
                                 }
                                 .gesture(EmptySwipeGuard(
-                                    left: !hasSwipeActions(primary: leftPrimary, secondary: leftSecondary, conversation: conversation),
-                                    right: !hasSwipeActions(primary: rightPrimary, secondary: rightSecondary, conversation: conversation)
+                                    left: conversationSwipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, conversation: conversation).isEmpty,
+                                    right: conversationSwipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, conversation: conversation).isEmpty
                                 ))
                                 .simultaneousGesture(
                                     LongPressGesture().onEnded { _ in
@@ -316,11 +318,11 @@ struct MailboxView: View {
                                 .disabled(selecting)
                                 .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                                 .listRowBackground(Color.orange.opacity(0.07))
-                                .swipeActions(edge: .trailing) { draftSwipeButtons(primary: leftPrimary, secondary: leftSecondary, draft: draft) }
-                                .swipeActions(edge: .leading) { draftSwipeButtons(primary: rightPrimary, secondary: rightSecondary, draft: draft) }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && leftPrimary != .read) { draftSwipeButtons(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, draft: draft) }
+                                .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && rightPrimary != .read) { draftSwipeButtons(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, draft: draft) }
                                 .gesture(EmptySwipeGuard(
-                                    left: draftSwipeActions(primary: leftPrimary, secondary: leftSecondary).isEmpty,
-                                    right: draftSwipeActions(primary: rightPrimary, secondary: rightSecondary).isEmpty
+                                    left: draftSwipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary).isEmpty,
+                                    right: draftSwipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary).isEmpty
                                 ))
                                 .accessibilityAction(named: draft.pinned == true ? "Unpin" : "Pin") { Task { await drafts.togglePin(draft.id) } }
                                 .accessibilityAction(named: "Snooze") { snoozingDraft = draft }
@@ -351,17 +353,30 @@ struct MailboxView: View {
             .modifier(InboxPullModifier(mode: status == .inbox && !selecting ? pullAction : .off, interaction: pull))
         }
     }
-    private func hasSwipeActions(primary: MailboxSwipeAction, secondary: MailboxSwipeAction, conversation: Conversation) -> Bool {
-        primary != .none && (primary != .read || conversation.workflow != .settled || (secondary != .none && secondary != .read))
+    private func swipeActions(
+        primary: MailboxSwipeAction, secondary: MailboxSwipeAction, tertiary: MailboxSwipeAction
+    ) -> [MailboxSwipeAction] {
+        var actions: [MailboxSwipeAction] = []
+        for action in [primary, secondary, tertiary] where action != .none && !actions.contains(action) {
+            actions.append(action)
+        }
+        return actions
+    }
+
+    private func conversationSwipeActions(
+        primary: MailboxSwipeAction, secondary: MailboxSwipeAction, tertiary: MailboxSwipeAction, conversation: Conversation
+    ) -> [MailboxSwipeAction] {
+        swipeActions(primary: primary, secondary: secondary, tertiary: tertiary)
+            .filter { $0 != .read || conversation.workflow != .settled }
     }
 
     @ViewBuilder private func swipeButtons(
-        primary: MailboxSwipeAction, secondary: MailboxSwipeAction, conversation: Conversation, hasDraft: Bool
+        primary: MailboxSwipeAction, secondary: MailboxSwipeAction, tertiary: MailboxSwipeAction,
+        conversation: Conversation, hasDraft: Bool
     ) -> some View {
-        if primary != .none && !selecting {
-            swipeButton(primary, conversation: conversation, hasDraft: hasDraft)
-            if secondary != .none && secondary != primary {
-                swipeButton(secondary, conversation: conversation, hasDraft: hasDraft)
+        if !selecting {
+            ForEach(conversationSwipeActions(primary: primary, secondary: secondary, tertiary: tertiary, conversation: conversation), id: \.self) { action in
+                swipeButton(action, conversation: conversation, hasDraft: hasDraft)
             }
         }
     }
@@ -415,9 +430,9 @@ struct MailboxView: View {
     private var inboxUnreadCount: Int {
         MailboxItem.list(conversations: store.conversations, drafts: drafts.drafts, status: .inbox).filter(\.unread).count
     }
-    @ViewBuilder private func draftSwipeButtons(primary: MailboxSwipeAction, secondary: MailboxSwipeAction, draft: ComposerDraft) -> some View {
+    @ViewBuilder private func draftSwipeButtons(primary: MailboxSwipeAction, secondary: MailboxSwipeAction, tertiary: MailboxSwipeAction, draft: ComposerDraft) -> some View {
         if !selecting {
-            ForEach(draftSwipeActions(primary: primary, secondary: secondary), id: \.self) { action in
+            ForEach(draftSwipeActions(primary: primary, secondary: secondary, tertiary: tertiary), id: \.self) { action in
                 if action == .pin {
                     Button(draft.pinned == true ? "Unpin" : "Pin", systemImage: draft.pinned == true ? "pin.slash" : "pin") {
                         Task { await drafts.togglePin(draft.id) }
@@ -434,11 +449,10 @@ struct MailboxView: View {
             }
         }
     }
-    private func draftSwipeActions(primary: MailboxSwipeAction, secondary: MailboxSwipeAction) -> [MailboxSwipeAction] {
-        guard primary != .none else { return [] }
-        var actions = [primary]
-        if secondary != primary { actions.append(secondary) }
-        return actions.filter { $0 != .none && $0 != .read }
+    private func draftSwipeActions(
+        primary: MailboxSwipeAction, secondary: MailboxSwipeAction, tertiary: MailboxSwipeAction
+    ) -> [MailboxSwipeAction] {
+        swipeActions(primary: primary, secondary: secondary, tertiary: tertiary).filter { $0 != .read }
     }
     private var selectedConversations: [Conversation] {
         store.conversations.filter { selectedIDs.contains($0.id) }
