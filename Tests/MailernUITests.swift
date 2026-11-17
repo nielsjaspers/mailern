@@ -2608,6 +2608,7 @@ final class SettleAndNextUITests: MailernUITestCase {
         app.buttons["Settle"].tap()
         XCTAssertTrue(app.staticTexts[weekly].existsOrWait(timeout: 5))
         XCTAssertFalse(app.staticTexts[dinner].exists)
+        XCTAssertTrue(app.webViews.firstMatch.staticTexts[weekly].existsOrWait(timeout: 10), "The next conversation renders its HTML")
         capture("Next conversation after Settle", in: app)
         app.buttons["Settle"].tap()
         XCTAssertTrue(app.staticTexts[presentations].existsOrWait(timeout: 5))
