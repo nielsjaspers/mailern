@@ -8,6 +8,8 @@ final class TestApplication: XCUIApplication {
     private let session = UUID().uuidString
     private var hasLaunched = false
     private static var process: String?
+    /// False when the running process was launched with arguments, such as a larger text size, that a reset cannot undo.
+    private static var processReusable = true
     private static let observer = NSObject()
     private static var observing = false
     private static var acknowledge: (() -> Void)?
@@ -45,7 +47,8 @@ final class TestApplication: XCUIApplication {
         let previous = Self.process
         // Only independent cases reuse a process. Every launch after the first on this
         // object remains an actual relaunch, including persistence and fault tests.
-        let reuse = !requiresFreshProcess && !hasLaunched && launchArguments.isEmpty && previous != nil && state == .runningForeground
+        let reuse = !requiresFreshProcess && !hasLaunched && launchArguments.isEmpty && Self.processReusable
+            && previous != nil && state == .runningForeground
         hasLaunched = true
         if reuse {
             super.activate()
@@ -63,6 +66,7 @@ final class TestApplication: XCUIApplication {
         if reuse { XCTAssertEqual(process, previous, "Fixture reset must retain the app process") }
         else if let previous { XCTAssertNotEqual(process, previous, "Relaunch must create a new app process") }
         Self.process = process
+        Self.processReusable = launchArguments.isEmpty
         print("UI fixture \(reuse ? "reset" : "launch"): session=\(session) process=\(process)")
     }
 }
