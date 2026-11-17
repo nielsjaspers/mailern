@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 @main struct WorkflowChecks {
     @MainActor static func main() async throws {
@@ -15,8 +16,10 @@ import Foundation
         try await checkMailboxFiltersAndDraftActions()
         try checkSnoozeSettings()
         try checkTrashAndJunk()
+        try checkSQLiteStorage()
+        try await checkAccounts()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
-        let disk = JSONPersistence(url: directory.appending(path: "demo.json"))
+        let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
         let c = store.list(.inbox)[0]
         let id = c.id
@@ -48,12 +51,12 @@ import Foundation
         reloaded.wakeDue(now: .now.addingTimeInterval(101))
         assert(reloaded.conversation(id)!.workflow == .inbox)
         let beforeSend = store.conversation(id)!.messages.count
-        store.send(threadID: id, account: c.account, to: [c.correspondent.address], cc: [], subject: c.subject, body: "Thanks, here's the plan.")
+        store.send(threadID: id, account: store.account(c.accountID), to: [c.correspondent.address], cc: [], subject: c.subject, body: "Thanks, here's the plan.")
         assert(store.conversation(id)!.workflow == .settled && store.conversation(id)!.messages.count == beforeSend + 1)
         assert(store.conversation(id)!.latest.outgoing)
         store.move(id, to: .inbox)
         assert(store.conversation(id)!.workflow == .inbox)
-        store.send(threadID: nil, account: c.account, to: ["test@example.com"], cc: [], subject: "New outgoing", body: "Hello")
+        store.send(threadID: nil, account: store.account(c.accountID), to: ["test@example.com"], cc: [], subject: "New outgoing", body: "Hello")
         assert(store.list(.settled).contains { $0.subject == "New outgoing" && !$0.unread })
         store.receiveNew()
         assert(store.list(.inbox).contains { $0.subject == "Coffee this week?" && $0.unread })
@@ -67,8 +70,115 @@ import Foundation
         print("PASS: settled mail is read, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
     }
 
+    @MainActor static func checkSQLiteStorage() throws {
+        let url = URL.temporaryDirectory.appending(path: "mailern-sqlite-\(UUID())/mail.sqlite")
+        let store = MailStore(persistence: SQLitePersistence(url: url))
+        let changed = store.list(.inbox)[0].id
+        let untouched = store.list(.settled)[0].id
+        // Loading writes the seed data in full, so search works before the first change. Later saves write only what changed.
+        assert(store.search("Saturday").indexed?.isEmpty == false)
+        store.markRead(changed)
+        // A second connection plants an unreadable row. A save that rewrote every row would replace it.
+        var db: OpaquePointer?
+        assert(sqlite3_open(url.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        func payload(_ id: UUID) -> String? {
+            var statement: OpaquePointer?
+            sqlite3_prepare_v2(db, "SELECT CAST(payload AS TEXT) FROM conversations WHERE id = '\(id.uuidString)'", -1, &statement, nil)
+            defer { sqlite3_finalize(statement) }
+            return sqlite3_step(statement) == SQLITE_ROW ? String(cString: sqlite3_column_text(statement, 0)) : nil
+        }
+        assert(sqlite3_exec(db, "UPDATE conversations SET payload = CAST('planted' AS BLOB) WHERE id = '\(untouched.uuidString)'", nil, nil, nil) == SQLITE_OK)
+        store.move(changed, to: .settled)
+        store.receiveNew()
+        assert(store.error == nil && payload(untouched) == "planted" && payload(changed)?.contains("settled") == true)
+        assert(sqlite3_exec(db, "DELETE FROM conversations WHERE id = '\(untouched.uuidString)'", nil, nil, nil) == SQLITE_OK)
+        store.deletePermanently([untouched])
+        let reloaded = MailStore(persistence: SQLitePersistence(url: url))
+        assert(reloaded.conversations == store.conversations && reloaded.conversations[0].subject == "Coffee this week?")
+
+        // Trigram search matches any substring of three or more characters, ignoring case.
+        let coffee = store.conversations[0].id
+        assert(store.search("FFEE THIS").indexed == [coffee] && store.list(.inbox, search: "ffee this").map(\.id) == [coffee])
+        assert(store.search("Ri").indexed == nil && store.list(.inbox, search: "Ri").contains { $0.id == coffee })
+        assert(store.search("\"quoted\" text").indexed == [])
+        // Account names are not in the index. They still match through the in-memory account check.
+        assert(store.search("Personal").indexed?.contains(coffee) == false && store.list(.inbox, search: "Personal").contains { $0.id == coffee })
+        store.receiveReply(coffee)
+        assert(store.search("A quick follow-up").indexed == [coffee])
+        print("PASS: SQLite rewrites only changed rows, keeps load order, removes deleted rows, and trigram search with short-query and account-name fallback")
+    }
+
+    @MainActor static func checkAccounts() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-accounts-\(UUID())")
+        let url = directory.appending(path: "mail.sqlite")
+        let store = MailStore(persistence: SQLitePersistence(url: url))
+        let drafts = DraftStore(url: directory.appending(path: "drafts.json"))
+        var work = MailAccount(id: "work", name: " Work ", address: "morgan@work.example.com ", color: .red, signature: "Morgan\nExample Studio\n")
+        assert(store.problem(with: MailAccount(id: "x", name: "", address: "a@b.example", color: .red)) != nil)
+        assert(store.problem(with: MailAccount(id: "x", name: "X", address: "not-an-address", color: .red)) != nil)
+        assert(store.problem(with: MailAccount(id: "x", name: "X", address: "MORGAN@personal.example.com", color: .red)) != nil)
+        assert(store.problem(with: MailAccount.demo[0]) == nil)
+        assert(store.saveAccount(work))
+        work = store.account("work")
+        assert(work.name == "Work" && work.address == "morgan@work.example.com" && work.signature == "Morgan\nExample Studio")
+        assert(store.send(threadID: nil, account: work, to: ["client@example.com"], cc: [], subject: "Studio update", body: "Hello"))
+        let sent = store.conversations.first { $0.subject == "Studio update" }!
+        work.name = "Studio"
+        assert(store.saveAccount(work))
+        assert(store.list(.settled, search: "Studio").contains { $0.id == sent.id })
+        assert(MailStore(persistence: SQLitePersistence(url: url)).accounts == store.accounts)
+
+        // Signatures go into new mail, and above the quote in replies and forwards.
+        assert(ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts).text == "\n\nMorgan")
+        let university = store.conversations.first { $0.accountID == "university" }!
+        let reply = ComposerDraft.make(mode: .reply(university.id), conversation: university, accounts: store.accounts)
+        assert(reply.signature == "Morgan\nStudent, Example College")
+        assert(reply.text.hasPrefix("\n\nMorgan\nStudent, Example College\n\nOn "))
+        let forward = ComposerDraft.make(mode: .forward(sent.id), conversation: sent, accounts: store.accounts)
+        assert(forward.text.hasPrefix("\n\nMorgan\nExample Studio\n\nBegin forwarded message"))
+        let quiet = store.conversations.first { $0.accountID == "proton" }!
+        let plain = ComposerDraft.make(mode: .reply(quiet.id), conversation: quiet, accounts: store.accounts)
+        assert(plain.signature == "" && plain.text.hasPrefix("\n\nOn "))
+
+        // A sender change swaps an unedited signature, keeps an edited one, and inserts one above the quote.
+        func swapped(_ body: String, old: String, new: String, quote: Int? = nil) -> String? {
+            let text = NSMutableAttributedString(string: body)
+            guard ComposerDraft.swapSignature(in: text, old: old, replacement: NSAttributedString(string: ComposerDraft.signatureBlock(new)), quoteStart: quote) != nil else { return nil }
+            return text.string
+        }
+        assert(swapped("Hi\n\nMorgan M.", old: "Morgan M.", new: "Morgan") == "Hi\n\nMorgan")
+        assert(swapped("Hi\n\nMorgan X.", old: "Morgan M.", new: "Morgan") == nil)
+        assert(swapped("Hi\n\nMorgan M.", old: "Morgan", new: "Avery") == nil)
+        assert(swapped("Hi\n\nMorgan M. and Morgan\n\nOn Monday", old: "Morgan", new: "Avery") == nil)
+        assert(swapped("Hi\n\nMorgan\n\nOn Monday", old: "Morgan", new: "Avery") == "Hi\n\nAvery\n\nOn Monday")
+        assert(swapped("Hi\n\nMorgan", old: "Morgan", new: "") == "Hi")
+        assert(swapped("Hi", old: "", new: "Morgan") == "Hi\n\nMorgan")
+        assert(swapped("Hi\n\nOn Monday, Avery wrote:", old: "", new: "Morgan", quote: 4) == "Hi\n\nMorgan\n\nOn Monday, Avery wrote:")
+
+        var studioDraft = ComposerDraft(subject: "Studio draft")
+        studioDraft.accountID = "work"
+        let savedDraft = await drafts.save(studioDraft)
+        let keptDraft = await drafts.save(ComposerDraft(subject: "Personal draft"))
+        assert(savedDraft && keptDraft)
+        assert(store.deleteAccount("work"))
+        let discarded = await drafts.discardDrafts(accountID: "work")
+        assert(discarded && drafts.drafts.map(\.subject) == ["Personal draft"])
+        assert(store.conversation(sent.id) == nil && store.account("work").name == "Removed account")
+        let reopened = MailStore(persistence: SQLitePersistence(url: url))
+        assert(reopened.accounts == MailAccount.demo && reopened.conversation(sent.id) == nil)
+        for account in MailAccount.demo.dropFirst() { assert(reopened.deleteAccount(account.id)) }
+        assert(!reopened.deleteAccount(MailAccount.demo[0].id) && reopened.accounts.count == 1)
+        reopened.receiveNew()
+        reopened.receiveJunk()
+        assert(reopened.conversations.allSatisfy { $0.accountID == MailAccount.demo[0].id })
+        reopened.reset()
+        assert(reopened.accounts == MailAccount.demo && MailStore(persistence: SQLitePersistence(url: url)).accounts == MailAccount.demo)
+        print("PASS: account validation, trimming, edit and persistence, renamed-account search, signatures in new/reply/forward, signature swap rules, account deletion with mail and drafts, last account kept, demo mail follows remaining accounts, reset")
+    }
+
     @MainActor static func checkTrashAndJunk() throws {
-        let disk = JSONPersistence(url: URL.temporaryDirectory.appending(path: "mailern-trash-\(UUID())/demo.json"))
+        let disk = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-trash-\(UUID())/mail.sqlite"))
         let store = MailStore(persistence: disk)
         let settled = store.list(.settled)[0].id
         store.apply(ids: [settled], action: .remove(.trash))
@@ -130,7 +240,7 @@ import Foundation
     }
 
     @MainActor static func checkUndoExpiry() async throws {
-        let disk = JSONPersistence(url: URL.temporaryDirectory.appending(path: "mailern-undo-\(UUID())/demo.json"))
+        let disk = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-undo-\(UUID())/mail.sqlite"))
         let store = MailStore(persistence: disk)
         let ids = store.list(.inbox).prefix(2).map(\.id)
         store.move(ids[0], to: .settled)
@@ -151,7 +261,7 @@ import Foundation
     }
 
     @MainActor static func checkSettledRead() throws {
-        let disk = JSONPersistence(url: URL.temporaryDirectory.appending(path: "mailern-settled-\(UUID())/demo.json"))
+        let disk = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-settled-\(UUID())/mail.sqlite"))
         var legacy = DemoData.conversations()
         let settledIndex = legacy.firstIndex { $0.workflow == .settled }!
         legacy[settledIndex].unread = true
@@ -178,7 +288,7 @@ import Foundation
         store.move(first, to: .inbox)
         store.markRead(first, unread: true)
         let source = store.conversation(first)!
-        assert(store.send(threadID: first, account: source.account, to: [source.correspondent.address], cc: [], subject: source.subject, body: "Reply"))
+        assert(store.send(threadID: first, account: store.account(source.accountID), to: [source.correspondent.address], cc: [], subject: source.subject, body: "Reply"))
         assert(!store.conversation(first)!.unread)
         assert(MailStore(persistence: disk).list(.settled).allSatisfy { !$0.unread })
         store.receiveReply(first)
@@ -190,21 +300,21 @@ import Foundation
 
     @MainActor static func checkInboxDrafts() async throws {
         let directory = URL.temporaryDirectory.appending(path: "mailern-inbox-drafts-\(UUID())")
-        let disk = JSONPersistence(url: directory.appending(path: "mail.json"))
+        let disk = SQLitePersistence(url: directory.appending(path: "mail.sqlite"))
         let mail = MailStore(persistence: disk)
         let draftsURL = directory.appending(path: "drafts.json")
         let drafts = DraftStore(url: draftsURL)
         let source = mail.list(.inbox).first { !$0.pinned }!
         mail.move(source.id, to: .snoozed, until: .now.addingTimeInterval(3600))
-        var reply = ComposerDraft.make(mode: .replyAll(source.id), conversation: source)
+        var reply = ComposerDraft.make(mode: .replyAll(source.id), conversation: source, accounts: MailAccount.demo)
         reply.text = "Unsent reply search proof"
         reply.updatedAt = .now.addingTimeInterval(10)
         let new = ComposerDraft(to: "new@example.com", subject: "Standalone draft", text: "New message")
-        let forward = ComposerDraft.make(mode: .forward(source.id), conversation: source)
+        let forward = ComposerDraft.make(mode: .forward(source.id), conversation: source, accounts: MailAccount.demo)
         let orphan = ComposerDraft(mode: .reply(UUID()), subject: "Missing source")
         for draft in [reply, new, forward, orphan] { let saved = await drafts.save(draft); assert(saved) }
         func items(_ status: Workflow, search: String = "") -> [MailboxItem] {
-            MailboxItem.list(conversations: mail.conversations, drafts: DraftStore(url: draftsURL).drafts, status: status, search: search)
+            MailboxItem.list(conversations: mail.conversations, drafts: DraftStore(url: draftsURL).drafts, status: status, search: mail.search(search))
         }
         let inbox = items(.inbox)
         let attached = items(.snoozed).first { $0.id == source.id }!
@@ -232,10 +342,10 @@ import Foundation
         mail.undo()
         assert(!mail.conversation(source.id)!.unread)
         assert(saved && !items(.inbox).contains { $0.id == source.id } && items(.settled).contains { $0.id == source.id && $0.hasDraft })
-        assert(mail.send(threadID: source.id, account: source.account, to: [reply.to], cc: [], subject: reply.subject, body: reply.text))
+        assert(mail.send(threadID: source.id, account: mail.account(source.accountID), to: [reply.to], cc: [], subject: reply.subject, body: reply.text))
         let sent = await drafts.delete(reply.id)
         assert(sent && !items(.inbox).contains { $0.id == source.id } && items(.settled).contains { $0.id == source.id && !$0.hasDraft })
-        assert(mail.send(threadID: nil, account: new.account, to: [new.to], cc: [], subject: new.subject, body: new.text))
+        assert(mail.send(threadID: nil, account: mail.account(new.accountID), to: [new.to], cc: [], subject: new.subject, body: new.text))
         let newSent = await drafts.delete(new.id)
         assert(newSent && !items(.inbox).contains { $0.id == new.id })
         assert(items(.settled).contains { $0.conversation?.subject == new.subject && !$0.hasDraft })
@@ -245,67 +355,67 @@ import Foundation
 
     @MainActor static func mailboxLoadFailurePreservesStoredMail() throws {
         let directory = URL.temporaryDirectory.appending(path: "mail-load-failure-\(UUID())")
-        let url = directory.appending(path: "mail.json")
+        let url = directory.appending(path: "mail.sqlite")
         let file = MailAttachment(name: "Keep.txt", data: Data("Keep this attachment".utf8), contentType: "public.plain-text")
         var original = DemoData.conversations()
         original[0].messages[0].attachments = [file]
-        try AttachmentJSON.save(MailData(conversations: original), to: url)
+        try SQLitePersistence(url: url).save(MailData(conversations: original))
         let payload = AttachmentJSON.directory(for: url).appending(path: file.id.uuidString)
         let withheld = directory.appending(path: "withheld-payload")
         try FileManager.default.moveItem(at: payload, to: withheld)
-        let bytes = try Data(contentsOf: url)
-        let store = MailStore(persistence: JSONPersistence(url: url))
+        let store = MailStore(persistence: SQLitePersistence(url: url))
         assert(store.error != nil && store.conversations.isEmpty)
         store.error = nil
-        assert(!store.send(threadID: nil, account: MailAccount.demo[1], to: ["recipient@example.com"], cc: [], subject: "New", body: "New"))
+        assert(!store.send(threadID: nil, account: MailAccount.demo[0], to: ["recipient@example.com"], cc: [], subject: "New", body: "New"))
         store.receiveNew()
-        let retained = try Data(contentsOf: url)
-        assert(store.conversations.isEmpty && retained == bytes)
+        assert(!store.deleteAccount(MailAccount.demo[1].id) && !store.saveAccount(MailAccount.demo[1]))
+        assert(store.conversations.isEmpty)
         assert(!store.reload())
         try FileManager.default.moveItem(at: withheld, to: payload)
-        assert(store.reload() && store.conversations == original)
-        assert(store.send(threadID: nil, account: MailAccount.demo[1], to: ["recipient@example.com"], cc: [], subject: "Recovered", body: "Recovered"))
-        assert(Set(original.map(\.id)).isSubset(of: Set(MailStore(persistence: JSONPersistence(url: url)).conversations.map(\.id))))
+        // An exact match proves that none of the blocked actions wrote to the database.
+        assert(store.reload() && store.conversations == original && store.accounts == MailAccount.demo)
+        assert(store.send(threadID: nil, account: MailAccount.demo[0], to: ["recipient@example.com"], cc: [], subject: "Recovered", body: "Recovered"))
+        assert(Set(original.map(\.id)).isSubset(of: Set(MailStore(persistence: SQLitePersistence(url: url)).conversations.map(\.id))))
         print("PASS: failed mailbox load preserves metadata and attachments despite new-mail actions")
     }
     @MainActor static func checkComposerData() async throws {
         let dir = URL.temporaryDirectory.appending(path: "mailern-composer-\(UUID())")
-        let disk = JSONPersistence(url: dir.appending(path: "mail.json"))
+        let disk = SQLitePersistence(url: dir.appending(path: "mail.sqlite"))
         let store = MailStore(persistence: disk)
         let source = store.list(.inbox).first { $0.subject == "Course project feedback" }!
-        let reply = ComposerDraft.make(mode: .replyAll(source.id), conversation: source)
+        let reply = ComposerDraft.make(mode: .replyAll(source.id), conversation: source, accounts: MailAccount.demo)
         assert(reply.to == source.correspondent.address)
         assert(ComposerDraft.addresses(reply.cc) == ["coordinator@college.example.com"])
         assert(reply.subject == "Re: \(source.subject)" && reply.text.contains(source.latest.body))
-        let revised = MailStore(persistence: JSONPersistence(url: dir.appending(path: "revised-recipients.json")))
+        let revised = MailStore(persistence: SQLitePersistence(url: dir.appending(path: "revised-recipients.sqlite")))
         let revisedID = revised.list(.inbox).first { $0.subject == source.subject }!.id
-        assert(revised.send(threadID: revisedID, account: source.account, to: ["revised@example.com"],
-                            cc: ["team@example.com", source.account.address, "REVISED@example.com"],
+        assert(revised.send(threadID: revisedID, account: revised.account(source.accountID), to: ["revised@example.com"],
+                            cc: ["team@example.com", revised.account(source.accountID).address, "REVISED@example.com"],
                             subject: source.subject, body: "Revised recipient group"))
         let revisedSource = revised.conversation(revisedID)!
-        let revisedReply = ComposerDraft.make(mode: .replyAll(revisedID), conversation: revisedSource)
+        let revisedReply = ComposerDraft.make(mode: .replyAll(revisedID), conversation: revisedSource, accounts: MailAccount.demo)
         assert(revisedReply.to == "revised@example.com" && revisedReply.cc == "team@example.com")
         assert(revisedReply.text.contains("Revised recipient group") && !revisedReply.text.contains(source.latest.body))
         // A reply or forward can target an earlier message instead of the latest.
         let first = revisedSource.messages[0]
-        let earlierReply = ComposerDraft.make(mode: .replyAll(revisedID), conversation: revisedSource, message: first.id)
+        let earlierReply = ComposerDraft.make(mode: .replyAll(revisedID), conversation: revisedSource, message: first.id, accounts: MailAccount.demo)
         assert(earlierReply.to == first.address && ComposerDraft.addresses(earlierReply.cc) == ["coordinator@college.example.com"])
         assert(earlierReply.text.contains(first.body) && !earlierReply.text.contains("Revised recipient group"))
         assert(earlierReply.messageID == first.id && revisedReply.messageID == nil)
-        let earlierForward = ComposerDraft.make(mode: .forward(revisedID), conversation: revisedSource, message: first.id)
+        let earlierForward = ComposerDraft.make(mode: .forward(revisedID), conversation: revisedSource, message: first.id, accounts: MailAccount.demo)
         assert(earlierForward.text.contains(first.body) && !earlierForward.text.contains("Revised recipient group"))
-        assert(ComposerDraft.make(mode: .reply(revisedID), conversation: revisedSource, message: UUID()).text.contains("Revised recipient group"))
+        assert(ComposerDraft.make(mode: .reply(revisedID), conversation: revisedSource, message: UUID(), accounts: MailAccount.demo).text.contains("Revised recipient group"))
         assert(revisedSource.participants == "Dr. Jordan Lee, Me" && revisedSource.avatarName == "Dr. Jordan Lee")
-        revised.send(threadID: nil, account: source.account, to: ["new@example.com", "other@example.com"], cc: [], subject: "Sent only", body: "Hello")
+        revised.send(threadID: nil, account: revised.account(source.accountID), to: ["new@example.com", "other@example.com"], cc: [], subject: "Sent only", body: "Hello")
         var namesakes = revisedSource
         namesakes.receive(MailMessage(sender: "Dr. Jordan Lee", address: "other@example.com", to: [], date: .now, body: "A namesake"))
         namesakes.receive(MailMessage(sender: "Jordan", address: "JORDAN@college.example.com", to: [], date: .now, body: "A new display name"))
         assert(namesakes.participants == "Dr. Jordan Lee, Me, Dr. Jordan Lee")
         let sentOnly = revised.conversations.first { $0.subject == "Sent only" }!
         assert(sentOnly.participants == "To: new@example.com, other@example.com" && sentOnly.avatarName == "new@example.com")
-        let singleReply = ComposerDraft.make(mode: .reply(revisedID), conversation: revisedSource)
+        let singleReply = ComposerDraft.make(mode: .reply(revisedID), conversation: revisedSource, accounts: MailAccount.demo)
         assert(singleReply.to == "revised@example.com" && singleReply.cc.isEmpty)
-        var draft = ComposerDraft.make(mode: .new, conversation: nil)
+        var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: MailAccount.demo)
         assert(!draft.canSend)
         draft.to = "recipient@example.com"
         assert(draft.canSend)
@@ -325,27 +435,27 @@ import Foundation
         assert(savedDraft)
         let reloaded = DraftStore(url: dir.appending(path: "drafts.json"))
         assert(reloaded.drafts == [draft])
-        assert(store.send(threadID: source.id, account: source.account, to: [reply.to], cc: ComposerDraft.addresses(reply.cc),
+        assert(store.send(threadID: source.id, account: store.account(source.accountID), to: [reply.to], cc: ComposerDraft.addresses(reply.cc),
                           subject: "Updated project scope", body: draft.text, bcc: ComposerDraft.addresses(draft.bcc), richText: draft.richText, attachments: draft.attachments))
         let sent = store.conversation(source.id)!
         assert(sent.workflow == .settled && sent.latest.outgoing)
         assert(sent.subject == source.subject && sent.latest.subject == "Updated project scope")
         assert(store.list(.settled, search: "Updated project scope").contains { $0.id == source.id })
         assert(sent.latest.bcc == ["hidden@example.com"] && sent.latest.richText == draft.richText && sent.latest.attachments == draft.attachments)
-        let forward = ComposerDraft.make(mode: .forward(source.id), conversation: sent)
+        let forward = ComposerDraft.make(mode: .forward(source.id), conversation: sent, accounts: MailAccount.demo)
         // Forwarding an earlier message takes that message's attachments, not the latest ones.
-        assert(ComposerDraft.make(mode: .forward(source.id), conversation: sent, message: sent.messages[0].id).attachments.isEmpty)
+        assert(ComposerDraft.make(mode: .forward(source.id), conversation: sent, message: sent.messages[0].id, accounts: MailAccount.demo).attachments.isEmpty)
         assert(forward.mode.replyID == nil && forward.attachments == draft.attachments && forward.to.isEmpty)
         assert(MailStore(persistence: disk).conversation(source.id) == sent)
         store.receiveReply(source.id)
         let reactivated = store.conversation(source.id)!
         assert(reactivated.latest.subject == "Updated project scope")
-        assert(ComposerDraft.make(mode: .reply(source.id), conversation: reactivated).subject == "Re: Updated project scope")
-        assert(ComposerDraft.make(mode: .forward(source.id), conversation: reactivated).subject == "Fwd: Updated project scope")
+        assert(ComposerDraft.make(mode: .reply(source.id), conversation: reactivated, accounts: MailAccount.demo).subject == "Re: Updated project scope")
+        assert(ComposerDraft.make(mode: .forward(source.id), conversation: reactivated, accounts: MailAccount.demo).subject == "Fwd: Updated project scope")
         // An earlier message keeps the subject it was written under.
         let original = reactivated.messages[0].id
-        assert(ComposerDraft.make(mode: .forward(source.id), conversation: reactivated, message: original).subject == "Fwd: \(source.subject)")
-        assert(ComposerDraft.make(mode: .reply(source.id), conversation: reactivated, message: original).subject == "Re: \(source.subject)")
+        assert(ComposerDraft.make(mode: .forward(source.id), conversation: reactivated, message: original, accounts: MailAccount.demo).subject == "Fwd: \(source.subject)")
+        assert(ComposerDraft.make(mode: .reply(source.id), conversation: reactivated, message: original, accounts: MailAccount.demo).subject == "Re: \(source.subject)")
         let deletedDraft = await drafts.delete(draft.id)
         assert(deletedDraft && DraftStore(url: dir.appending(path: "drafts.json")).drafts.isEmpty)
         let damagedURL = dir.appending(path: "damaged-drafts.json")
@@ -372,7 +482,7 @@ import Foundation
         }
         let failing = MailStore(persistence: FailingDisk())
         let before = failing.conversations
-        assert(!failing.send(threadID: nil, account: source.account, to: ["test@example.com"], cc: [], subject: "Failure", body: "Retain draft"))
+        assert(!failing.send(threadID: nil, account: failing.account(source.accountID), to: ["test@example.com"], cc: [], subject: "Failure", body: "Retain draft"))
         assert(failing.conversations == before)
         final class ControlledDisk: ConversationPersistence {
             var fail = false
@@ -385,16 +495,16 @@ import Foundation
         recoverable.move(recoveryID, to: .settled)
         let notice = recoverable.notice
         controlled.fail = true
-        assert(!recoverable.send(threadID: nil, account: source.account, to: ["test@example.com"], cc: [], subject: "Failure", body: "Keep Undo"))
+        assert(!recoverable.send(threadID: nil, account: recoverable.account(source.accountID), to: ["test@example.com"], cc: [], subject: "Failure", body: "Keep Undo"))
         assert(recoverable.notice == notice)
         controlled.fail = false
         recoverable.undo()
         assert(recoverable.conversation(recoveryID)!.workflow == .inbox)
         recoverable.move(recoveryID, to: .settled)
-        assert(recoverable.send(threadID: nil, account: source.account, to: ["test@example.com"], cc: [], subject: "Success", body: "Invalidate Undo"))
+        assert(recoverable.send(threadID: nil, account: recoverable.account(source.accountID), to: ["test@example.com"], cc: [], subject: "Success", body: "Invalidate Undo"))
         recoverable.undo()
         assert(recoverable.notice == nil && recoverable.conversation(recoveryID)!.workflow == .settled)
-        assert(!store.send(threadID: UUID(), account: source.account, to: ["test@example.com"], cc: [], subject: "Missing source", body: "Retain draft"))
+        assert(!store.send(threadID: UUID(), account: store.account(source.accountID), to: ["test@example.com"], cc: [], subject: "Missing source", body: "Retain draft"))
         print("PASS: reply-all recipient deduplication, editable quotes, draft reload/delete, Bcc/rich text/attachments, forward payload, unreadable draft protection, and send-failure rollback")
     }
 
@@ -450,7 +560,7 @@ import Foundation
     @MainActor static func checkAttachmentStorage() async throws {
         let directory = URL.temporaryDirectory.appending(path: "mailern-attachment-files-\(UUID())")
         let draftURL = directory.appending(path: "drafts.json")
-        let mailURL = directory.appending(path: "mail.json")
+        let mailURL = directory.appending(path: "mail.sqlite")
         let payload = Data(repeating: 42, count: 1024 * 1024)
         let file = MailAttachment(name: "Sample.bin", data: payload, contentType: "public.data")
         let draft = ComposerDraft(subject: "File storage", attachments: [file])
@@ -461,8 +571,8 @@ import Foundation
         assert(metadata.count < 4096)
         let loaded = DraftStore(url: draftURL).drafts[0].attachments[0]
         assert(loaded.data == payload)
-        let mail = MailStore(persistence: JSONPersistence(url: mailURL))
-        assert(mail.send(threadID: nil, account: MailAccount.demo[1], to: ["recipient@example.com"], cc: [],
+        let mail = MailStore(persistence: SQLitePersistence(url: mailURL))
+        assert(mail.send(threadID: nil, account: MailAccount.demo[0], to: ["recipient@example.com"], cc: [],
                          subject: draft.subject, body: "Attached", attachments: [loaded]))
         let draftFile = AttachmentJSON.directory(for: draftURL).appending(path: file.id.uuidString)
         let mailFile = AttachmentJSON.directory(for: mailURL).appending(path: file.id.uuidString)
@@ -475,10 +585,14 @@ import Foundation
         mail.togglePin(sent)
         mail.move(sent, to: .inbox)
         mail.undo()
-        let mailMetadata = try Data(contentsOf: mailURL)
+        // The 1 MB payload stays in its own file; the database holds only metadata.
+        let databaseSize = try ["", "-wal"].reduce(0) { total, suffix in
+            let file = URL(fileURLWithPath: mailURL.path + suffix)
+            return total + (FileManager.default.fileExists(atPath: file.path) ? try Data(contentsOf: file).count : 0)
+        }
         let savedDate = try mailFile.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        assert(mailMetadata.count < 32 * 1024 && savedDate == originalDate)
-        assert(MailStore(persistence: JSONPersistence(url: mailURL)).conversation(sent)!.latest.attachments![0].data == payload)
+        assert(databaseSize < 512 * 1024 && savedDate == originalDate)
+        assert(MailStore(persistence: SQLitePersistence(url: mailURL)).conversation(sent)!.latest.attachments![0].data == payload)
 
         let healthy = await drafts.save(draft)
         assert(healthy)
@@ -505,7 +619,7 @@ import Foundation
     }
 
     @MainActor static func checkBulkActions() throws {
-        let disk = JSONPersistence(url: URL.temporaryDirectory.appending(path: "mailern-bulk-\(UUID())/demo.json"))
+        let disk = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-bulk-\(UUID())/mail.sqlite"))
         let store = MailStore(persistence: disk)
         let ids = Set(store.list(.inbox).prefix(2).map(\.id))
         let first = ids.first!
@@ -575,13 +689,13 @@ import Foundation
         let now = Date.now
         var conversations = DemoData.conversations(now: now)
         let source = conversations[0]
-        var reply = ComposerDraft.make(mode: .reply(source.id), conversation: source)
+        var reply = ComposerDraft.make(mode: .reply(source.id), conversation: source, accounts: MailAccount.demo)
         reply.text = "Filter draft needle"
         var standalone = ComposerDraft(subject: "Standalone filter draft")
         standalone.updatedAt = now.addingTimeInterval(60)
         let drafts = [reply, standalone]
         func list(_ status: Workflow, _ filter: MailboxFilter = MailboxFilter(), search: String = "") -> [MailboxItem] {
-            MailboxItem.list(conversations: conversations, drafts: drafts, status: status, search: search, filter: filter)
+            MailboxItem.list(conversations: conversations, drafts: drafts, status: status, search: MailSearch(text: search), filter: filter)
         }
         assert(list(.inbox).first?.id == source.id)
         let unread = MailboxFilter(enabled: true, readStatus: .unread)

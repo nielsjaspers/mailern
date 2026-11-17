@@ -26,16 +26,29 @@ enum Removal: Codable, Equatable {
     }
 }
 
+/// Colors a person can give an account. Each one stays readable as a small dot in light and dark mode.
+enum AccountColor: String, Codable, CaseIterable, Identifiable {
+    case blue, teal, green, yellow, orange, red, pink, purple, indigo, brown, gray
+    var id: Self { self }
+    var title: String { rawValue.capitalized }
+}
+
 struct MailAccount: Codable, Identifiable, Hashable {
     var id: String
     var name: String
     var address: String
+    var color: AccountColor
+    var signature = ""
+    /// Seed data for a new or reset store. The first account is the default sender for new mail.
     static let demo = [
-        Self(id: "university", name: "University", address: "morgan@student.example.com"),
-        Self(id: "icloud", name: "Personal", address: "morgan@personal.example.com"),
-        Self(id: "proton", name: "Private", address: "morgan@private.example.com"),
-        Self(id: "gmail", name: "Gmail", address: "morgan@mail.example.com")
+        Self(id: "icloud", name: "Personal", address: "morgan@personal.example.com", color: .blue, signature: "Morgan"),
+        Self(id: "university", name: "University", address: "morgan@student.example.com", color: .purple,
+             signature: "Morgan\nStudent, Example College"),
+        Self(id: "proton", name: "Private", address: "morgan@private.example.com", color: .green),
+        Self(id: "gmail", name: "Gmail", address: "morgan@mail.example.com", color: .orange, signature: "Morgan")
     ]
+    /// Stands in for an account that was removed while something still refers to it.
+    static func removed(_ id: String) -> Self { Self(id: id, name: "Removed account", address: "", color: .gray) }
 }
 
 struct MailMessage: Codable, Identifiable, Equatable {
@@ -73,7 +86,6 @@ struct Conversation: Codable, Identifiable, Equatable {
     /// Lowercased addresses of everyone else who wrote in the thread.
     var senderAddresses: Set<String> { Set(messages.filter { !$0.outgoing }.map { $0.address.lowercased() }) }
     var correspondent: MailMessage { messages.last(where: { !$0.outgoing }) ?? latest }
-    var account: MailAccount { MailAccount.demo.first(where: { $0.id == accountID }) ?? MailAccount.demo[0] }
     /// Everyone who wrote in the thread, in order of first appearance. Sent-only threads show their recipients.
     var participants: String {
         guard messages.contains(where: { !$0.outgoing }) else { return "To: \(latest.to.joined(separator: ", "))" }

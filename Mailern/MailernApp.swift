@@ -99,8 +99,8 @@ private enum TestStorage {
         return .standard
     }
     static var draftsURL: URL { directory.appending(path: "drafts-v1.json") }
-    static var mail: JSONPersistence {
-        let persistence = JSONPersistence(url: directory.appending(path: "demo-v2.json"))
+    static var mail: SQLitePersistence {
+        let persistence = SQLitePersistence(url: directory.appending(path: "mail.sqlite"))
         #if DEBUG
         if session != nil, TestStorage.environment["MAILERN_TEST_RESET_MAIL"] == "1" {
             do { try persistence.save(MailData(conversations: DemoData.conversations())) }

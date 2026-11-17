@@ -45,7 +45,7 @@ struct ComposerView: View {
     }
     private var saved: Bool { drafts.drafts.contains { $0.id == draft.id } }
     private var title: String { draft.subject.isEmpty ? "New Message" : draft.subject }
-    private var account: MailAccount { MailAccount.demo.first { $0.id == draft.accountID } ?? MailAccount.demo[1] }
+    private var account: MailAccount { store.account(draft.accountID) }
     private let attachmentLimit = 25 * 1024 * 1024
     private var importing: Bool { importsInFlight > 0 }
 
@@ -63,7 +63,7 @@ struct ComposerView: View {
                         HStack(spacing: 8) {
                             Text("From:").foregroundStyle(.secondary)
                             Picker("From", selection: $draft.accountID) {
-                                ForEach(MailAccount.demo) { Text($0.address).tag($0.id) }
+                                ForEach(store.accounts) { Text($0.address).tag($0.id) }
                             }.labelsHidden().tint(.primary).disabled(draft.mode.replyID != nil)
                             Spacer(minLength: 0)
                         }.frame(minHeight: 48)
@@ -122,6 +122,7 @@ struct ComposerView: View {
         .interactiveDismissDisabled(draggingContent || importing || finishing || savesInFlight > 0 || (!completed && dirty && savedInput != input))
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear(perform: load)
+        .onChange(of: draft.accountID) { _, id in if loaded { replaceSignature(with: store.account(id).signature) } }
         .onChange(of: input) { _, value in
             autosave?.cancel()
             guard loaded, !completed, !finishing,
@@ -230,7 +231,7 @@ struct ComposerView: View {
         }
     }
     private var recipients: [(name: String, address: String)] {
-        var seen = Set(MailAccount.demo.map(\.address))
+        var seen = Set(store.accounts.map(\.address))
         return store.conversations.flatMap(\.messages).filter { seen.insert($0.address).inserted }
             .map { (name: $0.sender, address: $0.address) }.sorted { $0.name < $1.name }
     }
@@ -245,7 +246,7 @@ struct ComposerView: View {
         } else if let replyID = mode.replyID, let existing = drafts.drafts.first(where: { $0.mode.replyID == replyID && $0.messageID == messageID }) {
             draft = existing
         } else {
-            draft = ComposerDraft.make(mode: mode, conversation: mode.sourceID.flatMap(store.conversation), message: messageID)
+            draft = ComposerDraft.make(mode: mode, conversation: mode.sourceID.flatMap(store.conversation), message: messageID, accounts: store.accounts)
         }
         let text = NSMutableAttributedString(attributedString: RichText.decode(draft.richText, fallback: draft.text))
         if !saved, draft.richText == nil, let sourceID = draft.mode.sourceID, let source = store.conversation(sourceID), text.length > 2 {
@@ -254,8 +255,10 @@ struct ComposerView: View {
             let original = target.body as NSString
             let bodyRange = NSRange(location: text.length - original.length, length: original.length)
             text.replaceCharacters(in: bodyRange, with: RichText.decode(target.richText, fallback: target.body))
-            let quote = NSRange(location: 2, length: text.length - 2)
-            text.addAttribute(.foregroundColor, value: UIColor.systemPurple, range: NSRange(location: 2, length: bodyRange.location - 2))
+            // The quote starts after the signature and the blank line that separates them.
+            let start = (ComposerDraft.signatureBlock(draft.signature ?? "") as NSString).length + 2
+            let quote = NSRange(location: start, length: text.length - start)
+            text.addAttribute(.foregroundColor, value: UIColor.systemPurple, range: NSRange(location: start, length: bodyRange.location - start))
             text.addAttribute(RichText.quote, value: true, range: quote)
             text.enumerateAttribute(.paragraphStyle, in: quote) { value, range, _ in
                 let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
@@ -278,6 +281,19 @@ struct ComposerView: View {
                 view.typingAttributes = [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
             }
         }
+    }
+    /// Swaps the inserted signature for `signature`. An edited signature stays, because it is no longer the account's.
+    private func replaceSignature(with signature: String) {
+        let text = NSMutableAttributedString(attributedString: editor.text)
+        var quote: Int?
+        text.enumerateAttribute(RichText.quote, in: NSRange(location: 0, length: text.length)) { value, span, stop in
+            if value as? Bool == true { quote = span.location; stop.pointee = true }
+        }
+        let replacement = RichText.plain(ComposerDraft.signatureBlock(signature))
+        guard let range = ComposerDraft.swapSignature(in: text, old: draft.signature ?? "", replacement: replacement, quoteStart: quote) else { return }
+        if editor.selection.location >= NSMaxRange(range) { editor.selection.location += replacement.length - range.length }
+        editor.text = text
+        draft.signature = signature
     }
     private func snapshot(_ value: DraftInput) throws -> ComposerDraft {
         var result = value.draft

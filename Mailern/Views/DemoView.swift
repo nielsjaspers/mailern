@@ -18,7 +18,7 @@ struct DemoView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(c.subject).foregroundStyle(.primary)
-                                Text("\(c.removal?.mailbox.title ?? c.workflow.title) · \(c.account.name)").font(.caption).foregroundStyle(.secondary)
+                                Text("\(c.removal?.mailbox.title ?? c.workflow.title) · \(store.account(c.accountID).name)").font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }

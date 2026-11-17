@@ -23,7 +23,7 @@ enum MailboxItem: Identifiable {
     var date: Date { max(conversation?.latest.date ?? .distantPast, drafts.map(\.updatedAt).max() ?? .distantPast) }
 
     static func list(conversations: [Conversation], drafts: [ComposerDraft], status: Workflow,
-                     search: String = "", filter: MailboxFilter = MailboxFilter()) -> [Self] {
+                     search: MailSearch = MailSearch(), filter: MailboxFilter = MailboxFilter()) -> [Self] {
         let conversationIDs = Set(conversations.map(\.id))
         let replies = Dictionary(grouping: drafts.filter { draft in
             draft.mode.replyID.map { conversationIDs.contains($0) } ?? false
@@ -35,11 +35,7 @@ enum MailboxItem: Identifiable {
             }.map { Self.draft($0) }
         return items.filter { item in
             guard item.workflow == status, filter.includes(item, in: status) else { return false }
-            var fields = item.drafts.flatMap { [$0.subject, $0.to, $0.cc, $0.bcc, $0.text, $0.account.name] }
-            if let c = item.conversation {
-                fields += [c.subject, c.account.name] + c.messages.flatMap { [$0.sender, $0.address, $0.body, $0.subject ?? ""] }
-            }
-            return search.isEmpty || fields.contains { $0.localizedCaseInsensitiveContains(search) }
+            return item.conversation.map(search.matches) == true || item.drafts.contains(where: search.matches)
         }.sorted {
             if status == .inbox && $0.pinned != $1.pinned { return $0.pinned }
             if status == .snoozed && $0.snoozedUntil != $1.snoozedUntil {
@@ -53,5 +49,4 @@ enum MailboxItem: Identifiable {
 
 extension ComposerDraft {
     var title: String { subject.isEmpty ? "New Message" : subject }
-    var account: MailAccount { MailAccount.demo.first { $0.id == accountID } ?? MailAccount.demo[1] }
 }

@@ -1,18 +1,20 @@
 import SwiftUI
 
 struct DraftRow: View {
+    @Environment(MailStore.self) private var store
     let draft: ComposerDraft
     var body: some View {
         MailboxRow(
             avatar: SenderAvatar(name: draft.to, symbol: "square.and.pencil", tint: .orange, label: "Draft"),
             title: draft.to.isEmpty ? "No recipients" : draft.to, date: draft.updatedAt,
-            subject: draft.title, snippet: draft.text.snippet, account: draft.account.name,
+            subject: draft.title, snippet: draft.text.snippet, account: store.account(draft.accountID),
             pinned: draft.pinned == true, snoozedUntil: draft.snoozedUntil
         )
     }
 }
 
 struct DraftCard: View {
+    @Environment(MailStore.self) private var store
     let draft: ComposerDraft
     let edit: () -> Void
     let discard: () -> Void
@@ -26,7 +28,7 @@ struct DraftCard: View {
                 Text(draft.updatedAt, format: .dateTime.month(.abbreviated).day().hour().minute())
                     .font(.caption).foregroundStyle(.secondary)
             }.font(.subheadline.weight(.semibold))
-            Text("From: \(draft.account.address)").font(.caption).foregroundStyle(.secondary)
+            Text("From: \(store.account(draft.accountID).address)").font(.caption).foregroundStyle(.secondary)
             Text(draft.to.isEmpty ? "No recipients" : "To: \(draft.to)").font(.caption).foregroundStyle(.secondary)
             if !draft.cc.isEmpty { Text("Cc: \(draft.cc)").font(.caption).foregroundStyle(.secondary) }
             if !draft.bcc.isEmpty { Text("Bcc: \(draft.bcc)").font(.caption).foregroundStyle(.secondary) }

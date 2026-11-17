@@ -16,10 +16,13 @@ enum AttachmentJSON {
         try locked(url) {
             defer { cleanIfReadable(url, as: T.self) }
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let encoder = JSONEncoder()
-            encoder.userInfo[contextKey] = PayloadContext(directory: directory(for: url))
-            try write(encoder.encode(value), url)
+            try write(encoder(for: url).encode(value), url)
         }
+    }
+    static func encoder(for url: URL) -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.userInfo[contextKey] = PayloadContext(directory: directory(for: url))
+        return encoder
     }
     static func decoder(for url: URL) -> JSONDecoder {
         let decoder = JSONDecoder()
@@ -49,6 +52,10 @@ enum AttachmentJSON {
                   let context = decoder.userInfo[contextKey] as? PayloadContext else { return }
             retained = context.referenced
         }
+        removePayloads(for: url, keeping: retained)
+    }
+    /// Removes attachment files that no stored message refers to.
+    static func removePayloads(for url: URL, keeping retained: Set<UUID>) {
         let folder = directory(for: url)
         guard FileManager.default.fileExists(atPath: folder.path),
               let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }

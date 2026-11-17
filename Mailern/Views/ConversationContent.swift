@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ConversationContent: View {
+    @Environment(MailStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let conversation: Conversation
     var isPreview = false
@@ -29,7 +30,7 @@ struct ConversationContent: View {
                             } else {
                                 Label(workflow.title, systemImage: workflow.symbol)
                             }
-                            Text("· \(conversation.account.name)")
+                            Text("· \(store.account(conversation.accountID).name)")
                             if conversation.messages.count > 1 {
                                 Text("· \(conversation.messages.count) messages")
                             }

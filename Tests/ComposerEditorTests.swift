@@ -6,10 +6,10 @@ import SwiftUI
 @MainActor final class ComposerEditorTests: XCTestCase {
     func testReplyActionsResumePlainSavedDraftAfterIncomingMail() async throws {
         let directory = URL.temporaryDirectory.appending(path: "reply-draft-resume-\(UUID())")
-        let store = MailStore(persistence: JSONPersistence(url: directory.appending(path: "mail.json")))
+        let store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite")))
         let drafts = DraftStore(url: directory.appending(path: "drafts.json"))
         let source = try XCTUnwrap(store.list(.inbox).first)
-        var draft = ComposerDraft.make(mode: .replyAll(source.id), conversation: source)
+        var draft = ComposerDraft.make(mode: .replyAll(source.id), conversation: source, accounts: store.accounts)
         draft.text = "My saved text"
         draft.richText = nil
         store.receiveReply(source.id)
@@ -55,7 +55,7 @@ import SwiftUI
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)
         let host = UIHostingController(rootView: MailboxView().environment(drafts)
-            .environment(MailStore(persistence: JSONPersistence(url: directory.appending(path: "mail.json"))))
+            .environment(MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite"))))
             .environment(SnoozePreferences()))
         window.rootViewController = host
         window.makeKeyAndVisible()
@@ -83,7 +83,7 @@ import SwiftUI
         let window = UIWindow(windowScene: scene)
         let directory = URL.temporaryDirectory.appending(path: "bottom-compose-\(UUID())")
         let host = UIHostingController(rootView: MailboxView()
-            .environment(MailStore(persistence: JSONPersistence(url: directory.appending(path: "mail.json"))))
+            .environment(MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite"))))
             .environment(DraftStore(url: directory.appending(path: "drafts.json"))))
         window.rootViewController = host
         window.makeKeyAndVisible()
@@ -166,7 +166,7 @@ import SwiftUI
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)
         let host = UIHostingController(rootView: ComposerView(mode: .draft(editingID))
-            .environment(MailStore(persistence: JSONPersistence(url: directory.appending(path: "mail.json"))))
+            .environment(MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite"))))
             .environment(drafts))
         window.rootViewController = host
         window.makeKeyAndVisible()
@@ -220,7 +220,7 @@ import SwiftUI
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)
         let directory = URL.temporaryDirectory.appending(path: "composer-field-check-\(UUID())")
-        let store = MailStore(persistence: JSONPersistence(url: directory.appending(path: "mail.json")))
+        let store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite")))
         let host = UIHostingController(rootView: ComposerView(mode: .new).environment(store).environment(DraftStore(url: directory.appending(path: "drafts.json"))))
         window.rootViewController = host
         window.makeKeyAndVisible()
