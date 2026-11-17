@@ -28,7 +28,8 @@ enum MailboxItem: Identifiable {
         let replies = Dictionary(grouping: drafts.filter { draft in
             draft.mode.replyID.map { conversationIDs.contains($0) } ?? false
         }, by: { $0.mode.replyID! })
-        let items = conversations.map { Self.thread($0, (replies[$0.id] ?? []).sorted { $0.updatedAt > $1.updatedAt }) }
+        // Junk and Trash have their own lists. Their reply drafts stay hidden with them.
+        let items = conversations.filter { $0.removal == nil }.map { Self.thread($0, (replies[$0.id] ?? []).sorted { $0.updatedAt > $1.updatedAt }) }
             + drafts.filter { draft in
                 draft.mode.replyID.map { !conversationIDs.contains($0) } ?? true
             }.map { Self.draft($0) }

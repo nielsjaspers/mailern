@@ -9,6 +9,23 @@ enum Workflow: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// Mailboxes outside the workflow tabs. Mail in them keeps its workflow, so restoring returns it to where it was.
+enum RemovedMailbox: String, Codable, CaseIterable, Identifiable, Hashable {
+    case junk, trash
+    var id: Self { self }
+    var title: String { rawValue.capitalized }
+    var symbol: String {
+        switch self { case .junk: "xmark.bin"; case .trash: "trash" }
+    }
+}
+
+enum Removal: Codable, Equatable {
+    case trash(since: Date), junk
+    var mailbox: RemovedMailbox {
+        switch self { case .trash: .trash; case .junk: .junk }
+    }
+}
+
 struct MailAccount: Codable, Identifiable, Hashable {
     var id: String
     var name: String
@@ -44,6 +61,7 @@ struct Conversation: Codable, Identifiable, Equatable {
     var unread = true
     var pinned = false
     var snoozedUntil: Date?
+    var removal: Removal?
     var messages: [MailMessage]
     var latest: MailMessage { messages[messages.count - 1] }
     var effectiveSubject: String { subject(at: latest) }
@@ -52,6 +70,8 @@ struct Conversation: Codable, Identifiable, Equatable {
         let index = messages.firstIndex { $0.id == message.id } ?? messages.count - 1
         return messages[...index].last(where: { $0.subject != nil })?.subject ?? subject
     }
+    /// Lowercased addresses of everyone else who wrote in the thread.
+    var senderAddresses: Set<String> { Set(messages.filter { !$0.outgoing }.map { $0.address.lowercased() }) }
     var correspondent: MailMessage { messages.last(where: { !$0.outgoing }) ?? latest }
     var account: MailAccount { MailAccount.demo.first(where: { $0.id == accountID }) ?? MailAccount.demo[0] }
     /// Everyone who wrote in the thread, in order of first appearance. Sent-only threads show their recipients.
@@ -78,5 +98,7 @@ struct Conversation: Codable, Identifiable, Equatable {
         guard !message.outgoing else { return }
         move(to: .inbox)
         unread = true
+        // A reply rescues a thread from Trash. Junk keeps it until the sender is unblocked.
+        if removal?.mailbox == .trash { removal = nil }
     }
 }

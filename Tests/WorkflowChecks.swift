@@ -14,6 +14,7 @@ import Foundation
         try checkInboxOrder()
         try await checkMailboxFiltersAndDraftActions()
         try checkSnoozeSettings()
+        try checkTrashAndJunk()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = JSONPersistence(url: directory.appending(path: "demo.json"))
         let store = MailStore(persistence: disk)
@@ -66,6 +67,68 @@ import Foundation
         print("PASS: settled mail is read, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
     }
 
+    @MainActor static func checkTrashAndJunk() throws {
+        let disk = JSONPersistence(url: URL.temporaryDirectory.appending(path: "mailern-trash-\(UUID())/demo.json"))
+        let store = MailStore(persistence: disk)
+        let settled = store.list(.settled)[0].id
+        store.apply(ids: [settled], action: .remove(.trash))
+        assert(!store.list(.settled).contains { $0.id == settled } && store.list(.trash).map(\.id) == [settled])
+        assert(!MailboxItem.list(conversations: store.conversations, drafts: [], status: .settled).contains { $0.id == settled })
+        store.undo()
+        assert(store.conversation(settled)!.removal == nil && store.list(.settled).contains { $0.id == settled })
+        store.apply(ids: [settled], action: .remove(.trash))
+        store.apply(ids: [settled], action: .restoreRemoved)
+        assert(store.conversation(settled)!.workflow == .settled && store.list(.trash).isEmpty)
+        store.apply(ids: [settled], action: .remove(.trash))
+        store.apply(ids: [settled], action: .remove(.trash))
+        store.apply(ids: [settled], action: .restoreRemoved)
+        store.clearWorkflowUndo(involving: [settled])
+        store.undo()
+        assert(store.conversation(settled)!.removal == nil, "A reply draft saved after Restore cancels its Undo")
+        store.apply(ids: [settled], action: .remove(.trash))
+        store.receiveReply(settled)
+        let rescued = store.conversation(settled)!
+        assert(rescued.removal == nil && rescued.workflow == .inbox && rescued.unread)
+
+        let spam = store.list(.inbox).first { !$0.senderAddresses.isEmpty }!
+        let sender = spam.correspondent.address
+        store.apply(ids: [spam.id], action: .remove(.junk))
+        assert(store.blockedSenders.contains(sender.lowercased()) && store.list(.junk).map(\.id) == [spam.id])
+        store.undo()
+        assert(store.blockedSenders.isEmpty && store.conversation(spam.id)!.removal == nil)
+        store.apply(ids: [spam.id], action: .remove(.junk))
+        store.receiveReply(spam.id)
+        assert(store.conversation(spam.id)!.removal == .junk && store.conversation(spam.id)!.unread)
+        store.apply(ids: [spam.id], action: .restoreRemoved)
+        assert(store.blockedSenders.isEmpty && store.list(.inbox).contains { $0.id == spam.id })
+
+        store.apply(ids: [spam.id], action: .remove(.junk))
+        store.deletePermanently([spam.id])
+        assert(store.conversation(spam.id) == nil)
+        let reloaded = MailStore(persistence: disk)
+        assert(reloaded.blockedSenders == [sender.lowercased()], "A block must survive deleting its junk")
+        reloaded.receiveNew()
+        assert(reloaded.conversations[0].removal == nil)
+        reloaded.apply(ids: [reloaded.conversations[0].id], action: .remove(.junk))
+        reloaded.receiveNew()
+        assert(reloaded.conversations[0].subject == "Coffee this week?" && reloaded.conversations[0].removal == .junk, "Mail from a blocked sender goes to Junk")
+        reloaded.receiveJunk()
+        assert(reloaded.list(.junk).contains { $0.subject == "You have been selected" })
+
+        let old = reloaded.list(.inbox).prefix(2).map(\.id)
+        reloaded.apply(ids: Set(old), action: .remove(.trash))
+        reloaded.wakeDue(now: .now.addingTimeInterval(MailStore.trashRetention - 60))
+        assert(old.allSatisfy { reloaded.conversation($0) != nil }, "Trash keeps mail for 30 days")
+        reloaded.wakeDue(now: .now.addingTimeInterval(MailStore.trashRetention + 1))
+        assert(old.allSatisfy { reloaded.conversation($0) == nil }, "Trash deletes mail after 30 days")
+        reloaded.apply(ids: [reloaded.list(.inbox)[0].id], action: .remove(.trash))
+        reloaded.deletePermanently(Set(reloaded.list(.trash).map(\.id)))
+        assert(reloaded.list(.trash).isEmpty && MailStore(persistence: disk).conversations == reloaded.conversations)
+        reloaded.reset()
+        assert(reloaded.blockedSenders.isEmpty && reloaded.list(.junk).isEmpty)
+        print("PASS: trash/junk lists, restore to original workflow, Undo with block list, draft cancels Restore Undo, reply rescues Trash but not Junk, block survives deletion, 30-day purge, permanent deletion, reset")
+    }
+
     @MainActor static func checkUndoExpiry() async throws {
         let disk = JSONPersistence(url: URL.temporaryDirectory.appending(path: "mailern-undo-\(UUID())/demo.json"))
         let store = MailStore(persistence: disk)
@@ -92,7 +155,7 @@ import Foundation
         var legacy = DemoData.conversations()
         let settledIndex = legacy.firstIndex { $0.workflow == .settled }!
         legacy[settledIndex].unread = true
-        try disk.save(legacy)
+        try disk.save(MailData(conversations: legacy))
         let store = MailStore(persistence: disk)
         assert(store.list(.settled).allSatisfy { !$0.unread }, "Loaded settled mail must be read")
         let ids = Set(store.list(.inbox).prefix(2).map(\.id))
@@ -186,7 +249,7 @@ import Foundation
         let file = MailAttachment(name: "Keep.txt", data: Data("Keep this attachment".utf8), contentType: "public.plain-text")
         var original = DemoData.conversations()
         original[0].messages[0].attachments = [file]
-        try AttachmentJSON.save(original, to: url)
+        try AttachmentJSON.save(MailData(conversations: original), to: url)
         let payload = AttachmentJSON.directory(for: url).appending(path: file.id.uuidString)
         let withheld = directory.appending(path: "withheld-payload")
         try FileManager.default.moveItem(at: payload, to: withheld)
@@ -304,8 +367,8 @@ import Foundation
         assert(recoveredDelete)
         enum Failure: Error { case disk }
         struct FailingDisk: ConversationPersistence {
-            func load() throws -> [Conversation]? { DemoData.conversations() }
-            func save(_ conversations: [Conversation]) throws { throw Failure.disk }
+            func load() throws -> MailData? { MailData(conversations: DemoData.conversations()) }
+            func save(_ data: MailData) throws { throw Failure.disk }
         }
         let failing = MailStore(persistence: FailingDisk())
         let before = failing.conversations
@@ -313,8 +376,8 @@ import Foundation
         assert(failing.conversations == before)
         final class ControlledDisk: ConversationPersistence {
             var fail = false
-            func load() throws -> [Conversation]? { DemoData.conversations() }
-            func save(_ conversations: [Conversation]) throws { if fail { throw Failure.disk } }
+            func load() throws -> MailData? { MailData(conversations: DemoData.conversations()) }
+            func save(_ data: MailData) throws { if fail { throw Failure.disk } }
         }
         let controlled = ControlledDisk()
         let recoverable = MailStore(persistence: controlled)
@@ -482,8 +545,8 @@ import Foundation
     @MainActor static func checkInboxOrder() throws {
         struct FixturePersistence: ConversationPersistence {
             let items: [Conversation]
-            func load() throws -> [Conversation]? { items }
-            func save(_ conversations: [Conversation]) throws {}
+            func load() throws -> MailData? { MailData(conversations: items) }
+            func save(_ data: MailData) throws {}
         }
         let now = Date.now
         func item(_ subject: String, minutes: Double, unread: Bool, pinned: Bool = false, workflow: Workflow = .inbox) -> Conversation {
@@ -578,10 +641,10 @@ import Foundation
         let replySaved = await reloaded.save(reply)
         assert(replySaved)
         let failing = DraftStore(url: url, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
-        let failedDiscard = await failing.discardForSettling([source.id, standalone.id])
+        let failedDiscard = await failing.discardDrafts(for: [source.id, standalone.id])
         assert(!failedDiscard)
         assert(failing.drafts.count == 2 && DraftStore(url: url).drafts.count == 2)
-        let discarded = await reloaded.discardForSettling([source.id, standalone.id])
+        let discarded = await reloaded.discardDrafts(for: [source.id, standalone.id])
         assert(discarded)
         assert(reloaded.drafts.isEmpty && DraftStore(url: url).drafts.isEmpty)
         print("PASS: account/read/draft/sent filter intersections, disabled filters, search, per-mailbox persistence, standalone pin/snooze/expiry, stale editor protection, and atomic discard failure")

@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum MailboxSwipeAction: String, CaseIterable, Identifiable {
-    case workflow, read, snooze, pin, none
+    case workflow, read, snooze, pin, trash, none
     var id: Self { self }
     var title: String {
         switch self {
@@ -9,6 +9,7 @@ enum MailboxSwipeAction: String, CaseIterable, Identifiable {
         case .read: "Read / Unread"
         case .snooze: "Snooze"
         case .pin: "Pin / Unpin"
+        case .trash: "Move to Trash"
         case .none: "None"
         }
     }
