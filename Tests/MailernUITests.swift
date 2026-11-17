@@ -1870,16 +1870,25 @@ final class PeekMenuResizeAndTapsUITests: MailernUITestCase {
 
 class MailernUITestCase: XCTestCase {
     override func record(_ issue: XCTIssue) {
-        // UI assertions run on the main actor. Capture failures without recording every event.
+        // Attach the main-thread failure screen to the issue so failure-only exports include it.
+        let recordedIssue: XCTIssue
         if Thread.isMainThread {
-            MainActor.assumeIsolated {
+            recordedIssue = MainActor.assumeIsolated {
                 let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
                 attachment.name = "Failure state"
                 attachment.lifetime = .keepAlways
-                add(attachment)
+                return XCTIssue(type: issue.type,
+                                compactDescription: issue.compactDescription,
+                                detailedDescription: issue.detailedDescription,
+                                sourceCodeContext: issue.sourceCodeContext,
+                                associatedError: issue.associatedError,
+                                attachments: issue.attachments + [attachment],
+                                severity: issue.severity)
             }
+        } else {
+            recordedIssue = issue
         }
-        super.record(issue)
+        super.record(recordedIssue)
     }
 
     @MainActor
