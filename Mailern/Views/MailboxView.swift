@@ -53,6 +53,8 @@ struct MailboxView: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
+        // One place for the haptic of every move, including those made in a thread, a sheet, or a confirmation.
+        .sensoryFeedback(.impact(weight: .light), trigger: store.actionCount + drafts.actionCount)
         .blur(radius: peeking == nil ? 0 : 6)
         .allowsHitTesting(peeking == nil)
         .accessibilityHidden(peeking != nil)
@@ -409,7 +411,7 @@ struct MailboxView: View {
             if conversation.workflow != .settled {
                 Button(conversation.unread ? "Read" : "Unread",
                        systemImage: conversation.unread ? "envelope.open" : "envelope.badge") {
-                    act { store.markRead(conversation.id, unread: !conversation.unread) }
+                    act { store.setUnread(conversation.id, !conversation.unread) }
                 }.tint(.blue)
             }
         case .snooze:
@@ -502,7 +504,6 @@ struct MailboxView: View {
     }
     private func act(_ action: () -> Void) {
         withAnimation { action() }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 }
 

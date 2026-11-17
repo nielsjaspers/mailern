@@ -24,6 +24,7 @@ import SQLite3
         try checkMute()
         try checkFollowUp()
         try await checkOutbox()
+        try checkActionHaptics()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -74,6 +75,29 @@ import SQLite3
         assert(store.list(.inbox)[0].pinned)
         assert(store.error == nil)
         print("PASS: settled mail is read, settle/undo, incoming precedence, pin preservation, snooze expiry/reload, outgoing settle, restore, compose, new mail, persistence, search, reset")
+    }
+
+    /// The mailbox plays a haptic when `actionCount` changes, so only moves a person makes may change it.
+    @MainActor static func checkActionHaptics() throws {
+        let store = MailStore(persistence: SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-haptics-\(UUID()).sqlite")))
+        let id = store.list(.inbox).first { $0.unread }!.id
+        func changes(_ action: () -> Void) -> Bool {
+            let before = store.actionCount
+            action()
+            return store.actionCount != before
+        }
+        assert(!changes { store.markRead(id) }, "Opening a conversation must not play a haptic")
+        assert(changes { store.setUnread(id, true) })
+        assert(changes { store.togglePin(id) })
+        assert(changes { store.move(id, to: .snoozed, until: .now.addingTimeInterval(60)) })
+        assert(!changes { store.move(id, to: .snoozed, until: .now.addingTimeInterval(-60)) }, "A refused snooze must not play a haptic")
+        assert(changes { store.move(id, to: .settled) })
+        assert(!changes { store.setUnread(id, true) }, "Settled mail cannot become unread")
+        assert(changes { store.apply(ids: [id], action: .remove(.trash)) })
+        assert(!changes { store.apply(ids: [id], action: .remove(.trash)) }, "Trashing trashed mail changes nothing")
+        assert(changes { store.apply(ids: [id], action: .restoreRemoved) })
+        assert(!changes { store.receiveReply(id) }, "Incoming mail is not a move")
+        print("PASS: haptics follow moves a person makes, not opening mail, refused moves, or incoming mail")
     }
 
     @MainActor static func checkSQLiteStorage() throws {

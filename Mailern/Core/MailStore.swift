@@ -35,6 +35,8 @@ final class MailStore {
     static let trashRetention: TimeInterval = 30 * 24 * 60 * 60
     var error: String?
     private(set) var notice: String?
+    /// Counts the moves a person makes, such as Settle, Snooze, Pin, or Move to Trash. The mailbox plays a haptic on each change.
+    private(set) var actionCount = 0
     private var undoSnapshot: [Conversation] = []
     private var undoAction: ConversationAction?
     private var undoBlockedSenders: Set<String> = []
@@ -131,8 +133,16 @@ final class MailStore {
         update(id) { $0.unread = unread }
     }
     func togglePin(_ id: UUID) {
+        guard conversation(id) != nil else { return }
         if case .pin = undoAction { clearNotice() }
         update(id) { $0.pinned.toggle() }
+        actionCount += 1
+    }
+    /// Read or Unread chosen by a person. Opening a conversation calls `markRead` instead, without a haptic.
+    func setUnread(_ id: UUID, _ unread: Bool) {
+        guard conversation(id)?.workflow ?? .settled != .settled else { return }
+        markRead(id, unread: unread)
+        actionCount += 1
     }
     func toggleMute(_ id: UUID) {
         update(id) { $0.muted = $0.muted == true ? nil : true }
@@ -152,6 +162,7 @@ final class MailStore {
             }
         }
         guard !before.isEmpty else { return }
+        actionCount += 1
         undoSnapshot = before
         undoAction = action
         undoBlockedSenders = blockedSenders

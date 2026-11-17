@@ -115,7 +115,7 @@ struct ConversationPeekView: View {
         case .snooze: onSnooze()
         case .read:
             onDismiss()
-            store.markRead(conversation.id, unread: !conversation.unread)
+            store.setUnread(conversation.id, !conversation.unread)
         case .settle:
             if conversation.workflow != .settled && hasDraft { settling = DraftDiscard(ids: [conversation.id], action: .move(.settled)); return }
             onDismiss()

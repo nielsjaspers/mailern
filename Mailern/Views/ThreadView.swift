@@ -22,7 +22,6 @@ struct ThreadView: View {
     private func remove(to mailbox: RemovedMailbox) {
         if !attachedDrafts.isEmpty { settling = DraftDiscard(ids: [id], action: .remove(mailbox)); return }
         store.apply(ids: [id], action: .remove(mailbox))
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         dismiss()
     }
     var body: some View {
@@ -49,7 +48,7 @@ struct ThreadView: View {
                                 Button(c.pinned ? "Unpin" : "Pin", systemImage: "pin") { store.togglePin(id) }
                             }
                             if c.workflow != .settled {
-                                Button("Mark unread", systemImage: "envelope.badge") { store.markRead(id, unread: true); dismiss() }
+                                Button("Mark unread", systemImage: "envelope.badge") { store.setUnread(id, true); dismiss() }
                             }
                             if c.removal == nil {
                                 Button("Snooze", systemImage: "clock") { snooze = true }
@@ -65,7 +64,6 @@ struct ThreadView: View {
                         if let mailbox = c.removal?.mailbox {
                             Button(mailbox == .junk ? "Not Junk" : "Restore", systemImage: "arrow.uturn.backward") {
                                 store.apply(ids: [id], action: .restoreRemoved)
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                 dismiss()
                             }
                             Spacer()
@@ -74,7 +72,6 @@ struct ThreadView: View {
                             Button(c.workflow == .settled ? "Restore" : "Settle", systemImage: c.workflow == .settled ? "tray" : "checkmark") {
                                 if c.workflow != .settled && !attachedDrafts.isEmpty { settling = DraftDiscard(ids: [id], action: .move(.settled)); return }
                                 store.move(id, to: c.workflow == .settled ? .inbox : .settled)
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                 dismiss()
                             }
                             Spacer()
