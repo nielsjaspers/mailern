@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "builds": [
+    {
+      "build": 36,
+      "version": "0.6.0",
+      "status": "reported",
+      "created_at": "2026-11-17T15:03:05+00:00",
+      "note": "Already installed on the iPhone, reported by the user. Source history was not recorded."
+    }
+  ]
+}
