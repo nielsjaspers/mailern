@@ -120,19 +120,27 @@ import SQLite3
         assert(Set(everything.map(\.workflow)) == [.inbox, .snoozed, .settled])
         assert(everything.count == conversations.count, "All mail leaves out Trash and adds the standalone draft")
         assert(!everything.contains { $0.id == conversations[2].id })
-        assert(zip(everything, everything.dropFirst()).allSatisfy { $0.date >= $1.date }, "Pins and snooze order belong to one section")
-        print("PASS: all-mail search spans Inbox, Snoozed, and Settled with drafts, newest first, without filters, Junk, or Trash")
+        assert(everything.map(\.workflow) == everything.map(\.workflow).sorted { Workflow.allCases.firstIndex(of: $0)! < Workflow.allCases.firstIndex(of: $1)! },
+               "All mail lists its sections in the order the list shows them")
+        for status in Workflow.allCases {
+            let section = everything.filter { $0.workflow == status }
+            assert(zip(section, section.dropFirst()).allSatisfy { $0.date >= $1.date }, "Pins and snooze order belong to one section")
+        }
+        print("PASS: all-mail search spans Inbox, Snoozed, and Settled with drafts, grouped by section and newest first, without filters, Junk, or Trash")
     }
 
     static func checkNextConversation() {
-        let conversations = DemoData.conversations()
-        let draft = ComposerDraft(subject: "Between conversations")
-        let items = [MailboxItem.thread(conversations[0], []), .draft(draft), .thread(conversations[1], []), .thread(conversations[2], [])]
-        assert(MailboxItem.conversation(after: conversations[0].id, in: items) == conversations[1].id, "Drafts are skipped")
-        assert(MailboxItem.conversation(after: conversations[2].id, in: items) == conversations[1].id, "The last one goes up")
-        assert(MailboxItem.conversation(after: conversations[0].id, in: [items[0], items[1]]) == nil, "Only drafts left")
-        assert(MailboxItem.conversation(after: conversations[3].id, in: items) == nil, "Not in the list")
-        print("PASS: next conversation after Settle goes down, then up, skips drafts, and stops outside the list")
+        let (a, draft, b, c, d) = (UUID(), UUID(), UUID(), UUID(), UUID())
+        let order = [a, draft, b, c]
+        func next(_ id: UUID, _ available: Set<UUID>) -> UUID? { MailboxItem.conversation(after: id, in: order, available: available) }
+        assert(next(a, [a, b, c]) == b, "Drafts are skipped")
+        assert(next(c, [a, b, c]) == b, "The last one goes up")
+        // An Unread filter drops the opened conversation once it is read. Its place in the order still counts.
+        assert(next(a, [b, c]) == b && next(b, [c]) == c)
+        assert(next(b, [a, c]) == c, "Conversations that left the list are skipped")
+        assert(next(a, []) == nil, "Nothing left")
+        assert(next(d, [a, b, c]) == nil, "Not opened from this list")
+        print("PASS: next conversation after Settle goes down, then up, keeps the opened conversation's place, skips drafts and departed mail")
     }
 
     @MainActor static func checkSQLiteStorage() throws {

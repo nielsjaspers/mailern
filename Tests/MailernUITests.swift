@@ -2616,6 +2616,20 @@ final class SettleAndNextUITests: MailernUITestCase {
         XCTAssertFalse(row(dinner, in: app).exists)
         XCTAssertFalse(row(weekly, in: app).exists)
         expectReadStatus(presentations, unread: false, in: app)
+        // With the Unread filter on, opening a conversation drops it from the list. Settle still finds the next one.
+        openFilterOptions(in: app)
+        app.buttons["filter-read-unread"].tap()
+        app.buttons["Done"].tap()
+        let course = "Course project feedback"
+        row(course, in: app).tap()
+        XCTAssertTrue(app.staticTexts[course].existsOrWait(timeout: 5))
+        app.buttons["Settle"].tap()
+        waitForAbsence(app.staticTexts[course])
+        XCTAssertTrue(app.buttons["Settle"].existsOrWait(timeout: 5), "The next unread conversation opens instead of the list")
+        app.navigationBars.buttons["Inbox"].tap()
+        openFilterOptions(in: app)
+        app.buttons["Reset filters"].tap()
+        app.buttons["Done"].tap()
     }
 }
 

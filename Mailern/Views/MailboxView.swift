@@ -33,6 +33,9 @@ struct MailboxView: View {
     @State private var snoozing: Conversation?
     @State private var peeking: UUID?
     @State private var paths: [Workflow: [MailboxRoute]] = [:]
+    /// Each section's list as it was when a conversation opened from it. Opening can drop a conversation from a
+    /// filtered list, so Settle and next walks this order.
+    @State private var openedOrder: [Workflow: [UUID]] = [:]
     var body: some View {
         let pullDistance = pull.distance
         let armCount = pull.armCount
@@ -66,7 +69,7 @@ struct MailboxView: View {
                     onDismiss: { peeking = nil },
                     onOpen: {
                         peeking = nil
-                        paths[selection, default: []].append(.conversation(id))
+                        open(id, in: selection)
                     },
                     onCompose: { mode in
                         peeking = nil
@@ -211,7 +214,10 @@ struct MailboxView: View {
                     switch route {
                     case .conversation(let id):
                         if store.conversation(id) != nil {
-                            ThreadView(id: id, next: { MailboxItem.conversation(after: id, in: items(status)) }, open: { next in
+                            ThreadView(id: id, next: {
+                                let available = Set(items(status).compactMap { $0.conversation?.id })
+                                return MailboxItem.conversation(after: id, in: openedOrder[status] ?? [], available: available)
+                            }, open: { next in
                                 guard paths[status]?.last == .conversation(id) else { return }
                                 paths[status]?.removeLast()
                                 paths[status]?.append(.conversation(next))
@@ -365,7 +371,7 @@ struct MailboxView: View {
                 if selecting {
                     if selectedIDs.contains(conversation.id) { selectedIDs.remove(conversation.id) }
                     else { selectedIDs.insert(conversation.id) }
-                } else if peeking == nil { paths[status, default: []].append(.conversation(conversation.id)) }
+                } else if peeking == nil { open(conversation.id, in: status) }
             } label: {
                 ConversationRow(conversation: conversation, hasDraft: item.hasDraft)
             }
@@ -541,6 +547,10 @@ struct MailboxView: View {
         transaction.disablesAnimations = true
         if pullAction == .search { withTransaction(transaction) { searching = true } }
         if pullAction == .compose { openComposer(.new) }
+    }
+    private func open(_ id: UUID, in status: Workflow) {
+        openedOrder[status] = items(status).map(\.id)
+        paths[status, default: []].append(.conversation(id))
     }
     private func openComposer(_ mode: ComposeMode) {
         composer = mode
