@@ -41,7 +41,7 @@ private struct AccountEditor: View {
     @State private var error: String?
 
     private var conversationCount: Int { store.conversations.filter { $0.accountID == account.id }.count }
-    private var draftCount: Int { drafts.drafts.filter { $0.accountID == account.id }.count }
+    private var draftCount: Int { drafts.all.filter { $0.accountID == account.id }.count }
 
     var body: some View {
         Form {

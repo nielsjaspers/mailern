@@ -56,7 +56,7 @@ struct MailernApp: App {
             MailboxView().environment(store).environment(drafts).environment(snoozePreferences).tint(.teal)
                 .defaultAppStorage(TestStorage.defaults)
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { store.wakeDue(); Task { await drafts.wakeDue() } }
+                    if phase == .active { store.wakeDue(); Task { await drafts.wakeDue(); await drafts.sendDue(through: store) } }
                 }
                 .task {
                     #if DEBUG
@@ -70,6 +70,7 @@ struct MailernApp: App {
                     while !Task.isCancelled {
                         store.wakeDue()
                         await drafts.wakeDue()
+                        await drafts.sendDue(through: store)
                         try? await Task.sleep(for: .seconds(1))
                     }
                 }
@@ -94,7 +95,12 @@ struct MailernApp: App {
 private enum TestStorage {
     static var defaults: UserDefaults {
         #if DEBUG
-        if let session { return UserDefaults(suiteName: "Mailern.UITests.\(session)")! }
+        if let session {
+            let defaults = UserDefaults(suiteName: "Mailern.UITests.\(session)")!
+            // Most cases check the sent message at once. Undo Send cases set their own delay.
+            defaults.register(defaults: [UndoSend.key: Int(environment["MAILERN_TEST_UNDO_SEND"] ?? "") ?? 0])
+            return defaults
+        }
         #endif
         return .standard
     }

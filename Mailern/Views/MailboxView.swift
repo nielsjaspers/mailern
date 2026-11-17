@@ -26,6 +26,7 @@ struct MailboxView: View {
     @AppStorage("leftSwipeTertiary") private var leftTertiary: MailboxSwipeAction = .none
     @AppStorage("rightSwipeTertiary") private var rightTertiary: MailboxSwipeAction = .none
     @State private var composer: ComposeMode?
+    @State private var reopened: ComposeMode?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var demo = false
     @State private var snoozing: Conversation?
@@ -87,6 +88,13 @@ struct MailboxView: View {
                 peeking = nil
             }
         }
+        // Undo Send and Edit take scheduled mail back into the composer from wherever it was sent.
+        .onChange(of: drafts.reopening) { _, id in
+            guard let id else { return }
+            drafts.reopening = nil
+            reopened = .draft(id)
+        }
+        .sheet(item: $reopened) { ComposerView(mode: $0) }
         .sheet(item: $composer) {
             ComposerView(mode: $0).modifier(ComposerTransition(source: composerSourceID, namespace: composeTransition))
         }
@@ -186,6 +194,8 @@ struct MailboxView: View {
                         if store.conversation(id) != nil { ThreadView(id: id) }
                         else { DraftThreadView(id: id) }
                     case .removed(let mailbox): RemovedMailboxView(mailbox: mailbox)
+                    case .scheduled: ScheduledMailboxView()
+                    case .scheduledMessage(let id): ScheduledMessageView(id: id)
                     }
                 }
         }
@@ -202,6 +212,11 @@ struct MailboxView: View {
             } else {
                 Menu {
                     Section("Mailboxes") {
+                        Button { paths[status, default: []].append(.scheduled) } label: {
+                            Label("Scheduled", systemImage: "calendar.badge.clock")
+                            let count = drafts.outbox.count
+                            Text(count == 0 ? "Empty" : count == 1 ? "1 message" : "\(count) messages")
+                        }
                         ForEach(RemovedMailbox.allCases) { mailbox in
                             Button { paths[status, default: []].append(.removed(mailbox)) } label: {
                                 Label(mailbox.title, systemImage: mailbox.symbol)
@@ -494,21 +509,31 @@ struct MailboxView: View {
 enum MailboxRoute: Hashable {
     case conversation(UUID)
     case removed(RemovedMailbox)
+    case scheduled
+    case scheduledMessage(UUID)
 }
 
 struct UndoBanner: View {
     @Environment(MailStore.self) private var store
+    @Environment(DraftStore.self) private var drafts
+    /// Shows only Undo Send. A thread closes after its own moves, so their Undo belongs to the mailbox.
+    var sendingOnly = false
     var body: some View {
-        if let notice = store.notice {
-            HStack {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.teal)
-                Text(notice).font(.subheadline)
-                Spacer()
-                Button("Undo") { withAnimation { store.undo() } }.fontWeight(.semibold)
-                Button("Dismiss", systemImage: "xmark") { store.clearNotice() }.labelStyle(.iconOnly)
-            }
-            .padding().background(.regularMaterial)
+        if let id = drafts.undoable, drafts.outbox.contains(where: { $0.id == id }) {
+            banner("Sending…", symbol: "paperplane.fill", undo: { Task { await drafts.edit(id) } }, dismiss: { drafts.undoable = nil })
+        } else if !sendingOnly, let notice = store.notice {
+            banner(notice, symbol: "checkmark.circle.fill", undo: { withAnimation { store.undo() } }, dismiss: { store.clearNotice() })
         }
+    }
+    private func banner(_ text: String, symbol: String, undo: @escaping () -> Void, dismiss: @escaping () -> Void) -> some View {
+        HStack {
+            Image(systemName: symbol).foregroundStyle(.teal)
+            Text(text).font(.subheadline)
+            Spacer()
+            Button("Undo", action: undo).fontWeight(.semibold)
+            Button("Dismiss", systemImage: "xmark", action: dismiss).labelStyle(.iconOnly)
+        }
+        .padding().background(.regularMaterial)
     }
 }
 

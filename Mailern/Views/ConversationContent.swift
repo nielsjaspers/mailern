@@ -6,6 +6,7 @@ struct ConversationContent: View {
     let conversation: Conversation
     var isPreview = false
     var drafts: [ComposerDraft] = []
+    var scheduled: [ComposerDraft] = []
     var editDraft: (UUID) -> Void = { _ in }
     var discardDraft: (UUID) -> Void = { _ in }
     var deletingDraft = false
@@ -54,12 +55,13 @@ struct ConversationContent: View {
                         DraftCard(draft: draft, edit: { editDraft(draft.id) }, discard: { discardDraft(draft.id) }, deleting: deletingDraft)
                             .id(draft.id)
                     }
+                    ForEach(scheduled) { ScheduledCard(draft: $0).id($0.id) }
                 }.padding(isPreview ? 18 : 16)
             }
             .background(Color(uiColor: isPreview ? .secondarySystemGroupedBackground : .systemGroupedBackground))
             // A long thread opens on its latest message, or on a draft below it.
             .onAppear {
-                if let id = drafts.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                if let id = (drafts + scheduled).last?.id { proxy.scrollTo(id, anchor: .bottom) }
                 else if !isPreview, !earlier.isEmpty { proxy.scrollTo(latest.id, anchor: .top) }
             }
             // A new message opens and the one it replaces folds, whatever the reader did to it.
@@ -67,7 +69,7 @@ struct ConversationContent: View {
                 toggled.remove(old)
                 if !isPreview { withAnimation(reduceMotion ? nil : .snappy) { proxy.scrollTo(new, anchor: .top) } }
             }
-            .onChange(of: drafts.map(\.id)) { _, ids in if let id = ids.last { proxy.scrollTo(id, anchor: .bottom) } }
+            .onChange(of: (drafts + scheduled).map(\.id)) { _, ids in if let id = ids.last { proxy.scrollTo(id, anchor: .bottom) } }
         }
     }
 
