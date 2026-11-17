@@ -18,6 +18,9 @@ import SQLite3
         try checkTrashAndJunk()
         try checkSQLiteStorage()
         try await checkAccounts()
+        try checkThreadingHeaders()
+        checkMessageLinks()
+        checkHTMLDocument()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -211,6 +214,108 @@ import SQLite3
         reopened.reset()
         assert(reopened.accounts == MailAccount.demo && MailStore(persistence: SQLitePersistence(url: url)).accounts == MailAccount.demo)
         print("PASS: account validation, trimming, edit and persistence, renamed-account search, signatures in new/reply/forward, signature swap rules, account deletion with mail and drafts, last account kept, demo mail follows remaining accounts, reset")
+    }
+
+    @MainActor static func checkThreadingHeaders() throws {
+        let disk = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-threading-\(UUID())/mail.sqlite"))
+        let store = MailStore(persistence: disk)
+        let dinner = store.conversations.first { $0.subject == "Dinner on Saturday?" }!
+        let (first, answer, followUp) = (dinner.messages[0], dinner.messages[1], dinner.messages[2])
+        assert(first.messageID != nil && answer.inReplyTo == first.messageID && followUp.references == [first.threadingID, answer.threadingID])
+
+        let count = store.conversations.count
+        store.receiveReply(dinner.id)
+        let reply = store.conversation(dinner.id)!.latest
+        assert(store.conversations.count == count && reply.inReplyTo == followUp.messageID)
+        assert(reply.references == [first.threadingID, answer.threadingID, followUp.threadingID])
+
+        store.send(threadID: dinner.id, replyingTo: first.id, account: store.account(dinner.accountID), to: [first.address], cc: [], subject: "Re: Dinner", body: "Yes")
+        let sent = store.conversation(dinner.id)!.latest
+        assert(sent.outgoing && sent.messageID!.hasSuffix("@personal.example.com>") && sent.inReplyTo == first.messageID && sent.references == [first.threadingID])
+        store.send(threadID: nil, account: store.accounts[0], to: ["a@example.com"], cc: [], subject: "New", body: "Hello")
+        assert(store.conversations[0].latest.inReplyTo == nil && store.conversations[0].latest.messageID != nil)
+
+        // A reply joins only a thread in its own account. An unknown parent starts a new conversation.
+        var stray = MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [store.accounts[1].address], date: .now, body: "Hi",
+                                subject: "Re: Dinner on Saturday?", messageID: "<other@example.com>")
+        stray.answer(followUp)
+        store.receive(stray, accountID: store.accounts[1].id)
+        assert(store.conversations.count == count + 2 && store.conversations[0].messages.map(\.id) == [stray.id])
+        var unknown = stray
+        unknown.id = UUID()
+        unknown.inReplyTo = "<missing@example.com>"
+        unknown.references = ["<missing@example.com>"]
+        store.receive(unknown, accountID: dinner.accountID)
+        assert(store.conversations.count == count + 3 && store.conversations[0].subject == "Re: Dinner on Saturday?")
+        var byReference = unknown
+        byReference.id = UUID()
+        byReference.inReplyTo = nil
+        byReference.references = [first.threadingID]
+        store.receive(byReference, accountID: dinner.accountID)
+        assert(store.conversation(dinner.id)!.latest.id == byReference.id, "References alone thread a message")
+
+        let reloaded = MailStore(persistence: SQLitePersistence(url: disk.url))
+        assert(reloaded.conversation(dinner.id) == store.conversation(dinner.id), "Headers survive a reload")
+
+        // A saved toolbar reply keeps answering the message it quotes after newer mail arrives.
+        let project = store.conversations.first { $0.subject == "Course project feedback" }!
+        let draft = ComposerDraft.make(mode: .reply(project.id), conversation: project, accounts: store.accounts)
+        assert(draft.messageID == nil && draft.answering == project.latest.id)
+        store.receiveReply(project.id)
+        store.send(threadID: project.id, replyingTo: draft.answering ?? draft.messageID, account: store.account(project.accountID),
+                   to: [project.latest.address], cc: [], subject: draft.subject, body: "Thanks")
+        assert(store.conversation(project.id)!.latest.inReplyTo == project.latest.messageID)
+
+        // Mail stored before Message-IDs existed still threads, through the local stand-in ID.
+        let legacy = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-legacy-\(UUID())/mail.sqlite"))
+        let old = MailMessage(sender: "Avery", address: "avery@example.com", to: [MailAccount.demo[0].address], date: .now, body: "Old")
+        let conversation = Conversation(accountID: MailAccount.demo[0].id, subject: "Old thread", messages: [old])
+        try legacy.save(MailData(conversations: [conversation]))
+        let legacyStore = MailStore(persistence: SQLitePersistence(url: legacy.url))
+        legacyStore.receiveReply(conversation.id)
+        assert(legacyStore.conversations.count == 1 && legacyStore.conversation(conversation.id)!.latest.inReplyTo == old.threadingID)
+        print("PASS: Message-ID headers on demo and sent mail, threading by In-Reply-To and References within one account, legacy mail")
+    }
+
+    static func checkHTMLDocument() {
+        func dark(_ html: String) -> Bool { HTMLDocument(html, remoteContent: false).adaptsToDarkMode }
+        assert(dark("<style>@media (prefers-color-scheme: dark) { body { color: #fff } }</style>"))
+        assert(dark(#"<meta name="color-scheme" content="light dark">"#) && dark(":root { color-scheme: dark; }"))
+        assert(!dark(":root { color-scheme: only light; }") && !dark("<p>Plain</p>"), "Light-only mail keeps its white page")
+
+        func remote(_ html: String) -> Bool { HTMLDocument(html, remoteContent: false).hasRemoteContent }
+        assert(remote(#"<img src="https://example.com/a.png">"#) && remote("<div style=\"background:url('//cdn.example.com/b.png')\">"))
+        assert(remote(#"<style>@import "https://example.com/mail.css";</style>"#) && remote(#"<link rel="stylesheet" href="https://example.com/s.css">"#))
+        assert(remote(#"<td style="background-image:url(&quot;https://example.com/h.jpg&quot;)">"#), "Entity-quoted CSS URLs count")
+        assert(!remote(#"<img src="data:image/png;base64,AAAA"><a href="https://example.com">Link</a>"#), "Links and data: images need no Load images")
+
+        let hints = #"<link title="a > b" rel="preconnect" href="https://t.example.com"><LINK\#nhref="https://t.example.com" REL=dns-prefetch/><a rel="nofollow" href="x">&lt;link&gt;</a>"#
+        let blocked = HTMLDocument(hints, remoteContent: false).html
+        assert(!blocked.lowercased().contains("<link ") && !blocked.lowercased().contains("<link\n"), "No link element survives while blocked")
+        assert(blocked.contains(#"<x-link title="a > b" rel="preconnect""#) && blocked.contains("<x-link\nhref"))
+        assert(blocked.contains(#"<a rel="nofollow" href="x">&lt;link&gt;</a>"#), "Other elements and escaped text stay")
+        assert(HTMLDocument(hints, remoteContent: true).html.hasSuffix(hints), "Loaded remote content keeps the message as sent")
+        print("PASS: HTML dark-mode opt-in, remote content detection incl. @import, connection hints disabled while blocked")
+    }
+
+    static func checkMessageLinks() {
+        let link = MailtoLink(URL(string: "mailto:a@example.com,b@example.com?cc=c@example.com&bcc=d@example.com&subject=Hello%20there&body=Line%201%0ALine+2")!)!
+        assert(link.to == ["a@example.com", "b@example.com"] && link.cc == ["c@example.com"] && link.bcc == ["d@example.com"])
+        assert(link.subject == "Hello there" && link.body == "Line 1\nLine+2", "RFC 6068 keeps + as written")
+        assert(MailtoLink(URL(string: "mailto:?to=x@example.com")!)!.to == ["x@example.com"])
+        assert(MailtoLink(URL(string: "https://example.com")!) == nil)
+
+        let accounts = MailAccount.demo
+        let draft = ComposerDraft.make(mode: .mailto(link), conversation: nil, accounts: accounts)
+        assert(draft.mode == .new && draft.to == "a@example.com, b@example.com" && draft.cc == "c@example.com" && draft.bcc == "d@example.com")
+        assert(draft.subject == "Hello there" && draft.text == "Line 1\nLine+2\n\nMorgan", "The body goes above the signature")
+
+        let text = MessageLinks.linked("Read *this* at https://example.com/a, write to help@example.com, or call +1 (555) 010-0199.")
+        let links = text.runs.compactMap { run in run.link.map { (String(text[run.range].characters), $0.absoluteString) } }
+        assert(links.map(\.1) == ["https://example.com/a", "mailto:help@example.com", "tel:+15550100199"], "\(links)")
+        assert(String(text.characters).contains("*this*"), "Plain text is not read as Markdown")
+        assert(MessageLinks.linked("Tuesday, 10:00–11:00\nOrder #10428").runs.allSatisfy { $0.link == nil })
+        print("PASS: mailto parsing and drafts, web/email/phone links in plain text, no Markdown in plain text")
     }
 
     @MainActor static func checkTrashAndJunk() throws {

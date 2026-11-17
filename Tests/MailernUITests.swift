@@ -204,6 +204,53 @@ final class MailboxSelectButtonSizeUITests: MailernUITestCase {
     }
 }
 
+final class MailtoLinkOpensComposerUITests: MailernUITestCase {
+    @MainActor
+    func testMailtoLinkOpensComposer() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        row("Project presentations", in: app).tap()
+        let link = app.links["course@college.example.com"]
+        XCTAssertTrue(link.existsOrWait(timeout: 5))
+        link.tap()
+        XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
+        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
+        XCTAssertEqual(to.value as? String, "course@college.example.com")
+        capture("Composer from a mailto link", in: app)
+        app.buttons["Cancel"].tap()
+        waitForComposerDismissal(in: app)
+        XCTAssertTrue(app.links["course@college.example.com"].exists, "The thread stays open")
+    }
+}
+
+final class HTMLMailUITests: MailernUITestCase {
+    @MainActor
+    func testHTMLMailBlocksRemoteImagesAndRoutesLinks() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        row("A little less, but better", in: app).tap()
+        let page = app.webViews.firstMatch
+        XCTAssertTrue(page.staticTexts["A little less, but better"].existsOrWait(timeout: 10))
+        let load = app.buttons["Load images"]
+        XCTAssertTrue(load.exists)
+        capture("HTML newsletter with images blocked", in: app)
+        load.tap()
+        waitForAbsence(load)
+        XCTAssertTrue(page.staticTexts["A little less, but better"].existsOrWait(timeout: 10), "The message reloads with images")
+        let editors = page.links["the editors"]
+        for _ in 0..<4 where !editors.isHittable { app.swipeUp() }
+        editors.tap()
+        XCTAssertTrue(app.navigationBars["Tip for Sample Weekly"].existsOrWait(timeout: 5))
+        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
+        XCTAssertEqual(to.value as? String, "editors@example.com")
+        // The fixture reset between cases does not close sheets presented from a thread.
+        app.buttons["Cancel"].tap()
+        waitForComposerDismissal(in: app)
+    }
+}
+
 final class RecipientSearchUITests: MailernUITestCase {
     @MainActor
     func testSearchRecipientsAndPreserveSelection() {

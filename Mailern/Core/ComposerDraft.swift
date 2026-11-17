@@ -3,6 +3,8 @@ import Observation
 
 enum ComposeMode: Codable, Equatable, Identifiable, Sendable {
     case new, reply(UUID), replyAll(UUID), forward(UUID), draft(UUID)
+    /// A new message filled from a `mailto:` link. Its draft is saved as `.new`.
+    case mailto(MailtoLink)
     var id: String { String(describing: self) }
     var sourceID: UUID? {
         switch self { case .reply(let id), .replyAll(let id), .forward(let id): id; default: nil }
@@ -61,6 +63,8 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     var snoozedUntil: Date?
     /// The message a reply or forward was started from. Nil means the latest message at that time.
     var messageID: UUID?
+    /// The message a reply answers, fixed when the draft is made, so mail that arrives later does not change it.
+    var answering: UUID?
     /// The signature the composer inserted. The composer replaces it on a sender change while it is still unedited.
     var signature: String?
 
@@ -112,11 +116,20 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
         let signature = accounts.first { $0.id == draft.accountID }?.signature ?? ""
         draft.signature = signature
         draft.text = signatureBlock(signature)
+        if case .mailto(let link) = mode {
+            draft.mode = .new
+            draft.to = link.to.joined(separator: ", ")
+            draft.cc = link.cc.joined(separator: ", ")
+            draft.bcc = link.bcc.joined(separator: ", ")
+            draft.subject = link.subject
+            draft.text = link.body + draft.text
+        }
         guard let c = conversation else { return draft }
         let target = c.message(message)
         let subject = c.subject(at: target)
         switch mode {
         case .reply, .replyAll:
+            draft.answering = target.id
             draft.to = target.outgoing ? target.to.joined(separator: ", ") : target.address
             draft.subject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
             if case .replyAll = mode {

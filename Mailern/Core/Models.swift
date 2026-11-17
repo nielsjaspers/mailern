@@ -1,5 +1,8 @@
 import Foundation
 
+/// Workflow state is local to Mailern. When providers arrive, Settle maps to archive: Gmail removes the INBOX label
+/// and IMAP moves the message to the Archive folder. Snooze has no provider equivalent and stays on this device, so a
+/// snoozed conversation remains in the provider's inbox.
 enum Workflow: String, Codable, CaseIterable, Identifiable {
     case inbox, snoozed, settled
     var id: Self { self }
@@ -64,6 +67,29 @@ struct MailMessage: Codable, Identifiable, Equatable {
     var richText: Data?
     var attachments: [MailAttachment]?
     var subject: String?
+    /// The HTML part of the message. `body` holds its plain-text alternative for snippets, search, and quotes.
+    var html: String?
+    /// The RFC 5322 Message-ID header, with angle brackets. Mail from a provider can lack one.
+    var messageID: String?
+    /// The Message-ID this message answers.
+    var inReplyTo: String?
+    /// The Message-IDs of the thread before this message, oldest first.
+    var references: [String]?
+    /// The provider's own ID for this message. Nil for demo mail.
+    var remoteID: String?
+
+    /// The ID other messages use to refer to this one. Messages without a Message-ID get a stable local stand-in.
+    var threadingID: String { messageID ?? "<\(id.uuidString)@mailern.local>" }
+    /// A new Message-ID in the domain of the sending address.
+    static func newMessageID(from address: String) -> String {
+        let domain = address.split(separator: "@").last.map(String.init) ?? "mailern.local"
+        return "<\(UUID().uuidString)@\(domain)>"
+    }
+    /// Sets the headers of a reply to `message`.
+    mutating func answer(_ message: MailMessage) {
+        inReplyTo = message.threadingID
+        references = (message.references ?? []) + [message.threadingID]
+    }
 }
 
 struct Conversation: Codable, Identifiable, Equatable {
@@ -97,6 +123,8 @@ struct Conversation: Codable, Identifiable, Equatable {
     var avatarName: String {
         messages.contains(where: { !$0.outgoing }) ? correspondent.sender : latest.to.first ?? latest.sender
     }
+    /// True when one of the messages has a Message-ID in `ids`.
+    func contains(messageIDs ids: Set<String>) -> Bool { messages.contains { ids.contains($0.threadingID) } }
     /// The message a reply or forward targets. Falls back to the latest message.
     func message(_ id: UUID?) -> MailMessage { messages.first { $0.id == id } ?? latest }
 
