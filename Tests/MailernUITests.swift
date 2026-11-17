@@ -1485,7 +1485,10 @@ final class DeletingJunkDiscardsItsReplyDraftUITests: MailernUITestCase {
         app.buttons["Select All"].tap()
         app.toolbars.buttons["Delete Permanently"].tap()
         XCTAssertTrue(app.staticTexts["Delete 2 conversations permanently?"].existsOrWait(timeout: 5))
-        app.buttons["Delete Permanently"].firstMatch.tap()
+        // The toolbar has the same label. Confirm through the dialog, not its obscured button.
+        let confirmDelete = app.sheets.buttons["Delete Permanently"]
+        XCTAssertTrue(confirmDelete.existsOrWait(timeout: 5))
+        confirmDelete.tap()
         XCTAssertTrue(app.staticTexts["No junk"].existsOrWait(timeout: 5))
         app.navigationBars.buttons["Inbox"].tap()
         XCTAssertTrue(row("Course project feedback", in: app).existsOrWait(timeout: 5))
@@ -2069,12 +2072,19 @@ final class PeekReadPinAndMailboxGesturesUITests: MailernUITestCase {
         peek(thread, in: app)
         XCTAssertEqual(preview(in: app).value as? String, "Read")
         XCTAssertTrue(app.staticTexts["· 3 messages"].exists)
-        XCTAssertTrue(app.staticTexts["2 earlier messages"].exists)
+        // The peek opens on the newest message; scrolling down reads back to the oldest.
         let latest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Around 7?")).firstMatch
         XCTAssertTrue(latest.exists)
-        for _ in 0..<4 where !preview(in: app).frame.contains(latest.frame) { preview(in: app).swipeUp() }
-        XCTAssertGreaterThan(latest.frame.width, 0)
         XCTAssertTrue(preview(in: app).frame.contains(latest.frame))
+        XCTAssertTrue(app.staticTexts["Earlier messages"].exists)
+        let middle = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Sounds good.")).firstMatch
+        // The full body keeps its line breaks; a folded one-line snippet would not.
+        let oldest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@ AND label ENDSWITH %@", "Hey! Are you free", "\nCasey")).firstMatch
+        XCTAssertTrue(oldest.exists)
+        for _ in 0..<4 where !preview(in: app).frame.contains(oldest.frame) { preview(in: app).swipeUp() }
+        XCTAssertTrue(preview(in: app).frame.contains(oldest.frame))
+        XCTAssertLessThan(latest.frame.minY, middle.frame.minY)
+        XCTAssertLessThan(middle.frame.minY, oldest.frame.minY)
         XCTAssertEqual(preview(in: app).value as? String, "Read")
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = "Multi-message peek"
