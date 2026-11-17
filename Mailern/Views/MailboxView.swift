@@ -279,6 +279,7 @@ struct MailboxView: View {
                 Section {
                     ForEach(items) { item in
                         if let conversation = item.conversation {
+                            let background: Color = item.hasDraft ? .orange : conversation.unread ? .blue : .clear
                             Button {
                                 if selecting {
                                     if selectedIDs.contains(conversation.id) { selectedIDs.remove(conversation.id) }
@@ -288,7 +289,7 @@ struct MailboxView: View {
                                 ConversationRow(conversation: conversation, hasDraft: item.hasDraft)
                             }
                                 .buttonStyle(.plain)
-                                .listRowBackground(item.hasDraft ? Color.orange.opacity(0.07) : Color.clear)
+                                .listRowBackground(background.opacity(0.07))
                                 .tag(conversation.id)
                                 .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                                 .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && (leftPrimary != .read || conversation.workflow != .settled)) {

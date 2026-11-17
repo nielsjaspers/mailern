@@ -67,10 +67,6 @@ struct MailboxRow: View {
                             .accessibilityLabel("\(count) messages")
                     }
                     Spacer(minLength: 4)
-                    if unread {
-                        Circle().fill(.teal).frame(width: 8, height: 8)
-                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }
-                    }
                     Text(date.mailboxStamp).font(.caption).foregroundStyle(.secondary).fixedSize()
                 }
                 HStack(spacing: 6) {
