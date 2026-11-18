@@ -956,6 +956,45 @@ final class ComposerFileAttachmentUITests: MailernUITestCase {
     }
 }
 
+final class NotificationSettingsUITests: MailernUITestCase {
+    @MainActor
+    func testNotificationPermissionFromSettings() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        app.buttons["Notifications"].tap()
+        XCTAssertTrue(app.navigationBars["Notifications"].existsOrWait(timeout: 5))
+
+        let enable = app.buttons["Enable notifications"]
+        let manage = app.buttons["Open notification settings"]
+        let permissionState = app.buttons.matching(NSPredicate(format: "label IN %@", ["Enable notifications", "Open notification settings"])).firstMatch
+        XCTAssertTrue(permissionState.existsOrWait(timeout: 30))
+        if enable.exists {
+            enable.tap()
+            let alert = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch
+            XCTAssertTrue(alert.buttons["Allow"].existsOrWait(timeout: 5))
+            let prompt = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            prompt.name = "Notification permission"
+            prompt.lifetime = .keepAlways
+            add(prompt)
+            alert.buttons["Allow"].tap()
+            if !manage.existsOrWait(timeout: 2), alert.buttons["Allow"].isHittable {
+                alert.buttons["Allow"].tap()
+            }
+        }
+        XCTAssertTrue(manage.existsOrWait(timeout: 30))
+        XCTAssertTrue(app.staticTexts["App icon badge"].exists)
+        let settings = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        settings.name = "Notification settings"
+        settings.lifetime = .keepAlways
+        add(settings)
+        app.navigationBars.buttons["Settings"].tap()
+        app.buttons["Done"].tap()
+    }
+}
+
 final class SwipeActionSettingsUITests: MailernUITestCase {
     @MainActor
     func testSwipeActionSettings() {
