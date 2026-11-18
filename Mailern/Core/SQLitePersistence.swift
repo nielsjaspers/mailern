@@ -219,11 +219,12 @@ final class SQLitePersistence: ConversationPersistence {
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         for (index, value) in values.enumerated() {
             let position = Int32(index + 1)
-            switch value {
+            let result = switch value {
             case .text(let text): sqlite3_bind_text(statement, position, text, -1, transient)
             case .integer(let number): sqlite3_bind_int64(statement, position, Int64(number))
-            case .blob(let data): _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, position, $0.baseAddress, Int32($0.count), transient) }
+            case .blob(let data): data.withUnsafeBytes { sqlite3_bind_blob(statement, position, $0.baseAddress, Int32($0.count), transient) }
             }
+            guard result == SQLITE_OK else { throw Failure(message: String(cString: sqlite3_errmsg(db))) }
         }
         while true {
             switch sqlite3_step(statement) {

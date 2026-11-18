@@ -1244,11 +1244,26 @@ import SQLite3
         let afterFailure = MailStore(persistence: SQLitePersistence(url: url))
         assert(store.error != nil && afterFailure.conversations.filter { ids.contains($0.id) } == before)
         assert(sqlite3_exec(db, "DROP TRIGGER reject_second", nil, nil, nil) == SQLITE_OK)
+        assert(afterFailure.conversations == store.conversations && store.notice == nil)
+        // Reject any UPDATE to an already-pinned row in a mixed batch, including Undo.
+        let pinnedID = before[1].id
+        store.apply(ids: [pinnedID], action: .pin(true))
+        store.apply(ids: [before[0].id], action: .pin(false))
+        assert(sqlite3_exec(db, rejectSecond, nil, nil, nil) == SQLITE_OK)
+        store.error = nil
         store.apply(ids: ids, action: .pin(true))
-        assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
         store.undo()
-        store.apply(ids: ids, action: .move(.inbox))
-        for original in before { store.markRead(original.id, unread: original.unread) }
+        assert(store.error == nil)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_second", nil, nil, nil) == SQLITE_OK)
+        store.apply(ids: ids, action: .move(.settled))
+        assert(sqlite3_exec(db, rejectSecond, nil, nil, nil) == SQLITE_OK)
+        store.undo()
+        assert(store.error != nil && store.notice != nil && ids.allSatisfy { store.conversation($0)?.workflow == .settled })
+        assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_second", nil, nil, nil) == SQLITE_OK)
+        store.undo()
+        assert(store.notice == nil && MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
+        for original in before { store.apply(ids: [original.id], action: .pin(original.pinned)) }
         store.apply(ids: ids, action: .move(.settled))
         assert(ids.allSatisfy { store.conversation($0)!.workflow == .settled })
         store.undo()
@@ -1277,6 +1292,14 @@ import SQLite3
         store.undo()
         assert(store.conversation(first)!.workflow == .inbox && store.conversation(first)!.unread)
         assert(MailStore(persistence: disk).conversations == store.conversations)
+        assert(sqlite3_exec(db, "CREATE TRIGGER reject_delete BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT, 'injected failure'); END", nil, nil, nil) == SQLITE_OK)
+        store.deletePermanently(ids)
+        assert(ids.allSatisfy { store.conversation($0) != nil })
+        assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_delete", nil, nil, nil) == SQLITE_OK)
+        store.deletePermanently(ids)
+        assert(ids.allSatisfy { store.conversation($0) == nil })
+        assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
         print("PASS: batch move/read/pin/snooze/restore, whole-batch field-specific Undo, incoming precedence and persistence")
     }
 

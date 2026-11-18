@@ -604,16 +604,20 @@ final class BenchmarkMailboxUITests: MailernUITestCase {
         waitForAbsence(app.navigationBars["Demo"], timeout: 45)
         let newest = row("Weekly report · Sample 1,", in: app)
         XCTAssertTrue(newest.existsOrWait(timeout: 10))
+        let unreadHeader = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", " unread")).firstMatch
+        XCTAssertTrue(unreadHeader.exists)
+        let originalUnread = unreadHeader.label
         func settleAll() {
             app.buttons["Select"].tap()
             app.buttons["Select All"].tap()
-            XCTAssertTrue(app.buttons["Deselect All"].exists)
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label MATCHES %@", "17[^0-9]?143 selected")).firstMatch.exists)
             app.buttons["Settle"].tap()
             XCTAssertTrue(app.staticTexts["You're all caught up"].existsOrWait(timeout: 5))
         }
         settleAll()
         app.buttons["Undo"].tap()
         XCTAssertTrue(newest.existsOrWait(timeout: 5))
+        XCTAssertEqual(unreadHeader.label, originalUnread)
         settleAll()
         app.launch()
         XCTAssertTrue(app.staticTexts["You're all caught up"].existsOrWait(timeout: 10))

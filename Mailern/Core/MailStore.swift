@@ -151,15 +151,17 @@ final class MailStore {
     }
 
     private var data: MailData { MailData(conversations: conversations, accounts: accounts, blockedSenders: blockedSenders) }
-    @discardableResult private func save(metadataAt indices: [Int]? = nil) -> Bool {
+    @discardableResult private func save(replacingConversations updated: [Conversation]? = nil, metadataAt indices: [Int]? = nil) -> Bool {
         guard canWrite() else { return false }
+        var data = self.data
+        if let updated { data.conversations = updated }
         do {
             if let indices, indexCurrent { try persistence.saveMetadata(in: data, at: indices) }
             else { try persistence.save(data) }
             indexCurrent = true
             return true
         } catch {
-            indexCurrent = false
+            if updated == nil { indexCurrent = false }
             self.error = "Changes could not be saved. \(error.localizedDescription)"
             return false
         }
@@ -211,9 +213,6 @@ final class MailStore {
             }
         }
         guard !indices.isEmpty else { return }
-        actionCount += 1
-        undoSnapshot = indices.map { conversations[$0] }
-        undoAction = action
         var updated = conversations
         for i in indices {
             switch action {
@@ -231,7 +230,12 @@ final class MailStore {
                 updated[i].blockedReplySourceID = nil
             }
         }
-        conversations = updated
+        let changed = indices.filter { conversations[$0] != updated[$0] }
+        guard commitBatch(updated, changed: changed) else { return }
+        actionCount += 1
+        undoSnapshot = indices.map { conversations[$0] }
+        undoAction = action
+        if !changed.isEmpty { conversations = updated }
         let message: String
         switch action {
         case .move(let status, _):
@@ -248,8 +252,12 @@ final class MailStore {
             catch { return }
             self?.clearNotice()
         }
-        save(metadataAt: indices)
     }
+    private func commitBatch(_ updated: [Conversation], changed: [Int]) -> Bool {
+        if changed.isEmpty && indexCurrent { return true }
+        return save(replacingConversations: updated, metadataAt: changed)
+    }
+
     func undo() {
         guard let action = undoAction, !undoSnapshot.isEmpty else { return }
         // Incoming messages invalidate undo so a stale action cannot hide new mail.
@@ -284,8 +292,13 @@ final class MailStore {
                 updated[i].blockedReplySourceID = old.blockedReplySourceID
             }
         }
-        conversations = updated
-        save(metadataAt: indices)
+        let changed = indices.filter { conversations[$0] != updated[$0] }
+        guard commitBatch(updated, changed: changed) else {
+            // Keep the same Undo available after dismissing a storage error.
+            noticeExpiryTask?.cancel()
+            return
+        }
+        if !changed.isEmpty { conversations = updated }
         clearNotice()
     }
     func clearNotice() {
@@ -329,9 +342,10 @@ final class MailStore {
     /// Deletes conversations without Undo. Callers confirm first; expired Trash needs no confirmation.
     func deletePermanently(_ ids: Set<UUID>) {
         guard canWrite(), conversations.contains(where: { ids.contains($0.id) }) else { return }
+        let remaining = conversations.filter { !ids.contains($0.id) }
+        guard save(replacingConversations: remaining) else { return }
         if undoSnapshot.contains(where: { ids.contains($0.id) }) { clearNotice() }
-        conversations.removeAll { ids.contains($0.id) }
-        save()
+        conversations = remaining
     }
     /// Why `account` cannot be saved, or nil when it can.
     func problem(with account: MailAccount) -> String? {
