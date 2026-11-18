@@ -322,17 +322,17 @@ final class AttachmentMenuDismissalKeepsEditorUsableUITests: MailernUITestCase {
         app.buttons["Compose"].tap()
         let body = app.textViews["Message body"]
         body.tap()
+        // The second Attach tap shows that the first dismissal left the controls usable.
         for _ in 0..<2 {
             app.buttons["Attach"].tap()
             XCTAssertTrue(app.buttons["Attach File"].existsOrWait(timeout: 5))
             XCTAssertTrue(app.buttons["Photo Library"].exists)
             body.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.2)).tap()
             waitForAbsence(app.buttons["Attach File"])
-            XCTAssertTrue(app.buttons["Format"].isHittable)
-            XCTAssertTrue(app.buttons["Attach"].isHittable)
-            XCTAssertTrue(app.keyboards.firstMatch.exists)
         }
-        enterText("Editing after menu dismissal", in: body)
+        XCTAssertTrue(app.buttons["Format"].isHittable)
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        enterText("After menus", in: body)
         app.buttons["Cancel"].tap()
         app.buttons["Delete Draft"].tap()
         waitForComposerDismissal(in: app)
@@ -473,11 +473,15 @@ final class UndoSendReopensTheReplyUITests: MailernUITestCase {
         XCTAssertTrue(app.buttons["Send Later…"].existsOrWait(timeout: 5))
         app.buttons["Send Later…"].tap()
         XCTAssertTrue(app.navigationBars["Send Later"].existsOrWait(timeout: 5))
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "In ")).firstMatch.tap()
+        let chosen = Date.now.addingTimeInterval(3600)
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "In 1 hour,")).firstMatch.tap()
         waitForComposerDismissal(in: app)
         let card = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'scheduled-card-'")).firstMatch
         XCTAssertTrue(card.existsOrWait(timeout: 5))
         XCTAssertTrue(app.staticTexts["Scheduled"].exists)
+        // The card shows the chosen time, allowing for a minute boundary during the tap.
+        let format = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()
+        XCTAssertTrue([chosen, chosen.addingTimeInterval(60)].contains { app.staticTexts[$0.formatted(format)].exists })
         XCTAssertFalse(app.staticTexts["Sending…"].exists)
     }
 }

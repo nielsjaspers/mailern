@@ -34,9 +34,13 @@ def shutdown(simulator):
     # Finish teardown even if cancellation arrives, but never wait on CoreSimulator forever.
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
     try:
+        # Shut down without a prior status probe, which could itself fail; the probe below checks the result.
         try:
-            if state(simulator) not in (None, "Shutdown"):
-                subprocess.run(["xcrun", "simctl", "shutdown", simulator], timeout=60)
+            subprocess.run(["xcrun", "simctl", "shutdown", simulator], timeout=60,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
             running = state(simulator) not in (None, "Shutdown")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             running = True
@@ -117,9 +121,10 @@ def main():
         try:
             # Boot while the build runs; bootstatus waits for it later.
             if state(simulator) == "Shutdown":
-                run("xcrun", "simctl", "boot", simulator)
+                run("xcrun", "simctl", "boot", simulator, timeout=120)
             run("xcodebuild", "-quiet", "-project", "Mailern.xcodeproj", "-scheme", "Mailern",
-                "-destination", f"id={simulator}", "-derivedDataPath", derived, "ONLY_ACTIVE_ARCH=YES", "build-for-testing")
+                "-destination", f"id={simulator}", "-derivedDataPath", derived, "ONLY_ACTIVE_ARCH=YES", "build-for-testing",
+                timeout=1800)
             # Active-architecture builds can leave older test runs for other architectures.
             test_run = max(products.glob("Mailern_*.xctestrun"), key=lambda path: path.stat().st_mtime_ns, default=None)
             if test_run is None:
@@ -181,11 +186,11 @@ def main():
             if not (args.keep_booted and succeeded):
                 try:
                     shutdown(simulator)
-                except Exception as error:
+                except BaseException as error:
                     if succeeded:
                         raise
-                    # Keep the build or test failure as the reported error.
-                    print(error, file=sys.stderr)
+                    # Keep the build or test failure as the reported error, even after a second Ctrl-C.
+                    print(error or "Interrupted during Simulator shutdown", file=sys.stderr)
     print(f"UI tests completed in {time.monotonic() - started:.0f}s")
     return 0
 

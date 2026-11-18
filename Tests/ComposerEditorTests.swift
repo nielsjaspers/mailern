@@ -19,6 +19,19 @@ import SwiftUI
         XCTAssertFalse(RichText.isPlain(text, in: signature))
     }
 
+    func testRevertedHeaderAfterAutosaveStillNeedsSave() {
+        let initial = ComposerDraft(subject: "Original")
+        var changed = initial
+        changed.subject = "Original changed"
+        let text = NSAttributedString(string: "")
+        let opened = ComposerView.DraftInput(draft: initial, text: text, edited: false)
+        let autosaved = ComposerView.DraftInput(draft: changed, text: text, edited: false)
+        XCTAssertFalse(ComposerView.isDirty(opened, saved: nil, initial: initial))
+        XCTAssertFalse(ComposerView.isDirty(autosaved, saved: autosaved, initial: initial))
+        XCTAssertTrue(ComposerView.isDirty(opened, saved: autosaved, initial: initial),
+                      "Reverting after an autosave must save again, or the changed subject stays on disk")
+    }
+
     func testQuoteWithWriterFormattingDoesNotFold() throws {
         // Writes a reply the way the composer does and returns it as it comes back from storage.
         func reply(_ text: String, quoting original: NSAttributedString, edit: (NSMutableAttributedString, Int) -> Void = { _, _ in }) throws -> NSAttributedString {

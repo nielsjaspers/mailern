@@ -36,10 +36,16 @@ struct ComposerView: View {
         case sendLater, reminder
         var id: Self { self }
     }
-    private struct DraftInput: Equatable {
+    struct DraftInput: Equatable {
         var draft: ComposerDraft
         var text: NSAttributedString
         var edited: Bool
+    }
+    /// Compares with the last saved input, not the opening one: a header changed, autosaved,
+    /// and then reverted still differs from what is on disk.
+    static func isDirty(_ input: DraftInput, saved: DraftInput?, initial: ComposerDraft) -> Bool {
+        if let saved { return saved != input }
+        return input.draft != initial || input.edited
     }
     private var input: DraftInput { DraftInput(draft: draft, text: editor.text, edited: editor.edited) }
     @FocusState private var focus: Field?
@@ -47,8 +53,7 @@ struct ComposerView: View {
     private var dirty: Bool {
         guard loaded else { return false }
         if savesInFlight > 0 { return true }
-        if let savedInput { return savedInput != input }
-        return draft != initial || editor.edited
+        return Self.isDirty(input, saved: savedInput, initial: initial)
     }
     private var saved: Bool { drafts.drafts.contains { $0.id == draft.id } }
     private var title: String { draft.subject.isEmpty ? "New Message" : draft.subject }
