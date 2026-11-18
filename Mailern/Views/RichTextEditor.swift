@@ -33,22 +33,26 @@ enum RichText {
         var font: String, size: CGFloat, color: [CGFloat], background: [CGFloat]?, underline: Int, strikethrough: Int, link: String?
         var alignment: Int, direction: Int, head: CGFloat, firstLine: CGFloat, tail: CGFloat, lineSpacing: CGFloat
         var before: CGFloat, after: CGFloat, lineHeightMultiple: CGFloat, minimumLineHeight: CGFloat, maximumLineHeight: CGFloat
-        var tabInterval: CGFloat, tabs: [CGFloat], lists: Int, quoted: Bool
+        var tabInterval: CGFloat, tabs: [CGFloat], lists: [String], quoted: Bool
     }
-    private static func components(_ color: UIColor, in style: UIUserInterfaceStyle = .light) -> [CGFloat] {
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        color.resolvedColor(with: UITraitCollection(userInterfaceStyle: style)).getRed(&r, green: &g, blue: &b, alpha: &a)
-        return [r, g, b, a].map { ($0 * 255).rounded() }
+    /// A color in light and dark appearance, so an adaptive color differs from a fixed one that matches it in one of them.
+    private static func components(_ color: UIColor) -> [CGFloat] {
+        [UIUserInterfaceStyle.light, .dark].flatMap { style in
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            color.resolvedColor(with: UITraitCollection(userInterfaceStyle: style)).getRed(&r, green: &g, blue: &b, alpha: &a)
+            return [r, g, b, a].map { ($0 * 255).rounded() }
+        }
     }
     private static func looks(_ text: NSAttributedString) -> [Look] {
         var result: [Look] = []
         text.enumerateAttributes(in: NSRange(location: 0, length: text.length)) { attributes, span, _ in
             let font = attributes[.font] as? UIFont ?? UIFont.preferredFont(forTextStyle: .body)
             let paragraph = attributes[.paragraphStyle] as? NSParagraphStyle ?? .default
-            // Storage writes natural alignment as left.
+            // Storage writes natural alignment as left, and leaves out a fixed black, its default color. Decoding restores
+            // the adaptive label color explicitly, so text without a color is fixed black.
             let alignment = paragraph.alignment == .natural ? NSTextAlignment.left : paragraph.alignment
             let look = Look(
-                font: font.fontName, size: font.pointSize, color: components(attributes[.foregroundColor] as? UIColor ?? .label),
+                font: font.fontName, size: font.pointSize, color: components(attributes[.foregroundColor] as? UIColor ?? .black),
                 background: (attributes[.backgroundColor] as? UIColor).map { components($0) },
                 underline: attributes[.underlineStyle] as? Int ?? 0, strikethrough: attributes[.strikethroughStyle] as? Int ?? 0,
                 link: attributes[.link].map { "\($0)" }, alignment: alignment.rawValue, direction: paragraph.baseWritingDirection.rawValue,
@@ -56,7 +60,8 @@ enum RichText {
                 lineSpacing: paragraph.lineSpacing, before: paragraph.paragraphSpacingBefore, after: paragraph.paragraphSpacing,
                 lineHeightMultiple: paragraph.lineHeightMultiple, minimumLineHeight: paragraph.minimumLineHeight,
                 maximumLineHeight: paragraph.maximumLineHeight, tabInterval: paragraph.defaultTabInterval,
-                tabs: paragraph.tabStops.map(\.location), lists: paragraph.textLists.count, quoted: attributes[quote] as? Bool == true)
+                tabs: paragraph.tabStops.map(\.location),
+                lists: paragraph.textLists.map { "\($0.markerFormat.rawValue) \($0.startingItemNumber)" }, quoted: attributes[quote] as? Bool == true)
             result += Array(repeating: look, count: span.length)
         }
         return result
@@ -89,18 +94,15 @@ enum RichText {
         let quote = NSRange(location: start, length: reply.length - start)
         let stored = looks(reply.attributedSubstring(from: quote))
         let expected = looks(decode(data, fallback: "").attributedSubstring(from: quote))
-        let purple = components(.systemPurple, in: .dark), lightPurple = components(.systemPurple)
+        // Storage keeps the attribution's purple as a fixed color in the appearance it was saved in.
+        let purples = [UIUserInterfaceStyle.light, .dark].map { components(UIColor.systemPurple.resolvedColor(with: UITraitCollection(userInterfaceStyle: $0))) }
         return stored.count == expected.count && zip(stored.indices, zip(stored, expected)).allSatisfy { index, pair in
             var (look, wanted) = pair
-            guard index <= attributionLength else { return look == wanted }
-            // Storage keeps the attribution's purple as a fixed color in the appearance it was saved in, and its size
-            // follows the text size at that time.
-            if look.color == purple { look.color = lightPurple }
-            if wanted.color == purple { wanted.color = lightPurple }
-            look.size = wanted.size
+            if index <= attributionLength, purples.contains(look.color), purples.contains(wanted.color) { look.color = wanted.color }
             return look == wanted
         }
     }
+
     static func decode(_ data: Data?, fallback: String) -> NSAttributedString {
         guard let data, let document = try? JSONDecoder().decode(Document.self, from: data),
               let result = try? NSMutableAttributedString(data: document.data, options: [.documentType: NSAttributedString.DocumentType.rtfd], documentAttributes: nil)
