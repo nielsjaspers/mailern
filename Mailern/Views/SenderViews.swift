@@ -27,6 +27,7 @@ struct SenderHistoryView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner() }
         .navigationTitle(sender.name)
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -47,6 +48,7 @@ struct SenderBlockButton: View {
 
 struct BlockedSendersView: View {
     @Environment(MailStore.self) private var store
+    @State private var error: String?
 
     var body: some View {
         Group {
@@ -57,7 +59,12 @@ struct BlockedSendersView: View {
                     HStack {
                         Text(address)
                         Spacer()
-                        Button("Unblock") { store.setSenderBlocked(false, address: address) }
+                        Button("Unblock") {
+                            if !store.setSenderBlocked(false, address: address) {
+                                error = store.error
+                                store.error = nil
+                            }
+                        }
                             .buttonStyle(.borderless)
                             .accessibilityLabel("Unblock \(address)")
                     }
@@ -66,5 +73,8 @@ struct BlockedSendersView: View {
         }
         .navigationTitle("Blocked Senders")
         .navigationBarTitleDisplayMode(.inline)
+        .alert("Could Not Unblock Sender", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("OK") { error = nil }
+        } message: { Text(error ?? "") }
     }
 }
