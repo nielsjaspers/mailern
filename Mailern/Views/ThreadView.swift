@@ -9,6 +9,7 @@ struct ThreadView: View {
     let next: () -> UUID?
     /// Replaces this thread with another conversation.
     let open: (UUID) -> Void
+    let showSender: (Sender) -> Void
     @AppStorage(AfterSettle.key) private var afterSettle = AfterSettle.returnToList
     // The conversation to open after Settle waits for the discard-drafts confirmation.
     @State private var settleNext: UUID?
@@ -43,7 +44,7 @@ struct ThreadView: View {
                         defer { deleting = false }
                         await drafts.delete(draftID)
                     }
-                }, deletingDraft: deleting, compose: c.removal == nil ? { compose($0, message: $1) } : nil)
+                }, deletingDraft: deleting, compose: c.removal == nil ? { compose($0, message: $1) } : nil, showSender: showSender)
                 // A mailto: link starts a message here. Other links go to the system, which opens web links in the browser.
                 .environment(\.openURL, OpenURLAction { url in
                     guard let link = MailtoLink(url) else { return .systemAction }

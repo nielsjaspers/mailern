@@ -65,7 +65,7 @@ struct RemovedMailboxView: View {
                     let ids = deleting
                     deleting = []
                     Task {
-                        // A blocked sender's reply can bring a thread here with its reply draft.
+                        // Some conversations in Junk still have scheduled or saved replies.
                         guard await drafts.discardDrafts(for: ids, scheduled: true) else { return }
                         store.deletePermanently(ids)
                         endSelection()
@@ -122,7 +122,7 @@ struct RemovedMailboxView: View {
 
     private var footer: String {
         switch mailbox {
-        case .junk: "Mail from senders you mark as junk arrives here. Not Junk unblocks the sender."
+        case .junk: "Mail from blocked senders arrives here."
         case .trash: "Conversations in Trash are deleted after 30 days."
         }
     }

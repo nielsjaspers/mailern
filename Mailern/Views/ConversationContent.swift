@@ -12,6 +12,7 @@ struct ConversationContent: View {
     var deletingDraft = false
     /// Starts a reply or forward that targets one message. Nil hides the reply controls.
     var compose: ((ComposeMode, UUID) -> Void)?
+    var showSender: ((Sender) -> Void)?
     // Only the latest message starts open. This set holds the messages the reader flipped.
     @State private var toggled: Set<UUID> = []
     @State private var showsMiddle = false
@@ -116,7 +117,7 @@ struct ConversationContent: View {
                             answered: folded ? nil : conversation.answered(by: message),
                             ownAddresses: ownAddresses, margin: margin, expanded: !folded,
                             toggle: conversation.messages.count > 1 ? { toggle(message) } : nil,
-                            compose: compose.map { compose in { compose($0, message.id) } }
+                            compose: compose.map { compose in { compose($0, message.id) } }, showSender: showSender
                         )
                     case .middle(let count):
                         Button { withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) { showsMiddle = true } } label: {
@@ -180,9 +181,11 @@ private struct MessageRow: View {
     var toggle: (() -> Void)?
     /// Nil hides the reply controls.
     var compose: ((ComposeMode) -> Void)?
+    var showSender: ((Sender) -> Void)?
     @State private var showsDetails = false
     @State private var showsQuote = false
     private var richText: NSAttributedString? { message.richText.map { RichText.decode($0, fallback: message.body) } }
+    private var canManageSender: Bool { !isPreview && !message.outgoing && !ownAddresses.contains(message.address.lowercased()) }
 
     private var foldedSummary: String {
         [message.sender, message.date.mailboxStamp, message.attachments?.isEmpty == false ? "Attachments" : nil, firstLine]
@@ -271,17 +274,28 @@ private struct MessageRow: View {
     }
 
     @ViewBuilder private var controls: some View {
-        if let compose {
+        if compose != nil || canManageSender {
             let id = conversationID
             // In the labels, the date and time tell apart two open messages from one sender.
             let time = message.date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
             HStack(spacing: 8) {
-                Button { compose(.reply(id)) } label: { Image(systemName: "arrowshape.turn.up.left") }
-                    .accessibilityLabel("Reply to \(message.sender), \(time)")
+                if let compose {
+                    Button { compose(.reply(id)) } label: { Image(systemName: "arrowshape.turn.up.left") }
+                        .accessibilityLabel("Reply to \(message.sender), \(time)")
+                }
                 Menu {
-                    Button("Reply", systemImage: "arrowshape.turn.up.left") { compose(.reply(id)) }
-                    Button("Reply All", systemImage: "arrowshape.turn.up.left.2") { compose(.replyAll(id)) }
-                    Button("Forward", systemImage: "arrowshape.turn.up.right") { compose(.forward(id)) }
+                    if let compose {
+                        Button("Reply", systemImage: "arrowshape.turn.up.left") { compose(.reply(id)) }
+                        Button("Reply All", systemImage: "arrowshape.turn.up.left.2") { compose(.replyAll(id)) }
+                        Button("Forward", systemImage: "arrowshape.turn.up.right") { compose(.forward(id)) }
+                        if canManageSender { Divider() }
+                    }
+                    if canManageSender, let showSender {
+                        Button("Sender History", systemImage: "person.crop.circle") {
+                            showSender(Sender(name: message.sender, address: message.address))
+                        }
+                        SenderBlockButton(address: message.address)
+                    }
                 } label: { Image(systemName: "ellipsis").frame(height: 16) }
                     .accessibilityLabel("Message actions, \(message.sender), \(time)")
             }

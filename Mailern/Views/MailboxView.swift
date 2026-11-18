@@ -215,17 +215,24 @@ struct MailboxView: View {
                     case .conversation(let id):
                         if store.conversation(id) != nil {
                             ThreadView(id: id, next: {
+                                if case .sender(let sender) = paths[status]?.dropLast().last {
+                                    let order = store.conversations(with: sender.address).map(\.id)
+                                    return MailboxItem.conversation(after: id, in: order, available: Set(order))
+                                }
                                 let available = Set(items(status).compactMap { $0.conversation?.id })
                                 return MailboxItem.conversation(after: id, in: openedOrder[status] ?? [], available: available)
                             }, open: { next in
                                 guard paths[status]?.last == .conversation(id) else { return }
                                 paths[status]?.removeLast()
                                 paths[status]?.append(.conversation(next))
+                            }, showSender: { sender in
+                                paths[status, default: []].append(.sender(sender))
                             })
                             // A replaced thread is a new view, so it marks the next conversation read and drops the old one's state.
                             .id(id)
                         }
                         else { DraftThreadView(id: id) }
+                    case .sender(let sender): SenderHistoryView(sender: sender)
                     case .removed(let mailbox): RemovedMailboxView(mailbox: mailbox)
                     case .scheduled: ScheduledMailboxView()
                     case .scheduledMessage(let id): ScheduledMessageView(id: id)
@@ -561,6 +568,7 @@ struct MailboxView: View {
 }
 
 enum MailboxRoute: Hashable {
+    case sender(Sender)
     case conversation(UUID)
     case removed(RemovedMailbox)
     case scheduled
