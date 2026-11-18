@@ -170,6 +170,7 @@ import SQLite3
         // Loading writes the seed data in full, so search works before the first change. Later saves write only what changed.
         assert(store.search("Saturday").indexed?.isEmpty == false)
         store.markRead(changed)
+        assert(!MailStore(persistence: SQLitePersistence(url: url)).conversation(changed)!.unread)
         // A second connection plants an unreadable row. A save that rewrote every row would replace it.
         var db: OpaquePointer?
         assert(sqlite3_open(url.path, &db) == SQLITE_OK)
@@ -181,6 +182,13 @@ import SQLite3
             return sqlite3_step(statement) == SQLITE_ROW ? String(cString: sqlite3_column_text(statement, 0)) : nil
         }
         assert(sqlite3_exec(db, "UPDATE conversations SET payload = CAST('planted' AS BLOB) WHERE id = '\(untouched.uuidString)'", nil, nil, nil) == SQLITE_OK)
+        assert(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+        store.markRead(changed, unread: true)
+        assert(store.error != nil && store.conversation(changed)!.unread)
+        assert(sqlite3_exec(db, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
+        store.markRead(changed, unread: true)
+        assert(payload(changed)?.contains("\"unread\":true") == true)
+        store.error = nil
         store.move(changed, to: .settled)
         store.receiveNew()
         assert(store.error == nil && payload(untouched) == "planted" && payload(changed)?.contains("settled") == true)

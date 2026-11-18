@@ -11,11 +11,14 @@ struct MailData: Equatable {
 protocol ConversationPersistence {
     func load() throws -> MailData?
     func save(_ data: MailData) throws
+    /// The last save succeeded and only this conversation’s unread flag changed.
+    func saveReadChange(in data: MailData, at index: Int) throws
     /// IDs of conversations whose stored text contains `text`, or nil when the store has no index for it.
     func search(_ text: String) throws -> Set<UUID>?
 }
 
 extension ConversationPersistence {
+    func saveReadChange(in data: MailData, at index: Int) throws { try save(data) }
     func search(_ text: String) throws -> Set<UUID>? { nil }
 }
 
@@ -134,10 +137,11 @@ final class MailStore {
     }
 
     private var data: MailData { MailData(conversations: conversations, accounts: accounts, blockedSenders: blockedSenders) }
-    @discardableResult private func save() -> Bool {
+    @discardableResult private func save(readChangeAt index: Int? = nil) -> Bool {
         guard canWrite() else { return false }
         do {
-            try persistence.save(data)
+            if let index, indexCurrent { try persistence.saveReadChange(in: data, at: index) }
+            else { try persistence.save(data) }
             indexCurrent = true
             return true
         } catch {
@@ -156,10 +160,11 @@ final class MailStore {
         action(&conversations[index]); save()
     }
     func markRead(_ id: UUID, unread: Bool = false) {
-        guard let current = conversation(id), current.workflow != .settled else { return }
+        guard let index = conversations.firstIndex(where: { $0.id == id }), conversations[index].workflow != .settled else { return }
         if case .read = undoAction { clearNotice() }
-        guard current.unread != unread || !indexCurrent else { return }
-        update(id) { $0.unread = unread }
+        guard conversations[index].unread != unread || !indexCurrent else { return }
+        conversations[index].unread = unread
+        save(readChangeAt: index)
     }
     func togglePin(_ id: UUID) {
         guard conversation(id) != nil else { return }

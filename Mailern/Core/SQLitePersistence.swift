@@ -62,6 +62,16 @@ final class SQLitePersistence: ConversationPersistence {
         return data
     }
 
+    func saveReadChange(in data: MailData, at index: Int) throws {
+        let conversation = data.conversations[index]
+        guard stored != nil, positions[conversation.id] != nil else { return try save(data) }
+        let db = try open()
+        let payload = try AttachmentJSON.encoder(for: url).encode(conversation)
+        try run(db, "UPDATE conversations SET payload = ? WHERE id = ?", [.blob(payload), .text(conversation.id.uuidString)])
+        guard sqlite3_changes(db) == 1 else { throw Failure(message: "The conversation could not be marked read or unread.") }
+        stored = data
+    }
+
     func save(_ data: MailData) throws {
         let db = try open()
         let encoder = AttachmentJSON.encoder(for: url)
