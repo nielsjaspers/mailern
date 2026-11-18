@@ -16,6 +16,7 @@ import SQLite3
         try await checkMailboxFiltersAndDraftActions()
         try checkSnoozeSettings()
         try checkTrashAndJunk()
+        try checkSenderBlocking()
         try checkSQLiteStorage()
         try await checkAccounts()
         try checkThreadingHeaders()
@@ -627,10 +628,9 @@ import SQLite3
         let rescued = store.conversation(settled)!
         assert(rescued.removal == nil && rescued.workflow == .inbox && rescued.unread)
 
-        let spam = store.list(.inbox).first { !$0.senderAddresses.isEmpty }!
-        let sender = spam.correspondent.address
+        let spam = store.list(.inbox)[0]
         store.apply(ids: [spam.id], action: .remove(.junk))
-        assert(store.blockedSenders.contains(sender.lowercased()) && store.list(.junk).map(\.id) == [spam.id])
+        assert(store.blockedSenders.isEmpty && store.list(.junk).map(\.id) == [spam.id])
         store.undo()
         assert(store.blockedSenders.isEmpty && store.conversation(spam.id)!.removal == nil)
         store.apply(ids: [spam.id], action: .remove(.junk))
@@ -639,18 +639,11 @@ import SQLite3
         store.apply(ids: [spam.id], action: .restoreRemoved)
         assert(store.blockedSenders.isEmpty && store.list(.inbox).contains { $0.id == spam.id })
 
-        store.apply(ids: [spam.id], action: .remove(.junk))
         store.deletePermanently([spam.id])
         assert(store.conversation(spam.id) == nil)
         let reloaded = MailStore(persistence: disk)
-        assert(reloaded.blockedSenders == [sender.lowercased()], "A block must survive deleting its junk")
-        reloaded.receiveNew()
-        assert(reloaded.conversations[0].removal == nil)
-        reloaded.apply(ids: [reloaded.conversations[0].id], action: .remove(.junk))
-        reloaded.receiveNew()
-        assert(reloaded.conversations[0].subject == "Coffee this week?" && reloaded.conversations[0].removal == .junk, "Mail from a blocked sender goes to Junk")
         reloaded.receiveJunk()
-        assert(reloaded.list(.junk).contains { $0.subject == "You have been selected" })
+        assert(reloaded.blockedSenders.isEmpty && reloaded.list(.junk).contains { $0.subject == "You have been selected" })
 
         let old = reloaded.list(.inbox).prefix(2).map(\.id)
         reloaded.apply(ids: Set(old), action: .remove(.trash))
@@ -663,7 +656,60 @@ import SQLite3
         assert(reloaded.list(.trash).isEmpty && MailStore(persistence: disk).conversations == reloaded.conversations)
         reloaded.reset()
         assert(reloaded.blockedSenders.isEmpty && reloaded.list(.junk).isEmpty)
-        print("PASS: trash/junk lists, restore to original workflow, Undo with block list, draft cancels Restore Undo, reply rescues Trash but not Junk, block survives deletion, 30-day purge, permanent deletion, reset")
+        print("PASS: Trash and Junk lists, restore to original workflow, Undo, draft cancels Restore Undo, reply rescues Trash, 30-day purge, permanent deletion, reset")
+    }
+
+    @MainActor static func checkSenderBlocking() throws {
+        let disk = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-blocked-\(UUID())/mail.sqlite"))
+        let account = MailAccount.demo[0]
+        let first = MailMessage(sender: "Alex", address: "alex@example.com", to: [account.address],
+                                date: .distantPast, body: "First", subject: "Project update")
+        var second = MailMessage(sender: "Casey", address: "casey@example.com", to: [account.address],
+                                 date: .now, body: "Second", subject: first.subject)
+        second.answer(first)
+        try disk.save(MailData(conversations: [Conversation(accountID: account.id, subject: first.subject!, messages: [first, second])]))
+        let store = MailStore(persistence: disk)
+        let thread = store.conversations[0].id
+        store.apply(ids: [thread], action: .remove(.junk))
+        assert(store.blockedSenders.isEmpty, "Moving a group thread to Junk must not block either sender")
+        store.setSenderBlocked(true, address: "ALEX@example.com")
+        store.undo()
+        assert(store.conversation(thread)?.removal == nil && store.blockedSenders == [first.address])
+        store.apply(ids: [thread], action: .remove(.junk))
+        store.apply(ids: [thread], action: .restoreRemoved)
+        assert(store.isSenderBlocked(first.address), "Not Junk must not unblock a sender")
+
+        var blockedReply = first
+        blockedReply.id = UUID()
+        blockedReply.date = .now
+        blockedReply.answer(second)
+        store.receive(blockedReply, accountID: account.id)
+        let junk = store.list(.junk)
+        assert(junk.map(\.messages) == [[blockedReply]], "Only the blocked reply goes to Junk")
+        assert(store.conversation(thread)?.messages == [first, second])
+
+        var otherReply = second
+        otherReply.id = UUID()
+        otherReply.date = .now.addingTimeInterval(60)
+        otherReply.answer(blockedReply)
+        store.receive(otherReply, accountID: account.id)
+        assert(store.conversation(thread)?.messages == [first, second, otherReply])
+
+        let sent = MailMessage(sender: account.name, address: account.address, to: [first.address.uppercased()],
+                               date: otherReply.date.addingTimeInterval(60), body: "Outgoing", outgoing: true, subject: "Sent to Alex")
+        store.receive(sent, accountID: account.id)
+        assert(store.conversations(with: first.address.uppercased()).map(\.subject) == ["Sent to Alex", "Project update", "Project update"])
+        assert(store.conversations(with: second.address).map(\.id) == [thread])
+
+        store.deletePermanently([junk[0].id])
+        let reopened = MailStore(persistence: disk)
+        assert(reopened.isSenderBlocked(first.address), "A block must survive deleting its Junk and relaunching")
+        reopened.setSenderBlocked(false, address: first.address.uppercased())
+        let unblocked = MailStore(persistence: disk)
+        unblocked.receive(blockedReply, accountID: account.id)
+        assert(unblocked.blockedSenders.isEmpty && unblocked.list(.junk).isEmpty)
+        assert(unblocked.conversation(thread)?.latest == blockedReply)
+        print("PASS: Junk and Undo are independent of blocks, mixed threads keep unblocked replies, sender history includes sent mail, blocks and unblocks persist")
     }
 
     @MainActor static func checkUndoExpiry() async throws {

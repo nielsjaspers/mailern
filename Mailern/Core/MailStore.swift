@@ -39,7 +39,6 @@ final class MailStore {
     private(set) var actionCount = 0
     private var undoSnapshot: [Conversation] = []
     private var undoAction: ConversationAction?
-    private var undoBlockedSenders: Set<String> = []
     @ObservationIgnored private var noticeExpiryTask: Task<Void, Never>?
     private let persistence: any ConversationPersistence
     private var loadFailure: String?
@@ -105,6 +104,28 @@ final class MailStore {
             return $0.id.uuidString < $1.id.uuidString
         }
     }
+    func conversations(with address: String) -> [Conversation] {
+        let address = address.lowercased()
+        return conversations.filter { conversation in
+            conversation.messages.contains { message in
+                message.address.lowercased() == address ||
+                (message.to + message.cc + (message.bcc ?? [])).contains { $0.lowercased() == address }
+            }
+        }.sorted {
+            if $0.latest.date != $1.latest.date { return $0.latest.date > $1.latest.date }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+    func isSenderBlocked(_ address: String) -> Bool { blockedSenders.contains(address.lowercased()) }
+
+    func setSenderBlocked(_ blocked: Bool, address: String) {
+        let address = address.lowercased()
+        guard canWrite(), blocked != isSenderBlocked(address) else { return }
+        let before = blockedSenders
+        if blocked { blockedSenders.insert(address) } else { blockedSenders.remove(address) }
+        if !save() { blockedSenders = before }
+    }
+
     private var data: MailData { MailData(conversations: conversations, accounts: accounts, blockedSenders: blockedSenders) }
     @discardableResult private func save() -> Bool {
         guard canWrite() else { return false }
@@ -165,7 +186,6 @@ final class MailStore {
         actionCount += 1
         undoSnapshot = before
         undoAction = action
-        undoBlockedSenders = blockedSenders
         let affectedIDs = Set(before.map(\.id))
         for i in conversations.indices where affectedIDs.contains(conversations[i].id) {
             switch action {
@@ -178,9 +198,7 @@ final class MailStore {
             case .remove(.junk):
                 conversations[i].endReminder()
                 conversations[i].removal = .junk
-                blockedSenders.formUnion(conversations[i].senderAddresses)
             case .restoreRemoved:
-                if conversations[i].removal == .junk { blockedSenders.subtract(conversations[i].senderAddresses) }
                 conversations[i].removal = nil
             }
         }
@@ -227,7 +245,6 @@ final class MailStore {
             case .restoreRemoved: conversations[i].removal = old.removal
             }
         }
-        blockedSenders = undoBlockedSenders
         save()
         clearNotice()
     }
@@ -237,7 +254,6 @@ final class MailStore {
         notice = nil
         undoSnapshot = []
         undoAction = nil
-        undoBlockedSenders = []
     }
     /// A new reply draft must not ride a stale Undo back into Trash, Junk, or another section.
     func clearWorkflowUndo(involving ids: Set<UUID>) {
@@ -328,9 +344,18 @@ final class MailStore {
     func receive(_ message: MailMessage, accountID: String, junk: Bool = false) {
         guard canWrite() else { return }
         clearNotice()
-        let junk = junk || blockedSenders.contains(message.address.lowercased())
+        let blocked = isSenderBlocked(message.address)
+        let junk = junk || blocked
         let answered = Set([message.inReplyTo].compactMap { $0 } + (message.references ?? []))
-        if !answered.isEmpty, let i = conversations.firstIndex(where: { $0.accountID == accountID && $0.contains(messageIDs: answered) }) {
+        let matches = answered.isEmpty ? [] : conversations.indices.filter {
+            conversations[$0].accountID == accountID && conversations[$0].contains(messageIDs: answered)
+        }
+        // A blocked reply must leave the original conversation where it was. Later replies from
+        // other senders can reference both parts, so prefer the original over the Junk split.
+        let target = blocked
+            ? matches.first { conversations[$0].removal == .junk }
+            : matches.first { conversations[$0].removal != .junk } ?? matches.first
+        if let i = target {
             conversations[i].receive(message)
             if junk { conversations[i].removal = .junk }
         } else {

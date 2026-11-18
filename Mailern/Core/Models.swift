@@ -117,8 +117,6 @@ struct Conversation: Codable, Identifiable, Equatable {
         let index = messages.firstIndex { $0.id == message.id } ?? messages.count - 1
         return messages[...index].last(where: { $0.subject != nil })?.subject ?? subject
     }
-    /// Lowercased addresses of everyone else who wrote in the thread.
-    var senderAddresses: Set<String> { Set(messages.filter { !$0.outgoing }.map { $0.address.lowercased() }) }
     var correspondent: MailMessage { messages.last(where: { !$0.outgoing }) ?? latest }
     /// Everyone who wrote in the thread, in order of first appearance. Sent-only threads show their recipients.
     var participants: String {
@@ -155,7 +153,7 @@ struct Conversation: Codable, Identifiable, Equatable {
         guard muted != true else { endReminder(); return }
         move(to: .inbox)
         unread = true
-        // A reply rescues a thread from Trash. Junk keeps it until the sender is unblocked.
+        // A reply rescues a thread from Trash. A conversation in Junk must be restored by hand.
         if removal?.mailbox == .trash { removal = nil }
     }
 }
