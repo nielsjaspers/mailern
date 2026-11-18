@@ -121,19 +121,25 @@ struct MailernApp: App {
         WindowGroup {
             let sessions = mailboxes
             let session = sessions.active
-            MailboxView(benchmark: session.benchmark, selectBenchmark: sessions.select)
+            MailboxView(benchmark: session.benchmark, selectBenchmark: { benchmark in
+                try await sessions.select(benchmark)
+                refreshReminders(sessions)
+                await notifications.finishPendingChanges()
+            })
                 .environment(session.store).environment(session.drafts).environment(session.snoozePreferences).tint(.teal)
                 .defaultAppStorage(session.defaults)
                 .id(session.id)
                 .onChange(of: sessions.reminderBoxes.map {
                     ReminderRevision(session: sessions.id, scope: $0.scope, mail: $0.mail.mailboxRevision,
-                                     drafts: $0.drafts.reminderRevision, ready: !$0.mail.needsReload && !$0.drafts.needsReload)
+                                     drafts: $0.drafts.reminderRevision, mailReady: !$0.mail.needsReload,
+                                     draftsReady: !$0.drafts.needsReload)
                 }, initial: true) { _, _ in refreshReminders(sessions) }
                 .onReceive(NotificationCenter.default.publisher(for: Notification.Name("MailernReminderAuthorizationChanged"))) { _ in
-                    refreshReminders(sessions)
+                    refreshReminders(sessions, checkPermission: true)
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { refreshReminders(sessions) }
+                    if phase == .active { refreshReminders(sessions, checkPermission: true) }
+                    else { notifications.protectPendingChanges() }
                 }
                 .task(id: scenePhase == .active ? sessions.id : nil) {
                     guard scenePhase == .active else { return }
@@ -159,11 +165,12 @@ struct MailernApp: App {
         let scope: String
         let mail: UInt64
         let drafts: UInt64
-        let ready: Bool
+        let mailReady: Bool
+        let draftsReady: Bool
     }
 
-    private func refreshReminders(_ sessions: MailboxSessions) {
-        notifications.refresh(namespace: TestStorage.reminderNamespace, mailboxes: sessions.reminderBoxes)
+    private func refreshReminders(_ sessions: MailboxSessions, checkPermission: Bool = false) {
+        notifications.refresh(namespace: TestStorage.reminderNamespace, mailboxes: sessions.reminderBoxes, checkPermission: checkPermission)
     }
 }
 
