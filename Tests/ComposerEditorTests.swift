@@ -50,6 +50,12 @@ import SwiftUI
         // Fixed black matches the adaptive label color only in light mode, and a resized attribution word is the writer's.
         XCTAssertFalse(folds(try reply("Sure.", quoting: casey) { $0.addAttribute(.foregroundColor, value: UIColor(white: 0, alpha: 1), range: NSRange(location: $1 + 24, length: 6)) }, quoting: casey))
         XCTAssertFalse(folds(try reply("Sure.", quoting: casey) { $0.addAttribute(.font, value: UIFont.systemFont(ofSize: 30), range: NSRange(location: $1 + 3, length: 6)) }, quoting: casey))
+        // The other appearance's purple on one attribution word is the writer's color, not the composer's.
+        let otherPurple = UIColor.systemPurple.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
+        for word in [NSRange(location: 0, length: 2), NSRange(location: 3, length: 6)] {
+            XCTAssertFalse(folds(try reply("Sure.", quoting: casey) { $0.addAttribute(.foregroundColor, value: otherPurple, range: NSRange(location: $1 + word.location, length: word.length)) }, quoting: casey))
+        }
+        XCTAssertFalse(folds(try reply("Sure.", quoting: casey) { $0.addAttribute(.kern, value: 4, range: NSRange(location: $1 + 24, length: 6)) }, quoting: casey))
         // Turning a quoted bulleted list into a numbered one changes it, even with the same text.
         let list = NSMutableAttributedString(attributedString: RichText.plain("Bread\nMilk"))
         let bullets = NSMutableParagraphStyle()

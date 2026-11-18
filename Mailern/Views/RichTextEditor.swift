@@ -31,6 +31,7 @@ enum RichText {
     /// copies, not with today's text size.
     private struct Look: Equatable {
         var font: String, size: CGFloat, color: [CGFloat], background: [CGFloat]?, underline: Int, strikethrough: Int, link: String?
+        var kern: CGFloat, baselineOffset: CGFloat
         var alignment: Int, direction: Int, head: CGFloat, firstLine: CGFloat, tail: CGFloat, lineSpacing: CGFloat
         var before: CGFloat, after: CGFloat, lineHeightMultiple: CGFloat, minimumLineHeight: CGFloat, maximumLineHeight: CGFloat
         var tabInterval: CGFloat, tabs: [CGFloat], lists: [String], quoted: Bool
@@ -55,7 +56,8 @@ enum RichText {
                 font: font.fontName, size: font.pointSize, color: components(attributes[.foregroundColor] as? UIColor ?? .black),
                 background: (attributes[.backgroundColor] as? UIColor).map { components($0) },
                 underline: attributes[.underlineStyle] as? Int ?? 0, strikethrough: attributes[.strikethroughStyle] as? Int ?? 0,
-                link: attributes[.link].map { "\($0)" }, alignment: alignment.rawValue, direction: paragraph.baseWritingDirection.rawValue,
+                link: attributes[.link].map { "\($0)" }, kern: attributes[.kern] as? CGFloat ?? 0,
+                baselineOffset: attributes[.baselineOffset] as? CGFloat ?? 0, alignment: alignment.rawValue, direction: paragraph.baseWritingDirection.rawValue,
                 head: paragraph.headIndent, firstLine: paragraph.firstLineHeadIndent, tail: paragraph.tailIndent,
                 lineSpacing: paragraph.lineSpacing, before: paragraph.paragraphSpacingBefore, after: paragraph.paragraphSpacing,
                 lineHeightMultiple: paragraph.lineHeightMultiple, minimumLineHeight: paragraph.minimumLineHeight,
@@ -96,7 +98,9 @@ enum RichText {
         let expected = looks(decode(data, fallback: "").attributedSubstring(from: quote))
         // Storage keeps the attribution's purple as a fixed color in the appearance it was saved in.
         let purples = [UIUserInterfaceStyle.light, .dark].map { components(UIColor.systemPurple.resolvedColor(with: UITraitCollection(userInterfaceStyle: $0))) }
-        return stored.count == expected.count && zip(stored.indices, zip(stored, expected)).allSatisfy { index, pair in
+        // The composer colors the whole line at once, so one color must cover all of it.
+        guard stored.count == expected.count, Set(stored[...attributionLength].map(\.color)).count == 1 else { return false }
+        return zip(stored.indices, zip(stored, expected)).allSatisfy { index, pair in
             var (look, wanted) = pair
             if index <= attributionLength, purples.contains(look.color), purples.contains(wanted.color) { look.color = wanted.color }
             return look == wanted
