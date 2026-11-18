@@ -120,7 +120,9 @@ struct ConversationContent: View {
                     case .message(let message):
                         MessageRow(
                             message: message, conversationID: conversation.id, threadSubject: conversation.subject,
-                            quoteStart: conversation.quoteStart(of: message), answered: conversation.answered(by: message),
+                            // A folded row shows only its first line, so it needs no quote.
+                            quoteStart: folded ? nil : conversation.quoteStart(of: message),
+                            answered: folded ? nil : conversation.answered(by: message),
                             ownAddresses: ownAddresses, margin: margin, expanded: !folded,
                             toggle: conversation.messages.count > 1 ? { toggle(message) } : nil,
                             compose: compose.map { compose in { compose($0, message.id) } }
@@ -216,16 +218,19 @@ private struct MessageRow: View {
             if expanded { content.transition(.opacity) }
         }
         .padding(.vertical, expanded ? 14 : 12)
-        .contentShape(Rectangle())
-        // A folded message opens on a tap anywhere and reads as one button. Open, the tap is off, so links,
-        // selection, and controls in the message keep their own taps.
-        .gesture(TapGesture().onEnded { toggle?() }, including: expanded ? .subviews : .all)
-        // Folded, the row is one button that leaves out its own sender button. Open, its controls are separate elements.
-        .accessibilityElement(children: expanded ? .contain : .ignore)
-        .accessibilityLabel(expanded ? "" : foldedSummary)
-        .accessibilityAddTraits(expanded ? [] : .isButton)
-        .accessibilityHint(expanded ? Text(verbatim: "") : Text("Expands the message"))
-        .accessibilityAction { if !expanded { toggle?() } }
+        // A folded message opens on a tap anywhere. The tap sits in an overlay, not on the row, so it cannot merge
+        // the sender line into one accessibility element; for VoiceOver, the sender line is the row's button.
+        // Open, the overlay takes no touches, so links, selection, and controls in the message keep their own taps.
+        .overlay {
+            Color.clear.contentShape(Rectangle())
+                .onTapGesture { toggle?() }
+                .allowsHitTesting(!expanded)
+                .accessibilityHidden(true)
+        }
+        // A message opens as it was first shown, with its quote and addresses hidden.
+        .onChange(of: expanded) { _, open in
+            if !open { showsQuote = false; showsDetails = false }
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -318,10 +323,13 @@ private struct MessageRow: View {
             if !expanded, message.attachments?.isEmpty == false {
                 Image(systemName: "paperclip").accessibilityLabel("Attachments")
             }
-            Text(expanded && !Calendar.current.isDateInToday(message.date)
-                 ? message.date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
-                 : message.date.mailboxStamp)
+            Text(dateText)
         }.fixedSize()
+    }
+    private var dateText: String {
+        expanded && !Calendar.current.isDateInToday(message.date)
+            ? message.date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+            : message.date.mailboxStamp
     }
 
     private var header: some View {
@@ -329,14 +337,17 @@ private struct MessageRow: View {
             // The avatar folds an open message too. It is a plain tap: VoiceOver has the sender line's button.
             SenderAvatar(message: message, size: expanded ? 36 : 32)
                 .onTapGesture { toggle?() }
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: expanded ? 4 : 2) {
                 // One view in both states, so the sender line keeps its identity while toggling. Open, it folds the
                 // message and acts as a button. Folded, the whole row is the button.
                 nameLine
                     .gesture(TapGesture().onEnded { toggle?() }, including: expanded && toggle != nil ? .all : .subviews)
+                    // VoiceOver reads the whole folded row here, and this element folds or opens the message.
                     .accessibilityElement(children: .combine)
-                    .accessibilityAddTraits(expanded && toggle != nil ? .isButton : [])
-                    .accessibilityHint(expanded && toggle != nil ? Text("Collapses the message") : Text(verbatim: ""))
+                    .accessibilityLabel(expanded ? "\(message.sender), \(dateText)" : foldedSummary)
+                    .accessibilityAddTraits(toggle != nil ? .isButton : [])
+                    .accessibilityHint(toggle == nil ? "" : expanded ? "Collapses the message" : "Expands the message")
                 if expanded {
                     // At accessibility sizes the reply controls get their own line, so the recipients keep the full width.
                     let layout = textSize.isAccessibilitySize
@@ -360,7 +371,8 @@ private struct MessageRow: View {
                     }
                     .transition(.opacity)
                 } else {
-                    Text(firstLine).font(.footnote).lineLimit(1).transition(.opacity)
+                    // The sender line's button reads this line for VoiceOver.
+                    Text(firstLine).font(.footnote).lineLimit(1).transition(.opacity).accessibilityHidden(true)
                 }
             }
             .font(.caption).foregroundStyle(.secondary)
