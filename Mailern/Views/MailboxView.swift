@@ -197,7 +197,7 @@ struct MailboxView: View {
         NavigationStack(
             path: Binding(get: { paths[status, default: []] }, set: { paths[status] = $0 })
         ) {
-            mailbox(status)
+            mailboxViewport(status)
                 .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner() }
                 .navigationTitle(status.title)
                 .searchable(text: $search, isPresented: Binding(
@@ -330,6 +330,18 @@ struct MailboxView: View {
             systemImage: filtered ? "line.3.horizontal.decrease.circle" : search.isEmpty ? status.symbol : "magnifyingglass",
             description: Text(filtered ? "Change your filters or turn filtering off." : search.isEmpty ? "" : allMail(status) ? "Try another search." : "Try another search in this section.")
         )
+    }
+
+    private func mailboxViewport(_ status: Workflow) -> some View {
+        // Draw through the keyboard transition, but let the last result scroll above the keyboard.
+        GeometryReader { available in
+            GeometryReader { viewport in
+                let covered = max(0, viewport.frame(in: .global).maxY - available.frame(in: .global).maxY)
+                mailbox(status)
+                    .contentMargins(.bottom, covered, for: .scrollContent)
+            }
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+        }
     }
 
     private func mailbox(_ status: Workflow) -> some View {

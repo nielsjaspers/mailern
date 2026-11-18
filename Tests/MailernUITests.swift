@@ -594,6 +594,33 @@ final class ThreadFoldsMessagesAndRepliesToEarlierMessageUITests: MailernUITestC
 
 final class BenchmarkMailboxUITests: MailernUITestCase {
     @MainActor
+    func testLastSearchResultStaysAboveKeyboard() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["More"].tap()
+        app.buttons["Demo"].tap()
+        app.buttons["benchmark-20000"].tap()
+        waitForAbsence(app.navigationBars["Demo"], timeout: 45)
+        let search = app.searchFields.firstMatch
+        if !search.isHittable { app.swipeDown() }
+        search.tap()
+        search.typeText("Sample 200")
+        let last = row("Project update · Sample 20000,", in: app)
+        let keyboard = app.keyboards.firstMatch
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.26))
+        for _ in 0..<5 {
+            if last.exists && last.isHittable && last.frame.midY < keyboard.frame.minY { break }
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+        XCTAssertTrue(keyboard.exists)
+        XCTAssertLessThan(last.frame.midY, keyboard.frame.minY)
+        last.tap()
+        XCTAssertTrue(app.staticTexts["Project update · Sample 20000"].firstMatch.existsOrWait(timeout: 5))
+    }
+
+    @MainActor
     func testSettleAndUndoEntireLargeInbox() {
         continueAfterFailure = false
         let app = TestApplication()
