@@ -6,13 +6,17 @@ import SQLite3
 /// A trigram full-text index covers subjects, senders, addresses, and bodies for substring search.
 final class SQLitePersistence: ConversationPersistence {
     let url: URL
+    private let requiresSeed: Bool
     private var db: OpaquePointer?
     /// What the database holds after the last successful load or save. Nil means unknown, so the next save rewrites everything.
     private var stored: MailData?
     /// Load order. New conversations go to the front, so inserting one does not renumber the others.
     private var positions: [UUID: Int] = [:]
 
-    init(url: URL) { self.url = url }
+    init(url: URL, requiresSeed: Bool = false) {
+        self.url = url
+        self.requiresSeed = requiresSeed
+    }
     deinit { sqlite3_close(db) }
 
     static var local: SQLitePersistence {
@@ -22,17 +26,27 @@ final class SQLitePersistence: ConversationPersistence {
     /// An interrupted first write can leave an SQLite file with no data. The accounts row commits with the fixture.
     func seedIfNeeded(_ makeData: () -> MailData) throws {
         let db = try open()
-        if try setting(db, "accounts") == nil { try save(makeData()) }
+        guard try setting(db, "accounts") == nil else { return }
+        var hasMail = false
+        try query(db, "SELECT 1 FROM conversations LIMIT 1") { _ in hasMail = true }
+        guard !hasMail else { throw Failure(message: "This large mailbox contains mail but is missing its accounts.") }
+        try save(makeData())
     }
 
     func load() throws -> MailData? {
         stored = nil
         positions = [:]
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            if requiresSeed { throw Failure(message: "This large mailbox has not been generated.") }
+            return nil
+        }
         let db = try open()
         let decoder = AttachmentJSON.decoder(for: url)
         // The accounts row is written in the same transaction as the first conversations. Without it, nothing was stored.
-        guard let accounts = try setting(db, "accounts") else { return nil }
+        guard let accounts = try setting(db, "accounts") else {
+            if requiresSeed { throw Failure(message: "This large mailbox is incomplete. Return to Demo Mail and open it again.") }
+            return nil
+        }
         var data = MailData(conversations: [], accounts: try decoder.decode([MailAccount].self, from: accounts))
         if let blocked = try setting(db, "blockedSenders") {
             data.blockedSenders = try decoder.decode(Set<String>.self, from: blocked)

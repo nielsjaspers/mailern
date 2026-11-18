@@ -667,19 +667,27 @@ import SQLite3
             assert(conversations.count == size.rawValue)
             assert(Set(conversations.map(\.id)).count == size.rawValue)
             assert(Set(conversations.map(\.accountID)) == Set(mail.accounts.map(\.id)))
-            assert(conversations.contains { $0.messages.count == 16 && $0.messages.contains { $0.html != nil } })
-            assert(conversations.filter { $0.workflow == .inbox }.count == size.rawValue * 4 / 5)
+            assert(conversations.contains { $0.workflow == .inbox && $0.messages.count == 16 && $0.latest.html != nil })
+            assert(conversations.contains { $0.workflow == .settled && $0.messages.count == 16 && $0.latest.html != nil })
+            assert(conversations.filter { $0.workflow == .inbox }.count == size.rawValue - size.rawValue / 7)
+            assert(conversations.filter { $0.searchText.contains("larchdelta") }.count == 1)
+            let bodyHits = conversations.filter { $0.searchText.contains("handover notes") }.count
+            assert(bodyHits > size.rawValue / 5 && bodyHits < size.rawValue)
             assert(conversations.first?.subject == "Weekly report · Sample 1")
         }
 
         let directory = URL.temporaryDirectory.appending(path: "mailern-benchmark-\(UUID())")
-        let benchmark = SQLitePersistence(url: directory.appending(path: "Benchmark/mail.sqlite"))
+        let benchmark = SQLitePersistence(url: directory.appending(path: "Benchmark/mail.sqlite"), requiresSeed: true)
         let baseline = MailData(conversations: DemoData.conversations())
         let normal = SQLitePersistence(url: directory.appending(path: "mail.sqlite"))
         try normal.save(baseline)
         // Opening an empty SQLite file before the seed simulates an interrupted first write.
         let empty = try benchmark.search("sample")
         assert(empty == [])
+        do {
+            _ = try benchmark.load()
+            assertionFailure("A selected benchmark without a committed fixture must not load as ordinary demo mail")
+        } catch {}
         var fixture = MailData(conversations: Array(baseline.conversations.prefix(1)))
         try benchmark.seedIfNeeded { fixture }
         fixture.conversations = []
@@ -688,7 +696,17 @@ import SQLite3
         let untouched = try normal.load()
         assert(loaded?.conversations == Array(baseline.conversations.prefix(1)))
         assert(untouched == baseline)
-        print("PASS: both benchmark sizes, realistic thread and HTML mix, seed recovery, and isolated SQLite storage")
+        var db: OpaquePointer?
+        assert(sqlite3_open(benchmark.url.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        assert(sqlite3_exec(db, "DELETE FROM settings WHERE key = 'accounts'", nil, nil, nil) == SQLITE_OK)
+        do {
+            try benchmark.seedIfNeeded { fixture }
+            assertionFailure("A fixture missing its accounts must not overwrite the mail it already contains")
+        } catch {}
+        let retained = try benchmark.search("Course project feedback")
+        assert(retained == [baseline.conversations[0].id])
+        print("PASS: both benchmark sizes, thread and HTML mix, distinct search match counts, seed recovery, and isolated SQLite storage")
     }
 
     @MainActor static func checkSenderBlocking() throws {
