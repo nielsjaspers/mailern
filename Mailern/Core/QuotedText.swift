@@ -16,9 +16,10 @@ enum QuotedText {
         let quote = "\n\n" + attribution(for: answered) + "\n" + answered.body
         let text = body.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
         let expected = quote.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
-        // NSString compares UTF-16 literally, so the offset below lands where the quote starts.
-        guard (text as NSString).hasSuffix(expected) else { return nil }
-        let offset = text.utf16.count - expected.utf16.count + 2
+        // Code units, not characters: text that only looks the same could shift the offset below.
+        let units = Array(text.utf16), quoteUnits = Array(expected.utf16)
+        guard units.count >= quoteUnits.count, units.suffix(quoteUnits.count).elementsEqual(quoteUnits) else { return nil }
+        let offset = units.count - quoteUnits.count + 2
         guard !(body as NSString).substring(to: offset).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return offset
     }

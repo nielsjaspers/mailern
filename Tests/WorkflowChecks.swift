@@ -388,6 +388,10 @@ import SQLite3
         assert(visible("Set the cutoff to\n> 0", MailMessage(sender: "Avery", address: "avery@example.com", to: [], date: .now, body: "0")) == nil)
         assert(visible("\n\n\(attribution)\n\(casey.body)") == nil, "A message never folds to nothing")
         assert(visible(reply.replacingOccurrences(of: "\nHey!", with: "\n  Hey!")) == nil, "Changed indentation is not proven")
+        // A quote that only looks the same, here a decomposed é, is not proven and cannot shift the fold.
+        let cafe = MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [], date: casey.date, body: "Caf\u{E9}?")
+        assert(visible("Yes.\n\n\(QuotedText.attribution(for: cafe))\nCafe\u{301}?", cafe) == nil)
+        assert(visible("Yes.\n\n\(QuotedText.attribution(for: cafe))\nCaf\u{E9}?", cafe) == "Yes.\n\n")
         // Forwarded mail is the point of a forward and does not fold.
         assert(visible("FYI\n\nBegin forwarded message:\n\nFrom: Casey Rivera <casey@example.com>\n\n\(casey.body)") == nil)
 
