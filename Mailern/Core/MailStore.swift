@@ -174,9 +174,9 @@ final class MailStore {
             return false
         }
     }
-    func finishDraftDiscards(_ completed: Set<UUID>) {
+    func finishDraftDiscards(_ completed: Set<UUID>, reportFailure: Bool = true) {
         guard !discardedDraftIDs.isDisjoint(with: completed) else { return }
-        save(replacingConversations: conversations, metadataAt: [], draftDiscards: discardedDraftIDs.subtracting(completed))
+        save(replacingConversations: conversations, metadataAt: [], draftDiscards: discardedDraftIDs.subtracting(completed), reportFailure: reportFailure)
     }
 
     /// Older outbox entries may have a sent message but no cleanup receipt.

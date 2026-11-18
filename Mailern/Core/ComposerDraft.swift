@@ -221,10 +221,13 @@ final class DraftStore {
                 let loaded = try await Task.detached { try Self.read(url) }.value
                 try self.loadManifest(loaded)
                 self.needsMailRecovery = false
-                self.retryMailRecoveryAfter = nil
                 self.loadFailure = nil
+                if self.mail?.discardedDraftIDs.isEmpty == false {
+                    let reportFailure = !automatic || self.retryMailRecoveryAfter == nil
+                    guard await self.persist(self.all, reportFailure: reportFailure) else { return false }
+                }
+                self.retryMailRecoveryAfter = nil
                 self.error = nil
-                if self.mail?.discardedDraftIDs.isEmpty == false { return await self.persist(self.all) }
                 return true
             } catch { self.failedToLoad(error, report: !automatic || self.loadFailure == nil); return false }
         }
@@ -430,7 +433,7 @@ final class DraftStore {
         pending = task
         return await task.value
     }
-    private func persist(_ updated: [ComposerDraft]) async -> Bool {
+    private func persist(_ updated: [ComposerDraft], reportFailure: Bool = true) async -> Bool {
         guard loadFailure == nil else { error = loadFailure; return false }
         let url = url
         let write = write
@@ -441,10 +444,13 @@ final class DraftStore {
                 try AttachmentJSON.save(updated, to: url, write: write)
             }.value
             all = updated
-            mail?.finishDraftDiscards(discarded)
+            mail?.finishDraftDiscards(discarded, reportFailure: reportFailure)
             error = nil
             return true
-        } catch { self.error = "Could not save drafts. \(error.localizedDescription)"; return false }
+        } catch {
+            if reportFailure { self.error = "Could not save drafts. \(error.localizedDescription)" }
+            return false
+        }
     }
     private func failedToLoad(_ error: any Error, report: Bool = true) {
         needsMailRecovery = true

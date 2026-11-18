@@ -809,6 +809,13 @@ import SQLite3
         await cold.sendDue(through: retryMail, now: deadline.addingTimeInterval(30))
         assert(cold.hasReadableManifest && cold.outbox.isEmpty)
         assert(retryMail.conversations.flatMap(\.messages).filter { $0.id == another.id }.count == 1)
+        try AttachmentJSON.save([another], to: draftURL)
+        let blockedCleanup = DraftStore(url: draftURL, mail: retryMail) { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        await blockedCleanup.recoverAfterMailLoad(now: deadline)
+        assert(blockedCleanup.error != nil)
+        blockedCleanup.error = nil
+        await blockedCleanup.recoverAfterMailLoad(now: deadline.addingTimeInterval(30))
+        assert(blockedCleanup.error == nil && blockedCleanup.outbox.isEmpty && retryMail.discardedDraftIDs == [another.id])
         print("PASS: existing outbox reconciles before sent mail deletion and survives startup Trash expiry without redelivery")
     }
 
