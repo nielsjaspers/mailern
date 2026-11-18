@@ -47,6 +47,11 @@ final class MailNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
 
     private func reconcile() async {
         let settings = await center.notificationSettings()
+        if settings.authorizationStatus == .denied {
+            let owned = await center.pendingNotificationRequests().filter { $0.identifier.hasPrefix(namespace) }
+            center.removePendingNotificationRequests(withIdentifiers: owned.map(\.identifier))
+            return
+        }
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional ||
                 settings.authorizationStatus == .ephemeral else { return }
         let boxes = mailboxes
