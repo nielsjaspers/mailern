@@ -766,6 +766,26 @@ import SQLite3
         try AttachmentJSON.save([pending], to: draftURL)
         await outbox.reload()
         assert(outbox.outbox.isEmpty && DraftStore(url: draftURL).outbox.isEmpty)
+        let retryURL = directory.appending(path: "retry.sqlite")
+        try SQLitePersistence(url: retryURL).save(MailData(conversations: [keptCopy]))
+        try AttachmentJSON.save([kept, pending], to: draftURL)
+        let retryMail = MailStore(persistence: SQLitePersistence(url: retryURL))
+        var db: OpaquePointer?
+        assert(sqlite3_open(retryURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let reject = "CREATE TRIGGER reject_receipt BEFORE INSERT ON settings WHEN NEW.key = 'discardedDraftIDs' BEGIN SELECT RAISE(ABORT, 'busy'); END"
+        assert(sqlite3_exec(db, reject, nil, nil, nil) == SQLITE_OK)
+        let retryDrafts = DraftStore(url: draftURL, mail: retryMail)
+        assert(!retryDrafts.hasReadableManifest)
+        await retryDrafts.recoverAfterMailLoad(now: deadline)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_receipt", nil, nil, nil) == SQLITE_OK)
+        await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(1))
+        assert(!retryDrafts.hasReadableManifest)
+        await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(30))
+        assert(retryDrafts.outbox.map(\.id) == [pending.id])
+        await retryDrafts.sendDue(through: retryMail, now: deadline.addingTimeInterval(30))
+        assert(Set(retryMail.conversations.flatMap(\.messages).map(\.id)) == [kept.id, pending.id])
+        assert(retryDrafts.outbox.isEmpty)
         print("PASS: existing outbox reconciles before sent mail deletion and survives startup Trash expiry without redelivery")
     }
 

@@ -178,6 +178,7 @@ final class DraftStore {
     var hasReadableManifest: Bool { loadFailure == nil }
     var needsReload: Bool { !hasReadableManifest || mail?.discardedDraftIDs.isEmpty == false }
     private var needsMailRecovery = false
+    private var retryMailRecoveryAfter: Date?
     @ObservationIgnored private var pending: Task<Bool, Never>?
 
     init(url: URL = URL.applicationSupportDirectory.appending(path: "Mailern/drafts-v1.json"), mail: MailStore? = nil,
@@ -204,6 +205,7 @@ final class DraftStore {
         if let mail {
             let scheduled = Set(loaded.lazy.filter { $0.sendAt != nil }.map(\.id))
             guard mail.verifyOutbox(scheduled) else {
+                needsMailRecovery = true
                 throw SQLitePersistence.Failure(message: mail.error ?? "Could not verify scheduled mail.")
             }
         }
@@ -218,6 +220,8 @@ final class DraftStore {
                 self.mail?.beginOutboxLoad()
                 let loaded = try await Task.detached { try Self.read(url) }.value
                 try self.loadManifest(loaded)
+                self.needsMailRecovery = false
+                self.retryMailRecoveryAfter = nil
                 self.loadFailure = nil
                 self.error = nil
                 if self.mail?.discardedDraftIDs.isEmpty == false { return await self.persist(self.all) }
@@ -399,10 +403,11 @@ final class DraftStore {
             return await self.persist(updated)
         }
     }
-    func recoverAfterMailLoad() async {
-        guard needsMailRecovery, mail?.needsReload != true else { return }
+    func recoverAfterMailLoad(now: Date = .now) async {
+        guard needsMailRecovery, mail?.needsReload != true, (retryMailRecoveryAfter ?? .distantPast) <= now else { return }
         needsMailRecovery = false
         await reload()
+        if needsMailRecovery { retryMailRecoveryAfter = now.addingTimeInterval(30) }
     }
 
     func finishPendingWrites() async {
