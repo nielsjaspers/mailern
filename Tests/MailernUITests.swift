@@ -233,6 +233,7 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
         XCTAssertGreaterThan(summary.frame.width, 70,
                              "The active filter must show its criteria beside the toggle")
         XCTAssertEqual(summary.value as? String, "Unread")
+        XCTAssertFalse(row("Dinner on Saturday?", in: app).exists, "The Unread filter hides read mail")
         XCTAssertLessThan(abs(summary.frame.midY - filter.frame.midY), 10)
         XCTAssertLessThan(filter.frame.minX - summary.frame.maxX, 20)
         for title in ["Inbox", "Snoozed", "Settled"] {
@@ -244,6 +245,10 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
         XCTAssertFalse(summary.exists)
         XCTAssertEqual(filter.value as? String, "Off")
         XCTAssertEqual(filter.frame.midX, center, accuracy: 1)
+        // A search drops selections it hides, and Select All acts only on the results.
+        app.buttons["Select"].tap()
+        row("Course project feedback", in: app).tap()
+        XCTAssertTrue(app.staticTexts["1 selected"].exists)
         let search = app.searchFields.firstMatch
         if !search.isHittable { app.swipeDown() }
         search.tap()
@@ -251,8 +256,7 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
         search.typeText("Dinner\n")
         XCTAssertTrue(row("Dinner on Saturday?", in: app).exists)
         XCTAssertFalse(row("Course project feedback", in: app).exists)
-        // Select All acts only on the search results, never on hidden mail.
-        app.buttons["Select"].tap()
+        XCTAssertTrue(app.staticTexts["0 selected"].existsOrWait(timeout: 3))
         app.buttons["Select All"].tap()
         XCTAssertTrue(app.staticTexts["1 selected"].exists)
         app.buttons["Settle"].tap()
@@ -275,6 +279,7 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
         app.buttons["Done"].tap()
         XCTAssertEqual(summary.value as? String, "Drafts, 3 accounts")
         XCTAssertTrue(summary.isHittable)
+        XCTAssertTrue(app.staticTexts["No matching mail"].exists, "These accounts have no drafts")
     }
 }
 
@@ -866,8 +871,16 @@ final class PeekReadAndThreadUITests: MailernUITestCase {
         XCTAssertTrue(app.navigationBars["Snooze"].existsOrWait(timeout: 5))
         app.buttons["Cancel"].tap()
         XCTAssertTrue(preview(in: app).existsOrWait(timeout: 5))
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.5)).tap()
+        // Choosing a time snoozes this conversation and closes the peek.
+        app.buttons["Snooze"].tap()
+        let option = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "In ")).firstMatch
+        XCTAssertTrue(option.existsOrWait(timeout: 5))
+        option.tap()
         waitForAbsence(preview(in: app))
+        waitForAbsence(row(subject, in: app))
+        select("Snoozed", in: app)
+        XCTAssertTrue(row(subject, in: app).existsOrWait(timeout: 5))
+        select("Inbox", in: app)
 
         let thread = "Dinner on Saturday?"
         for _ in 0..<3 where !row(thread, in: app).isHittable { app.swipeUp() }

@@ -11,7 +11,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from uuid import UUID
 
@@ -31,7 +30,11 @@ def run_group(*args, timeout, **kwargs):
                                      preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous), **kwargs)
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, previous)
-        return child.wait(timeout=timeout)
+        code = child.wait(timeout=timeout)
+        if code:
+            # A failed leader can leave compilers or test helpers behind in its group.
+            stop_group(child)
+        return code
     except BaseException:
         if child:
             stop_group(child)
@@ -153,7 +156,8 @@ def main():
     if args.stop and (args.only_testing or args.keep_booted):
         parser.error("--stop must be used on its own")
     simulator = str(args.simulator).upper()
-    simulator_lock = Path(tempfile.gettempdir()) / f"mailern-ui-{simulator}.lock"
+    # A fixed directory, so runs from shells with different TMPDIR values still see each other's lock.
+    simulator_lock = Path("/tmp") / f"mailern-ui-{simulator}.lock"
     if args.stop:
         # Recovery must not depend on listing devices first.
         with lock(simulator_lock, "Simulator"):
@@ -228,7 +232,7 @@ def main():
                         "-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", "120",
                         "-maximum-test-execution-time-allowance", "180",
                         *(f"-only-testing:{test}" for test in selectors),
-                        stdout=out, stderr=subprocess.STDOUT, timeout=600)
+                        stdout=out, stderr=subprocess.STDOUT, timeout=900 if animations == "on" else 600)
                 except subprocess.TimeoutExpired:
                     raise RuntimeError(f"Tests timed out. See {log}") from None
             if not Path(result).exists():
