@@ -384,7 +384,8 @@ private struct MessageSection: View {
                 HStack(alignment: .firstTextBaseline) { date; Spacer(minLength: 8); foldIndicator }
             }
         }
-        .contentShape(Rectangle())
+        // The fold target is 44 points tall. The recipient details below draw later, so they keep their own taps.
+        .padding(.vertical, 12).contentShape(Rectangle()).padding(.vertical, -12)
     }
     private var sender: some View {
         Text(message.sender).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
