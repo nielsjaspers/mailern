@@ -145,7 +145,7 @@ struct ConversationContent: View {
                 case .open(let message):
                     if index > 0, case .open = segments[index - 1] { Divider().padding(.horizontal, margin) }
                     MessageSection(
-                        message: message, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: message),
+                        message: message, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: message), answered: conversation.answered(by: message),
                         ownAddresses: ownAddresses, margin: margin,
                         fold: conversation.messages.count > 1 ? { toggle(message) } : nil,
                         compose: compose.map { compose in { compose($0, message.id) } }
@@ -160,7 +160,7 @@ struct ConversationContent: View {
     // per-message actions. Every message is open, newest first: the peek opens on the
     // new message, and scrolling down reads back through the thread.
     @ViewBuilder private var preview: some View {
-        MessageSection(message: latest, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: latest),
+        MessageSection(message: latest, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: latest), answered: conversation.answered(by: latest),
                        ownAddresses: ownAddresses, margin: margin, isPreview: true)
         if !earlier.isEmpty {
             Text("Earlier messages").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
@@ -168,7 +168,7 @@ struct ConversationContent: View {
                 .padding(.horizontal, margin)
             ForEach(earlier.reversed()) { message in
                 Divider().padding(.horizontal, margin)
-                MessageSection(message: message, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: message),
+                MessageSection(message: message, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: message), answered: conversation.answered(by: message),
                                ownAddresses: ownAddresses, margin: margin, isPreview: true)
             }
         }
@@ -226,6 +226,8 @@ private struct MessageSection: View {
     let threadSubject: String
     /// Where the quoted history starts in the plain-text body. It stays folded until the reader shows it.
     let quoteStart: Int?
+    /// The message this one answers. Its formatting proves a rich-text quote unchanged.
+    let answered: MailMessage?
     let ownAddresses: Set<String>
     let margin: CGFloat
     /// A peek opens the conversation on any tap, so its HTML takes no touches and nothing folds or unfolds.
@@ -252,7 +254,7 @@ private struct MessageSection: View {
             } else {
                 let rich = richText
                 // Rich text folds at the plain body's offsets, so it folds only when it holds exactly the same characters.
-                let foldable = quoteStart != nil && (rich.map { $0.string.utf16.elementsEqual(message.body.utf16) } ?? true)
+                let foldable = quoteStart != nil && (rich.map(quoteIsUnchanged) ?? true)
                 let length = foldable && !showsQuote ? visibleLength : nil
                 Group {
                     if let rich {
@@ -279,6 +281,14 @@ private struct MessageSection: View {
         .padding(.vertical, 14)
     }
 
+    /// True when rich text holds exactly the body's characters, and its quote of a plain-text message is still plain.
+    /// The composer only indents a quote and marks it as one. A writer can bold, strike through, or color quoted words
+    /// to point at them, and those must stay visible. A quote of a rich-text message never folds.
+    private func quoteIsUnchanged(_ text: NSAttributedString) -> Bool {
+        guard let quoteStart, let answered, answered.richText == nil, text.string.utf16.elementsEqual(message.body.utf16) else { return false }
+        let bodyStart = quoteStart + QuotedText.attribution(for: answered).utf16.count + 1
+        return RichText.isUnchangedQuote(text, in: NSRange(location: bodyStart, length: (answered.body as NSString).length))
+    }
     /// The UTF-16 length of the text above the quote, without the blank lines that separated them.
     private var visibleLength: Int? {
         guard let quoteStart else { return nil }

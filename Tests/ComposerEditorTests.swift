@@ -19,6 +19,20 @@ import SwiftUI
         XCTAssertFalse(RichText.isPlain(text, in: signature))
     }
 
+    func testQuoteWithWriterFormattingDoesNotFold() throws {
+        // A sent reply: text, then an indented quote, as the composer writes it and as it comes back from storage.
+        let text = NSMutableAttributedString(attributedString: RichText.plain("Sure.\n\nAround 7?"))
+        let quote = NSRange(location: 7, length: 9)
+        let indent = NSMutableParagraphStyle()
+        indent.headIndent = 10; indent.firstLineHeadIndent = 10
+        text.addAttributes([.paragraphStyle: indent, RichText.quote: true], range: quote)
+        XCTAssertTrue(RichText.isUnchangedQuote(RichText.decode(try RichText.encode(text), fallback: ""), in: quote))
+        // Bolding a quoted word points at it, so the quote stays visible.
+        let bold = UIFont.preferredFont(forTextStyle: .body).fontDescriptor.withSymbolicTraits(.traitBold)!
+        text.addAttribute(.font, value: UIFont(descriptor: bold, size: 0), range: NSRange(location: 7, length: 6))
+        XCTAssertFalse(RichText.isUnchangedQuote(RichText.decode(try RichText.encode(text), fallback: ""), in: quote))
+    }
+
     func testReplyActionsResumePlainSavedDraftAfterIncomingMail() async throws {
         let directory = URL.temporaryDirectory.appending(path: "reply-draft-resume-\(UUID())")
         let store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite")))

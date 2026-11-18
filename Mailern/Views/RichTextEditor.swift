@@ -27,6 +27,15 @@ enum RichText {
         }
         return unchanged
     }
+    /// Whether a reply's quote in `range` still looks like the plain text it quotes. The composer indents a quote and
+    /// marks it as one; any other formatting there was added by the writer.
+    static func isUnchangedQuote(_ text: NSAttributedString, in range: NSRange) -> Bool {
+        guard NSMaxRange(range) <= text.length else { return false }
+        let copy = NSMutableAttributedString(attributedString: text)
+        copy.removeAttribute(.paragraphStyle, range: range)
+        copy.removeAttribute(quote, range: range)
+        return isPlain(copy, in: range)
+    }
     static func decode(_ data: Data?, fallback: String) -> NSAttributedString {
         guard let data, let document = try? JSONDecoder().decode(Document.self, from: data),
               let result = try? NSMutableAttributedString(data: document.data, options: [.documentType: NSAttributedString.DocumentType.rtfd], documentAttributes: nil)
