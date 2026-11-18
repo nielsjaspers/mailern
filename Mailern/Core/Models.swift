@@ -131,8 +131,6 @@ struct Conversation: Codable, Identifiable, Equatable {
     var avatarName: String {
         messages.contains(where: { !$0.outgoing }) ? correspondent.sender : latest.to.first ?? latest.sender
     }
-    /// True when one of the messages has a Message-ID in `ids`.
-    func contains(messageIDs ids: Set<String>) -> Bool { messages.contains { ids.contains($0.threadingID) } }
     /// The message a reply or forward targets. Falls back to the latest message.
     func message(_ id: UUID?) -> MailMessage { messages.first { $0.id == id } ?? latest }
 

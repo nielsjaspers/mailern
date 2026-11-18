@@ -691,11 +691,15 @@ import SQLite3
 
         let loaded = store.reload()
         assert(loaded)
+        let splitID = junk[0].id
         var anotherBlockedReply = blockedReply
         anotherBlockedReply.id = UUID()
         anotherBlockedReply.date = blockedReply.date.addingTimeInterval(30)
+        store.apply(ids: [thread], action: .remove(.junk))
         store.receive(anotherBlockedReply, accountID: account.id)
-        assert(store.list(.junk).map(\.messages) == [[blockedReply, anotherBlockedReply]], "Replies to the original reuse its Junk split after reload")
+        assert(store.conversation(splitID)?.messages == [blockedReply, anotherBlockedReply],
+               "Blocked replies reuse the split after reload and after the original moves to Junk")
+        store.apply(ids: [thread], action: .restoreRemoved)
 
         var otherReply = second
         otherReply.id = UUID()
@@ -711,7 +715,9 @@ import SQLite3
         assert(store.conversations(with: first.address.uppercased()).map(\.subject) == ["Sent to Alex", "Project update", "Project update"])
         assert(store.conversations(with: second.address).map(\.id) == [thread])
 
-        let splitID = junk[0].id
+        store.apply(ids: [splitID], action: .restoreRemoved)
+        store.undo()
+        assert(store.conversation(splitID)?.blockedReplySourceID == thread, "Undo restores the Junk split's link to its source")
         store.apply(ids: [splitID], action: .restoreRemoved)
         store.apply(ids: [thread], action: .remove(.trash))
         var directReply = otherReply
@@ -722,6 +728,22 @@ import SQLite3
         assert(store.conversation(thread)?.latest == directReply && store.conversation(thread)?.removal == nil,
                "A restored split must not take replies addressed to the original conversation")
         assert(store.conversation(splitID)?.messages == [blockedReply, anotherBlockedReply])
+
+        store.apply(ids: [thread], action: .remove(.trash))
+        var referencesOnly = directReply
+        referencesOnly.id = UUID()
+        referencesOnly.inReplyTo = nil
+        store.receive(referencesOnly, accountID: account.id)
+        assert(store.conversation(thread)?.latest == referencesOnly && store.conversation(thread)?.removal == nil,
+               "A reply without In-Reply-To follows its newest known reference")
+
+        store.apply(ids: [splitID], action: .remove(.junk))
+        var replyToJunk = otherReply
+        replyToJunk.id = UUID()
+        replyToJunk.answer(anotherBlockedReply)
+        store.receive(replyToJunk, accountID: account.id)
+        assert(store.conversation(splitID)?.latest == replyToJunk && store.conversation(splitID)?.removal == .junk,
+               "A restored split that was manually moved to Junk keeps its replies")
 
         store.deletePermanently([splitID])
         let reopened = MailStore(persistence: disk)
@@ -739,6 +761,13 @@ import SQLite3
         unblocked.receive(blockedReply, accountID: account.id)
         assert(unblocked.blockedSenders.isEmpty && unblocked.list(.junk).isEmpty)
         assert(unblocked.conversation(thread)?.latest == blockedReply)
+
+        unblocked.setSenderBlocked(true, address: first.address)
+        unblocked.receive(anotherBlockedReply, accountID: account.id)
+        let survivingSplit = unblocked.list(.junk)[0].id
+        unblocked.deletePermanently([thread])
+        unblocked.receive(replyToJunk, accountID: account.id)
+        assert(unblocked.conversation(survivingSplit)?.latest == replyToJunk, "Replies keep their parent if the original was deleted")
         print("PASS: Junk and Undo are independent of blocks, blocked replies share a split, unblocked replies keep their thread through restore, sender history includes sent mail, and blocks persist through write failure")
     }
 

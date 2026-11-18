@@ -202,6 +202,7 @@ final class MailStore {
                 conversations[i].removal = .junk
             case .restoreRemoved:
                 conversations[i].removal = nil
+                conversations[i].blockedReplySourceID = nil
             }
         }
         let message: String
@@ -244,7 +245,9 @@ final class MailStore {
                 conversations[i].snoozedUntil = old.snoozedUntil
                 conversations[i].followUp = old.followUp
                 conversations[i].unread = old.unread
-            case .restoreRemoved: conversations[i].removal = old.removal
+            case .restoreRemoved:
+                conversations[i].removal = old.removal
+                conversations[i].blockedReplySourceID = old.blockedReplySourceID
             }
         }
         save()
@@ -348,18 +351,19 @@ final class MailStore {
         clearNotice()
         let blocked = isSenderBlocked(message.address)
         let junk = junk || blocked
-        // A reply can reference both the original and a Junk split. Its direct parent takes precedence.
-        var target = message.inReplyTo.flatMap { replyTarget(in: accountID, headers: [$0]) }
-            ?? replyTarget(in: accountID, headers: Set(message.references ?? []))
+        var target = replyTarget(for: message, in: accountID)
         var blockedReplySourceID: UUID?
         if let index = target {
             let parent = conversations[index]
-            if blocked, parent.removal != .junk {
-                blockedReplySourceID = parent.id
-                target = conversations.firstIndex { $0.blockedReplySourceID == parent.id && $0.removal == .junk }
+            if blocked {
+                let split = conversations.firstIndex { $0.blockedReplySourceID == parent.id && $0.removal == .junk }
+                if split != nil || parent.removal != .junk {
+                    blockedReplySourceID = parent.id
+                    target = split
+                }
             } else if !junk, parent.removal == .junk, let sourceID = parent.blockedReplySourceID {
                 // A regular reply to a blocked message goes back to the original while the split is in Junk.
-                target = conversations.firstIndex { $0.id == sourceID }
+                target = conversations.firstIndex { $0.id == sourceID } ?? index
             }
         }
         if let i = target {
@@ -373,9 +377,20 @@ final class MailStore {
         save()
     }
 
-    private func replyTarget(in accountID: String, headers: Set<String>) -> Int? {
-        guard !headers.isEmpty else { return nil }
-        return conversations.firstIndex { $0.accountID == accountID && $0.contains(messageIDs: headers) }
+    private func replyTarget(for message: MailMessage, in accountID: String) -> Int? {
+        // References are oldest first. A known In-Reply-To outranks them all.
+        let parents = (message.references ?? []) + (message.inReplyTo.map { [$0] } ?? [])
+        guard !parents.isEmpty else { return nil }
+        let priorities = Dictionary(parents.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: max)
+        var closest: (index: Int, priority: Int)?
+        for (index, conversation) in conversations.enumerated() where conversation.accountID == accountID {
+            for parent in conversation.messages {
+                guard let priority = priorities[parent.threadingID] else { continue }
+                if priority == parents.count - 1 { return index }
+                if priority > (closest?.priority ?? -1) { closest = (index, priority) }
+            }
+        }
+        return closest?.index
     }
     func receiveReply(_ id: UUID) {
         guard let c = conversation(id) else { return }
