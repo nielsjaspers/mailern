@@ -27,6 +27,7 @@ import SQLite3
         try checkMute()
         try checkFollowUp()
         try await checkOutbox()
+        try await checkExistingOutbox()
         try await checkLocalReminders()
         try checkActionHaptics()
         await checkDraftDiscardHaptics()
@@ -726,6 +727,46 @@ import SQLite3
         let discardedWithThread = await drafts.discardDrafts(for: [thread.id], scheduled: true)
         assert(discardedWithThread && drafts.outbox.isEmpty)
         print("PASS: outbox scheduling, persistence, due delivery, no duplicate after a failed draft write, reminders on send, send now, edit/unschedule, refused mail back in Drafts, discard with deleted conversation")
+    }
+
+    @MainActor static func checkExistingOutbox() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-existing-outbox-\(UUID())")
+        let mailURL = directory.appending(path: "mail.sqlite")
+        let draftURL = directory.appending(path: "drafts.json")
+        let deadline = Date.now.addingTimeInterval(600)
+        let expired = ComposerDraft(subject: "Sent copy expired", sendAt: deadline)
+        let kept = ComposerDraft(subject: "Sent copy still present", sendAt: deadline)
+        let pending = ComposerDraft(subject: "Waiting for its first send", sendAt: deadline)
+        func sentCopy(_ draft: ComposerDraft, removal: Removal? = nil) -> Conversation {
+            let message = MailMessage(id: draft.id, sender: "Morgan", address: MailAccount.demo[0].address,
+                                      to: ["casey@example.com"], date: .now, body: draft.subject, outgoing: true)
+            return Conversation(accountID: draft.accountID, subject: draft.subject, workflow: .settled,
+                                unread: false, removal: removal, messages: [message])
+        }
+        let expiredCopy = sentCopy(expired, removal: .trash(since: deadline.addingTimeInterval(-2 * MailStore.trashRetention)))
+        let keptCopy = sentCopy(kept)
+        let unrelated = sentCopy(ComposerDraft(subject: "Ordinary old sent mail"))
+        // The old version could leave the JSON outbox and the sent messages on disk with no receipts.
+        try SQLitePersistence(url: mailURL).save(MailData(conversations: [expiredCopy, keptCopy, unrelated]))
+        try AttachmentJSON.save([expired, kept, pending], to: draftURL)
+        let first = MailStore(persistence: SQLitePersistence(url: mailURL))
+        assert(first.conversation(expiredCopy.id) == nil && first.discardedDraftIDs == [expired.id])
+        let drafts = DraftStore(url: draftURL, mail: first)
+        assert(drafts.outbox.map(\.id) == [pending.id])
+        assert(first.discardedDraftIDs == [expired.id, kept.id])
+        assert(first.deletePermanently([keptCopy.id, unrelated.id]))
+        assert(first.discardedDraftIDs == [expired.id, kept.id])
+
+        let reopened = MailStore(persistence: SQLitePersistence(url: mailURL))
+        let outbox = DraftStore(url: draftURL, mail: reopened)
+        await outbox.sendDue(through: reopened, now: deadline)
+        assert(reopened.conversations.flatMap(\.messages).map(\.id) == [pending.id])
+        assert(reopened.discardedDraftIDs.isEmpty && DraftStore(url: draftURL).outbox.isEmpty)
+
+        try AttachmentJSON.save([pending], to: draftURL)
+        await outbox.reload()
+        assert(outbox.outbox.isEmpty && DraftStore(url: draftURL).outbox.isEmpty)
+        print("PASS: existing outbox reconciles before sent mail deletion and survives startup Trash expiry without redelivery")
     }
 
     @MainActor static func checkTrashAndJunk() throws {

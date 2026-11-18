@@ -61,6 +61,7 @@ final class MailStore {
     @ObservationIgnored private var noticeExpiryTask: Task<Void, Never>?
     private let persistence: any ConversationPersistence
     private var loadFailure: String?
+    private var outboxVerified = false
     /// False after a failed save, when the stored search index can miss mail that only exists in memory.
     private var indexCurrent = true {
         didSet { if oldValue != indexCurrent { mailboxRevision &+= 1 } }
@@ -73,6 +74,7 @@ final class MailStore {
     }
     @discardableResult
     func reload() -> Bool {
+        outboxVerified = false
         do {
             let stored = try persistence.load()
             let data = stored ?? MailData(conversations: DemoData.conversations())
@@ -190,6 +192,24 @@ final class MailStore {
     func recordPreviouslySentDrafts(_ ids: Set<UUID>) -> Bool {
         ids.isSubset(of: discardedDraftIDs) ||
             save(replacingConversations: conversations, metadataAt: [], draftDiscards: discardedDraftIDs.union(ids))
+    }
+
+    func beginOutboxLoad() { outboxVerified = false }
+
+    func verifyOutbox(_ ids: Set<UUID>) -> Bool {
+        outboxVerified = recordPreviouslySentDrafts(ids.subtracting(unsentDraftIDs(ids)))
+        return outboxVerified
+    }
+
+    /// Startup Trash expiry can delete the only copy of a legacy sent ID before the outbox opens.
+    private func draftDiscards(removing matches: (Conversation) -> Bool, including drafts: Set<UUID> = []) -> Set<UUID> {
+        var discards = discardedDraftIDs.union(drafts)
+        if !outboxVerified {
+            for thread in conversations where matches(thread) {
+                for message in thread.messages where message.outgoing { discards.insert(message.id) }
+            }
+        }
+        return discards
     }
 
     private func canWrite() -> Bool {
@@ -387,7 +407,8 @@ final class MailStore {
         }
         let remaining = conversations.filter { !ids.contains($0.id) }
         guard remaining.count != conversations.count else { return false }
-        guard save(replacingConversations: remaining, draftDiscards: drafts.isEmpty ? nil : discardedDraftIDs.union(drafts)) else { return false }
+        let discards = draftDiscards(removing: { ids.contains($0.id) }, including: drafts)
+        guard save(replacingConversations: remaining, draftDiscards: discards) else { return false }
         if undoSnapshot.contains(where: { ids.contains($0.id) }) { clearNotice() }
         conversations = remaining
         return true
@@ -436,9 +457,10 @@ final class MailStore {
         guard canWrite(), accounts.count > 1, accounts.contains(where: { $0.id == id }) else { return false }
         let before = (accounts, conversations)
         let removed = Set(conversations.filter { $0.accountID == id }.map(\.id))
+        let discards = draftDiscards(removing: { removed.contains($0.id) })
         accounts.removeAll { $0.id == id }
         conversations.removeAll { removed.contains($0.id) }
-        guard save() else { (accounts, conversations) = before; return false }
+        guard save(draftDiscards: discards) else { (accounts, conversations) = before; return false }
         if undoSnapshot.contains(where: { removed.contains($0.id) }) { clearNotice() }
         error = nil
         return true
@@ -580,10 +602,11 @@ final class MailStore {
                     followUp: draft.followUp, id: id, discardingDraft: discardingDraft)
     }
     func reset() {
-        let replacement = MailData(conversations: DemoData.conversations(), discardedDraftIDs: discardedDraftIDs)
+        let replacement = MailData(conversations: DemoData.conversations(), discardedDraftIDs: draftDiscards(removing: { _ in true }))
         do {
             try persistence.save(replacement)
             conversations = replacement.conversations
+            discardedDraftIDs = replacement.discardedDraftIDs
             accounts = replacement.accounts
             blockedSenders = []
             indexCurrent = true

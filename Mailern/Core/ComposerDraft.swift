@@ -185,13 +185,14 @@ final class DraftStore {
         self.url = url
         self.mail = mail
         self.write = write
+        mail?.beginOutboxLoad()
         if let mail, mail.needsReload {
             loadFailure = mail.error
             needsMailRecovery = true
             return
         }
         do {
-            all = try Self.read(url).filter { mail?.discardedDraftIDs.contains($0.id) != true }
+            try loadManifest(Self.read(url))
             needsMailRecovery = mail?.discardedDraftIDs.isEmpty == false
         }
         catch { failedToLoad(error) }
@@ -199,17 +200,27 @@ final class DraftStore {
     private nonisolated static func read(_ url: URL) throws -> [ComposerDraft] {
         try AttachmentJSON.load([ComposerDraft].self, from: url) ?? []
     }
+    private func loadManifest(_ loaded: [ComposerDraft]) throws {
+        if let mail {
+            let scheduled = Set(loaded.lazy.filter { $0.sendAt != nil }.map(\.id))
+            guard mail.verifyOutbox(scheduled) else {
+                throw SQLitePersistence.Failure(message: mail.error ?? "Could not verify scheduled mail.")
+            }
+        }
+        all = loaded.filter { mail?.discardedDraftIDs.contains($0.id) != true }
+    }
+
     func reload() async {
         let url = url
         _ = await enqueue {
             do {
                 if let mail = self.mail, mail.needsReload { self.error = mail.error; return false }
+                self.mail?.beginOutboxLoad()
                 let loaded = try await Task.detached { try Self.read(url) }.value
-                let discarded = self.mail?.discardedDraftIDs ?? []
-                self.all = loaded.filter { !discarded.contains($0.id) }
+                try self.loadManifest(loaded)
                 self.loadFailure = nil
                 self.error = nil
-                if !discarded.isEmpty { return await self.persist(self.all) }
+                if self.mail?.discardedDraftIDs.isEmpty == false { return await self.persist(self.all) }
                 return true
             } catch { self.failedToLoad(error); return false }
         }
