@@ -348,6 +348,8 @@ private struct MessageRow: View {
                     .accessibilityLabel(expanded ? "\(message.sender), \(dateText)" : foldedSummary)
                     .accessibilityAddTraits(toggle != nil ? .isButton : [])
                     .accessibilityHint(toggle == nil ? "" : expanded ? "Collapses the message" : "Expands the message")
+                    // VoiceOver activates this directly: folded, the touch target is the hidden overlay, not this line.
+                    .accessibilityAction { toggle?() }
                 if expanded {
                     // At accessibility sizes the reply controls get their own line, so the recipients keep the full width.
                     let layout = textSize.isAccessibilitySize
