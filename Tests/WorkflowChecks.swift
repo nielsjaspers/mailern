@@ -606,6 +606,8 @@ import SQLite3
         try Data("unreadable".utf8).write(to: badDraftURL)
         await unreadableDrafts.reload()
         assert(unreadableDrafts.needsReload && !unreadableDrafts.all.isEmpty)
+        await unreadableDrafts.sendDue(through: mail, now: delayed)
+        assert(!mail.conversations.contains { $0.messages.contains { $0.id == scheduled.id || $0.id == undoSend.id } })
         assert(mail.move(thread.id, to: .snoozed, until: due))
         let mailOnly = MailReminder.plan(mail: mail, drafts: unreadableDrafts, now: start)
         assert(mailOnly.contains { $0.conversationID == thread.id } && mailOnly.allSatisfy { $0.conversationID != nil })
@@ -636,9 +638,10 @@ import SQLite3
 
     @MainActor static func checkOutbox() async throws {
         let directory = URL.temporaryDirectory.appending(path: "mailern-outbox-\(UUID())")
-        let store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "outbox.sqlite")))
+        let mailURL = directory.appending(path: "outbox.sqlite")
+        var store = MailStore(persistence: SQLitePersistence(url: mailURL))
         let url = directory.appending(path: "drafts.json")
-        let drafts = DraftStore(url: url)
+        var drafts = DraftStore(url: url, mail: store)
         let thread = store.list(.inbox).first { $0.messages.contains { !$0.outgoing } }!
         let start = Date.now
         var later = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
@@ -658,24 +661,40 @@ import SQLite3
         assert(discarded && drafts.outbox.count == 2)
         await drafts.sendDue(through: store, now: start.addingTimeInterval(99))
         assert(drafts.outbox.count == 2 && !store.conversations.contains { $0.subject == "Later" })
-        // A failed draft write after sending keeps the mail scheduled, and the retry does not send it twice.
-        let failing = DraftStore(url: url, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        // Reject the receipt write after SQLite has staged the sent message.
+        var db: OpaquePointer?
+        assert(sqlite3_open(mailURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let abortReceipt = "CREATE TRIGGER reject_receipt BEFORE INSERT ON settings WHEN NEW.key = 'discardedDraftIDs' BEGIN SELECT RAISE(ABORT, 'receipt unavailable'); END"
+        assert(sqlite3_exec(db, abortReceipt, nil, nil, nil) == SQLITE_OK)
+        let failing = DraftStore(url: url, mail: store, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let rejected = await failing.sendNow(later.id, through: store)
+        assert(!rejected && store.discardedDraftIDs.isEmpty && failing.outbox.count == 2)
+        let rolledBack = MailStore(persistence: SQLitePersistence(url: mailURL))
+        assert(rolledBack.discardedDraftIDs.isEmpty && !rolledBack.conversations.contains { $0.subject == later.subject })
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_receipt", nil, nil, nil) == SQLITE_OK)
+
+        // Send Now commits, but the draft manifest still contains the scheduled copy.
         let cleanupFailed = await failing.sendNow(later.id, through: store)
-        assert(!cleanupFailed && failing.outbox.contains { $0.id == later.id })
+        assert(!cleanupFailed && failing.outbox.map(\.id) == [reply.id])
+        assert(store.discardedDraftIDs == [later.id] && DraftStore(url: url).outbox.count == 2)
+        let sent = store.conversations.first { $0.subject == later.subject }!
+        assert(sent.messages.map(\.id) == [later.id] && sent.workflow == .snoozed && sent.followUp == .waiting)
         let remindersAfterSend = MailReminder.plan(mail: store, drafts: failing, now: start)
         assert(!remindersAfterSend.contains { $0.id == "scheduled.\(later.id)" })
         assert(remindersAfterSend.contains { $0.id == "scheduled.\(reply.id)" })
-        let restarted = MailReminder.plan(mail: MailStore(persistence: SQLitePersistence(url: directory.appending(path: "outbox.sqlite"))),
-                                         drafts: DraftStore(url: url), now: start)
-        assert(restarted == remindersAfterSend)
-        await failing.sendDue(through: store, now: start.addingTimeInterval(101))
-        await failing.sendDue(through: store, now: start.addingTimeInterval(102))
-        assert(failing.outbox.count == 2 && store.conversations.filter { $0.subject == "Later" }.count == 1)
-        await drafts.sendDue(through: store, now: start.addingTimeInterval(103))
-        let sent = store.conversations.first { $0.subject == "Later" }!
-        assert(drafts.outbox.map(\.id) == [reply.id] && sent.messages.map(\.id) == [later.id])
-        // The reminder starts when the mail goes out.
-        assert(sent.workflow == .snoozed && sent.followUp == .waiting)
+        assert(store.apply(ids: [sent.id], action: .remove(.trash)))
+        assert(store.deletePermanently([sent.id], from: .trash))
+        store = MailStore(persistence: SQLitePersistence(url: mailURL))
+        assert(store.discardedDraftIDs == [later.id])
+        drafts = DraftStore(url: url, mail: store)
+        assert(drafts.outbox.map(\.id) == [reply.id])
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(101))
+        await drafts.recoverAfterMailLoad()
+        assert(store.discardedDraftIDs.isEmpty && DraftStore(url: url).outbox.map(\.id) == [reply.id])
+        assert(!store.conversations.contains { $0.messages.contains { $0.id == later.id } })
+        let recovered = MailStore(persistence: SQLitePersistence(url: mailURL))
+        assert(recovered.discardedDraftIDs.isEmpty && recovered.conversations == store.conversations)
         // Send Now skips the wait. Taking back mail that already went out fails.
         let sentNow = await drafts.sendNow(reply.id, through: store)
         assert(sentNow)

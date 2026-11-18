@@ -172,9 +172,24 @@ final class MailStore {
             return false
         }
     }
-    func finishDraftDiscards() {
-        guard !discardedDraftIDs.isEmpty else { return }
-        save(replacingConversations: conversations, metadataAt: [], draftDiscards: [])
+    func finishDraftDiscards(_ completed: Set<UUID>) {
+        guard !discardedDraftIDs.isDisjoint(with: completed) else { return }
+        save(replacingConversations: conversations, metadataAt: [], draftDiscards: discardedDraftIDs.subtracting(completed))
+    }
+
+    /// Older outbox entries may have a sent message but no cleanup receipt.
+    func unsentDraftIDs(_ ids: Set<UUID>) -> Set<UUID> {
+        var unsent = ids.subtracting(discardedDraftIDs)
+        for thread in conversations {
+            if unsent.isEmpty { break }
+            for message in thread.messages where message.outgoing { unsent.remove(message.id) }
+        }
+        return unsent
+    }
+
+    func recordPreviouslySentDrafts(_ ids: Set<UUID>) -> Bool {
+        ids.isSubset(of: discardedDraftIDs) ||
+            save(replacingConversations: conversations, metadataAt: [], draftDiscards: discardedDraftIDs.union(ids))
     }
 
     private func canWrite() -> Bool {
@@ -502,7 +517,7 @@ final class MailStore {
     /// Sends a message. With a `threadID`, it answers the message `replyingTo` in that conversation, or the latest one.
     /// The conversation settles, or waits in Snoozed until `followUp` when that is still ahead.
     func send(threadID: UUID?, replyingTo: UUID? = nil, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
-              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil, id: UUID = UUID()) -> Bool {
+              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil, id: UUID = UUID(), discardingDraft: UUID? = nil) -> Bool {
         guard canWrite() else { return false }
         guard accounts.contains(where: { $0.id == account.id }) else {
             error = "The sending account no longer exists. Choose another From address."
@@ -530,8 +545,11 @@ final class MailStore {
         } else {
             conversations[i].move(to: .settled)
         }
+        var sent = data
+        if let discardingDraft { sent.discardedDraftIDs.insert(discardingDraft) }
         do {
-            try persistence.save(data)
+            try persistence.save(sent)
+            if discardingDraft != nil { discardedDraftIDs = sent.discardedDraftIDs }
             indexCurrent = true
             clearNotice()
             error = nil
@@ -545,12 +563,21 @@ final class MailStore {
     }
     /// Sends a composed draft as message `id`. A message with that ID that already went out is not sent again.
     @discardableResult func send(_ draft: ComposerDraft, id: UUID = UUID()) -> Bool {
-        if conversations.contains(where: { $0.messages.contains { $0.id == id } }) { return true }
+        if unsentDraftIDs([id]).isEmpty { return true }
+        return sendDraft(draft, id: id)
+    }
+
+    /// Delivery checks the queued IDs together before calling this method.
+    func sendUnsentOutboxDraft(_ draft: ComposerDraft) -> Bool {
+        sendDraft(draft, id: draft.id, discardingDraft: draft.id)
+    }
+
+    private func sendDraft(_ draft: ComposerDraft, id: UUID, discardingDraft: UUID? = nil) -> Bool {
         return send(threadID: draft.mode.replyID, replyingTo: draft.answering ?? draft.messageID, account: account(draft.accountID),
                     to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
                     subject: draft.subject.isEmpty ? "(No Subject)" : draft.subject, body: draft.text,
                     bcc: ComposerDraft.addresses(draft.bcc), richText: draft.richText, attachments: draft.attachments,
-                    followUp: draft.followUp, id: id)
+                    followUp: draft.followUp, id: id, discardingDraft: discardingDraft)
     }
     func reset() {
         let replacement = MailData(conversations: DemoData.conversations(), discardedDraftIDs: discardedDraftIDs)

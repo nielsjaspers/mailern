@@ -13,10 +13,10 @@ struct MailReminder: Equatable, Identifiable {
     @MainActor static func plan(mail: MailStore, drafts: DraftStore, now: Date = .now) -> [Self] {
         // Mail storage also records which drafts were sent or discarded.
         guard !mail.needsReload else { return [] }
-        let readableDrafts = drafts.needsReload ? [] : drafts.all
-        var unsent = Set(readableDrafts.lazy.filter {
+        let readableDrafts = drafts.hasReadableManifest ? drafts.all : []
+        let unsent = mail.unsentDraftIDs(Set(readableDrafts.lazy.filter {
             ($0.sendAt ?? .distantPast) > now && $0.holdingForUndo != true
-        }.map(\.id))
+        }.map(\.id)))
         var upcoming: [Self] = []
         func add(_ reminder: Self) {
             upcoming.append(reminder)
@@ -27,10 +27,6 @@ struct MailReminder: Equatable, Identifiable {
             }
         }
         for thread in mail.conversations {
-            // Send Now may have committed the message before a failed outbox cleanup.
-            if !unsent.isEmpty {
-                for message in thread.messages where message.outgoing { unsent.remove(message.id) }
-            }
             guard thread.removal == nil, thread.workflow == .snoozed, let date = thread.snoozedUntil,
                   date > now, let latest = thread.messages.last else { continue }
             let waiting = thread.followUp == .waiting
@@ -38,7 +34,7 @@ struct MailReminder: Equatable, Identifiable {
                      title: waiting ? "No reply yet" : "Snoozed conversation", body: thread.effectiveSubject,
                      conversationID: thread.id, token: conversationToken(date: date, message: latest.id, waiting: waiting)))
         }
-        for draft in readableDrafts {
+        for draft in readableDrafts where !mail.discardedDraftIDs.contains(draft.id) {
             if let date = draft.sendAt {
                 guard unsent.contains(draft.id) else { continue }
                 add(Self(id: "scheduled.\(draft.id)", date: date, title: "Scheduled mail is due",
