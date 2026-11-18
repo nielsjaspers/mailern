@@ -22,11 +22,19 @@ def run(*args, **kwargs):
 
 def run_group(*args, timeout, **kwargs):
     """Run an Xcode phase in its own process group, so a timeout or Ctrl-C also stops its compilers and runners."""
-    child = subprocess.Popen(args, text=True, start_new_session=True, **kwargs)
+    child = None
     try:
+        # Hold Ctrl-C until the child exists, so cleanup always has its group. The child starts unblocked.
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+        try:
+            child = subprocess.Popen(args, text=True, start_new_session=True,
+                                     preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous), **kwargs)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
         return child.wait(timeout=timeout)
     except BaseException:
-        stop_group(child)
+        if child:
+            stop_group(child)
         raise
 
 
@@ -49,7 +57,10 @@ def stop_group(child):
                 child.poll()
                 time.sleep(0.2)
             signal_group(signal.SIGKILL)
-        child.wait()
+        try:
+            child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            print(f"Xcode process group {child.pid} did not exit after SIGKILL", file=sys.stderr, flush=True)
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
@@ -147,6 +158,9 @@ def main():
         # Recovery must not depend on listing devices first.
         with lock(simulator_lock, "Simulator"):
             return 0 if shutdown(simulator) else 1
+    animations = os.environ.get("MAILERN_TEST_ANIMATIONS", "off")
+    if animations not in ("on", "off"):
+        parser.error("MAILERN_TEST_ANIMATIONS must be on or off")
     selectors = args.only_testing or ["MailernUITests", "MailernTests"]
     expected = selected(selectors)
 
@@ -193,7 +207,7 @@ def main():
                 "MAILERN_TEST_CONTROL_FILE": str(derived.resolve() / f"ui-control-{simulator}.json"),
                 "MAILERN_TEST_CONTROL_NAME": f"{app_id}.ui-tests.{simulator}",
             }
-            control["MAILERN_TEST_ANIMATIONS"] = os.environ.get("MAILERN_TEST_ANIMATIONS", "off")
+            control["MAILERN_TEST_ANIMATIONS"] = animations
             plan["MailernUITests"].setdefault("EnvironmentVariables", {}).update(control)
             ui_environment = plan["MailernUITests"].setdefault("UITargetAppEnvironmentVariables", {})
             ui_environment.update(control)

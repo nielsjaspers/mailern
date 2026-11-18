@@ -92,7 +92,14 @@ final class ComposeDefaultsToBottomRightUITests: MailernUITestCase {
         XCTAssertTrue(sender.existsOrWait(timeout: 5))
         XCTAssertGreaterThan(sender.frame.width, app.frame.width * 0.6)
         XCTAssertLessThanOrEqual(sender.frame.height, 48)
-        app.buttons["Cancel"].tap()
+        // Choosing an account changes the sender and its signature.
+        sender.tap()
+        XCTAssertTrue(app.buttons["morgan@student.example.com"].existsOrWait(timeout: 3))
+        app.buttons["morgan@student.example.com"].tap()
+        XCTAssertTrue(sender.label.contains("morgan@student.example.com"))
+        XCTAssertEqual(app.textViews["Message body"].value as? String, "\n\nMorgan\nStudent, Example College")
+        // The changed sender makes this a draft worth asking about.
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
         waitForComposerDismissal(in: app)
         // Compose does not leave a blank tab selected. ComposerEditorTests checks the tab delegate.
         XCTAssertTrue(app.tabBars.buttons["Inbox"].isSelected)
@@ -457,6 +464,10 @@ final class UndoSendReopensTheReplyUITests: MailernUITestCase {
         XCTAssertTrue(app.buttons["Cancel Send"].existsOrWait(timeout: 5))
         app.buttons["Cancel Send"].tap()
         XCTAssertTrue(app.staticTexts["No scheduled mail"].existsOrWait(timeout: 5))
+        // It comes back as a draft instead of going out.
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertTrue(row(course, in: app).existsOrWait(timeout: 5))
+        XCTAssertTrue(row(course, in: app).label.contains("Draft"))
     }
 }
 
@@ -821,7 +832,7 @@ final class PullProgressAndReturnUITests: MailernUITestCase {
         XCTAssertLessThan(anchor.frame.minY, initialTop - 50)
         // A fast return to the top is not a deliberate pull.
         app.swipeDown(velocity: .fast)
-        XCTAssertFalse(app.navigationBars["New Message"].exists, "Returning to the top must not compose")
+        XCTAssertFalse(app.navigationBars["New Message"].waitForExistence(timeout: 1), "Returning to the top must not compose")
         let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
         top.press(forDuration: 0.01, thenDragTo: top.withOffset(CGVector(dx: 0, dy: 360)), withVelocity: .slow, thenHoldForDuration: 1)
         XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
