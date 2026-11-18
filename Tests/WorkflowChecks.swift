@@ -1134,10 +1134,16 @@ import SQLite3
             return await store.delete(first.id)
         }
         while !deleteStarted { await Task.yield() }
+        var drainStarted = false
+        var drainFinished = false
         let drained = Task {
+            drainStarted = true
             await store.finishPendingWrites()
+            drainFinished = true
             return DraftStore(url: url).drafts.map(\.id)
         }
+        while !drainStarted { await Task.yield() }
+        assert(!drainFinished, "A new store must wait for the outgoing writer")
         gate.release.signal()
         let reopened = await drained.value
         let firstSaved = await savingFirst.value

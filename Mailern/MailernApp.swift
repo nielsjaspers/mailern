@@ -64,11 +64,14 @@ struct MailernApp: App {
         private let demo = MailboxSession(benchmark: nil)
         private var fixture = TestStorage.selectedBenchmark.map { MailboxSession(benchmark: $0) }
         @ObservationIgnored private var dueWork: Task<Void, Never>?
+        @ObservationIgnored private var selecting = false
         @ObservationIgnored private var switching = false
         var active: MailboxSession { fixture ?? demo }
 
         func select(_ benchmark: BenchmarkMailbox?) async throws {
-            guard !switching, benchmark != active.benchmark else { return }
+            guard !selecting, benchmark != active.benchmark else { return }
+            selecting = true
+            defer { selecting = false }
             if let benchmark {
                 let url = TestStorage.mailURL(for: benchmark)
                 try await Task.detached(priority: .userInitiated) {
@@ -130,8 +133,8 @@ struct MailernApp: App {
                         TestStorage.applyAnimationSetting()
                         mailboxes = MailboxSessions()
                     }
-                    TestStorage.acknowledge()
                 }
+                .onChange(of: sessions.id, initial: true) { _, _ in TestStorage.acknowledge() }
                 #endif
         }
     }
