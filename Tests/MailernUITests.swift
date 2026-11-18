@@ -584,6 +584,60 @@ final class ThreadFoldsMessagesAndRepliesToEarlierMessageUITests: MailernUITestC
     }
 }
 
+final class BenchmarkMailboxUITests: MailernUITestCase {
+    @MainActor
+    func testSwitchAndRelaunchLargeMailboxWithoutReplacingDemoMail() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        func openDemo() {
+            app.buttons["More"].tap()
+            app.buttons["Demo"].tap()
+            XCTAssertTrue(app.navigationBars["Demo"].existsOrWait(timeout: 5))
+        }
+        openDemo()
+        app.buttons["Receive a new email"].tap()
+        let demoMail = row("Coffee this week?", in: app)
+        XCTAssertTrue(demoMail.existsOrWait(timeout: 5))
+        app.buttons["Compose"].tap()
+        let subject = app.textFields["Subject"]
+        XCTAssertTrue(subject.existsOrWait(timeout: 5))
+        subject.tap()
+        subject.typeText("Demo draft before switching")
+        app.buttons["Cancel"].tap()
+        app.buttons["Save Draft"].tap()
+        waitForComposerDismissal(in: app)
+        let demoDraft = row("Demo draft before switching", in: app)
+        XCTAssertTrue(demoDraft.existsOrWait(timeout: 5))
+
+        openDemo()
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "large-mailbox-demo"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["benchmark-10000"].tap()
+        waitForAbsence(app.navigationBars["Demo"], timeout: 45)
+        let generatedMail = row("Weekly report · Sample 1,", in: app)
+        XCTAssertTrue(generatedMail.existsOrWait(timeout: 10))
+        XCTAssertFalse(demoMail.exists)
+        XCTAssertFalse(demoDraft.exists)
+
+        app.launch()
+        XCTAssertTrue(generatedMail.waitForExistence(timeout: 15))
+        openDemo()
+        XCTAssertFalse(app.buttons["benchmark-10000"].isEnabled)
+        app.buttons["Return to Demo Mail"].tap()
+        waitForAbsence(app.navigationBars["Demo"])
+        XCTAssertTrue(demoMail.existsOrWait(timeout: 10))
+        XCTAssertFalse(generatedMail.exists)
+
+        app.launch()
+        XCTAssertTrue(demoMail.existsOrWait(timeout: 10))
+        XCTAssertTrue(demoDraft.exists)
+        XCTAssertFalse(generatedMail.exists)
+    }
+}
+
 final class SenderBlockingUITests: MailernUITestCase {
     @MainActor
     func testBlockFromMessageAndUnblockFromSettings() {

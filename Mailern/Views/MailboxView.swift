@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct MailboxView: View {
+    var benchmark: BenchmarkMailbox?
+    var selectBenchmark: ((BenchmarkMailbox?) async throws -> Void)?
     @Environment(MailStore.self) private var store
     @State private var selection: Workflow = .inbox
     @State private var search = ""
@@ -111,7 +113,7 @@ struct MailboxView: View {
         .sheet(isPresented: $settings) {
             NavigationStack { SettingsView(pullAction: $pullAction) }
         }
-        .sheet(isPresented: $demo) { DemoView() }
+        .sheet(isPresented: $demo) { DemoView(benchmark: benchmark, selectBenchmark: selectBenchmark) }
         .sheet(item: $filtering) { status in
             MailboxFilterView(status: status, filter: filterBinding(status))
         }
