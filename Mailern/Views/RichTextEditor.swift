@@ -27,41 +27,79 @@ enum RichText {
         }
         return unchanged
     }
-    /// Whether a reply's quote in `range`, from its attribution line to its end, still looks as the composer wrote it
-    /// for a plain message. The composer indents the quote by 10 points, marks it as a quote, and colors the attribution
-    /// line and its line break purple. Any other formatting there, such as bold or centering, was added by the writer.
-    static func isUnchangedQuote(_ text: NSAttributedString, in range: NSRange, attributionLength: Int) -> Bool {
-        guard NSMaxRange(range) <= text.length, attributionLength + 1 <= range.length else { return false }
-        let copy = NSMutableAttributedString(attributedString: text)
-        var composed = true
-        copy.enumerateAttribute(.paragraphStyle, in: range) { value, span, stop in
-            // Only the indents may differ from a default paragraph. Line height, spacing, or tail indent are the writer's.
-            let plain = NSParagraphStyle.default
-            guard let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle,
-                  style.headIndent == 10, style.firstLineHeadIndent == 10, style.tailIndent == plain.tailIndent,
-                  style.lineSpacing == plain.lineSpacing, style.paragraphSpacing == plain.paragraphSpacing,
-                  style.paragraphSpacingBefore == plain.paragraphSpacingBefore, style.lineHeightMultiple == plain.lineHeightMultiple,
-                  style.minimumLineHeight == plain.minimumLineHeight, style.maximumLineHeight == plain.maximumLineHeight
-            else { composed = false; stop.pointee = true; return }
-            style.headIndent = 0
-            style.firstLineHeadIndent = 0
-            copy.addAttribute(.paragraphStyle, value: style, range: span)
+    /// What a reader sees of one character's formatting. Sizes count as stored, so a quote compares with the message it
+    /// copies, not with today's text size.
+    private struct Look: Equatable {
+        var font: String, size: CGFloat, color: [CGFloat], background: [CGFloat]?, underline: Int, strikethrough: Int, link: String?
+        var alignment: Int, direction: Int, head: CGFloat, firstLine: CGFloat, tail: CGFloat, lineSpacing: CGFloat
+        var before: CGFloat, after: CGFloat, lineHeightMultiple: CGFloat, minimumLineHeight: CGFloat, maximumLineHeight: CGFloat
+        var tabInterval: CGFloat, tabs: [CGFloat], lists: Int, quoted: Bool
+    }
+    private static func components(_ color: UIColor, in style: UIUserInterfaceStyle = .light) -> [CGFloat] {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.resolvedColor(with: UITraitCollection(userInterfaceStyle: style)).getRed(&r, green: &g, blue: &b, alpha: &a)
+        return [r, g, b, a].map { ($0 * 255).rounded() }
+    }
+    private static func looks(_ text: NSAttributedString) -> [Look] {
+        var result: [Look] = []
+        text.enumerateAttributes(in: NSRange(location: 0, length: text.length)) { attributes, span, _ in
+            let font = attributes[.font] as? UIFont ?? UIFont.preferredFont(forTextStyle: .body)
+            let paragraph = attributes[.paragraphStyle] as? NSParagraphStyle ?? .default
+            // Storage writes natural alignment as left.
+            let alignment = paragraph.alignment == .natural ? NSTextAlignment.left : paragraph.alignment
+            let look = Look(
+                font: font.fontName, size: font.pointSize, color: components(attributes[.foregroundColor] as? UIColor ?? .label),
+                background: (attributes[.backgroundColor] as? UIColor).map { components($0) },
+                underline: attributes[.underlineStyle] as? Int ?? 0, strikethrough: attributes[.strikethroughStyle] as? Int ?? 0,
+                link: attributes[.link].map { "\($0)" }, alignment: alignment.rawValue, direction: paragraph.baseWritingDirection.rawValue,
+                head: paragraph.headIndent, firstLine: paragraph.firstLineHeadIndent, tail: paragraph.tailIndent,
+                lineSpacing: paragraph.lineSpacing, before: paragraph.paragraphSpacingBefore, after: paragraph.paragraphSpacing,
+                lineHeightMultiple: paragraph.lineHeightMultiple, minimumLineHeight: paragraph.minimumLineHeight,
+                maximumLineHeight: paragraph.maximumLineHeight, tabInterval: paragraph.defaultTabInterval,
+                tabs: paragraph.tabStops.map(\.location), lists: paragraph.textLists.count, quoted: attributes[quote] as? Bool == true)
+            result += Array(repeating: look, count: span.length)
         }
-        let line = NSRange(location: range.location, length: attributionLength + 1)
-        copy.enumerateAttribute(.foregroundColor, in: line) { value, span, stop in
-            // RTFD stores the purple as a fixed color, so it is compared in both appearances.
-            guard let color = value as? UIColor, [UITraitCollection(userInterfaceStyle: .light), UITraitCollection(userInterfaceStyle: .dark)]
-                .contains(where: { color.resolvedColor(with: $0) == UIColor.systemPurple.resolvedColor(with: $0) }) else {
-                composed = false; stop.pointee = true; return
-            }
-            copy.addAttribute(.foregroundColor, value: UIColor.label, range: span)
+        return result
+    }
+    /// Formats the quote the composer adds to a reply: the attribution line from `start` to `body` turns purple, and the
+    /// whole quote from `start` to the end is indented by 10 points and marked as a quote.
+    static func markQuote(in text: NSMutableAttributedString, from start: Int, body: Int) {
+        let quote = NSRange(location: start, length: text.length - start)
+        text.addAttribute(.foregroundColor, value: UIColor.systemPurple, range: NSRange(location: start, length: body - start))
+        text.addAttribute(Self.quote, value: true, range: quote)
+        text.enumerateAttribute(.paragraphStyle, in: quote) { value, range, _ in
+            let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            style.headIndent += 10
+            style.firstLineHeadIndent += 10
+            text.addAttribute(.paragraphStyle, value: style, range: range)
         }
-        // The composer marks the whole quote. Text without the mark was not written by it.
-        copy.enumerateAttribute(quote, in: range) { value, _, stop in
-            if value as? Bool != true { composed = false; stop.pointee = true }
+    }
+    /// Whether the quote at the end of `reply`, from its attribution line at `start`, still looks exactly as the composer
+    /// stored it from `original`. It rebuilds that reply with the composer's own formatting and storage, so anything else
+    /// in the quote, such as bold, a color, or centering, was changed by the writer.
+    static func isUnchangedQuote(_ reply: NSAttributedString, from start: Int, attributionLength: Int,
+                                 quoting original: NSAttributedString) -> Bool {
+        let body = start + attributionLength + 1
+        guard start >= 0, body + original.length == reply.length else { return false }
+        let rebuilt = NSMutableAttributedString(attributedString: reply.attributedSubstring(from: NSRange(location: 0, length: start)))
+        rebuilt.append(plain(reply.attributedSubstring(from: NSRange(location: start, length: attributionLength + 1)).string))
+        rebuilt.append(original)
+        markQuote(in: rebuilt, from: start, body: body)
+        guard let data = try? encode(rebuilt) else { return false }
+        let quote = NSRange(location: start, length: reply.length - start)
+        let stored = looks(reply.attributedSubstring(from: quote))
+        let expected = looks(decode(data, fallback: "").attributedSubstring(from: quote))
+        let purple = components(.systemPurple, in: .dark), lightPurple = components(.systemPurple)
+        return stored.count == expected.count && zip(stored.indices, zip(stored, expected)).allSatisfy { index, pair in
+            var (look, wanted) = pair
+            guard index <= attributionLength else { return look == wanted }
+            // Storage keeps the attribution's purple as a fixed color in the appearance it was saved in, and its size
+            // follows the text size at that time.
+            if look.color == purple { look.color = lightPurple }
+            if wanted.color == purple { wanted.color = lightPurple }
+            look.size = wanted.size
+            return look == wanted
         }
-        copy.removeAttribute(quote, range: range)
-        return composed && isPlain(copy, in: range)
     }
     static func decode(_ data: Data?, fallback: String) -> NSAttributedString {
         guard let data, let document = try? JSONDecoder().decode(Document.self, from: data),

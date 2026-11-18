@@ -20,35 +20,37 @@ import SwiftUI
     }
 
     func testQuoteWithWriterFormattingDoesNotFold() throws {
-        // A sent reply: text, then the attribution and quote as the composer writes them, back from storage.
-        func reply(_ edit: (NSMutableAttributedString) -> Void = { _ in }) throws -> NSAttributedString {
-            let text = NSMutableAttributedString(attributedString: RichText.plain("Sure.\n\nOn Monday, Casey wrote:\nAround 7?"))
-            let indent = NSMutableParagraphStyle()
-            indent.headIndent = 10; indent.firstLineHeadIndent = 10
-            text.addAttributes([.paragraphStyle: indent, RichText.quote: true], range: NSRange(location: 7, length: 33))
-            text.addAttribute(.foregroundColor, value: UIColor.systemPurple, range: NSRange(location: 7, length: 24))
-            edit(text)
-            return RichText.decode(try RichText.encode(text), fallback: "")
+        // Writes a reply the way the composer does and returns it as it comes back from storage.
+        func reply(_ text: String, quoting original: NSAttributedString, edit: (NSMutableAttributedString, Int) -> Void = { _, _ in }) throws -> NSAttributedString {
+            let reply = NSMutableAttributedString(attributedString: RichText.plain(text + "\n\nOn Monday, Casey wrote:\n"))
+            let start = (text as NSString).length + 2
+            reply.append(original)
+            RichText.markQuote(in: reply, from: start, body: start + 24)
+            edit(reply, start)
+            return RichText.decode(try RichText.encode(reply), fallback: "")
         }
-        func folds(_ text: NSAttributedString) -> Bool {
-            RichText.isUnchangedQuote(text, in: NSRange(location: 7, length: 33), attributionLength: 23)
+        func folds(_ reply: NSAttributedString, quoting original: NSAttributedString) -> Bool {
+            RichText.isUnchangedQuote(reply, from: reply.length - original.length - 24, attributionLength: 23, quoting: original)
         }
-        XCTAssertTrue(folds(try reply()))
-        // Bold, centering, or a bold attribution point at quoted words, so the quote stays visible.
+        let casey = RichText.plain("Around 7?")
+        XCTAssertTrue(folds(try reply("Sure.", quoting: casey), quoting: casey))
+        // Bold, centering, a taller line, or a bold attribution point at quoted words, so the quote stays visible.
         let bold = UIFont(descriptor: UIFont.preferredFont(forTextStyle: .body).fontDescriptor.withSymbolicTraits(.traitBold)!, size: 0)
-        XCTAssertFalse(folds(try reply { $0.addAttribute(.font, value: bold, range: NSRange(location: 31, length: 6)) }))
-        XCTAssertFalse(folds(try reply { $0.addAttribute(.font, value: bold, range: NSRange(location: 7, length: 9)) }))
-        XCTAssertFalse(folds(try reply { text in
-            let centered = NSMutableParagraphStyle()
-            centered.headIndent = 10; centered.firstLineHeadIndent = 10; centered.alignment = .center
-            text.addAttribute(.paragraphStyle, value: centered, range: NSRange(location: 31, length: 9))
-        }))
-        XCTAssertFalse(folds(try reply { text in
-            let tall = NSMutableParagraphStyle()
-            tall.headIndent = 10; tall.firstLineHeadIndent = 10; tall.minimumLineHeight = 40
-            text.addAttribute(.paragraphStyle, value: tall, range: NSRange(location: 31, length: 9))
-        }))
-        XCTAssertFalse(folds(try reply { $0.removeAttribute(RichText.quote, range: NSRange(location: 31, length: 9)) }))
+        XCTAssertFalse(folds(try reply("Sure.", quoting: casey) { $0.addAttribute(.font, value: bold, range: NSRange(location: $1 + 24, length: 6)) }, quoting: casey))
+        XCTAssertFalse(folds(try reply("Sure.", quoting: casey) { $0.addAttribute(.font, value: bold, range: NSRange(location: $1, length: 9)) }, quoting: casey))
+        for change in [{ (style: NSMutableParagraphStyle) in style.alignment = .center }, { $0.minimumLineHeight = 40 }] {
+            XCTAssertFalse(folds(try reply("Sure.", quoting: casey) { text, start in
+                let style = NSMutableParagraphStyle()
+                style.headIndent = 10; style.firstLineHeadIndent = 10
+                change(style)
+                text.addAttribute(.paragraphStyle, value: style, range: NSRange(location: start + 24, length: 9))
+            }, quoting: casey))
+        }
+        XCTAssertFalse(folds(try reply("Sure.", quoting: casey) { $0.removeAttribute(RichText.quote, range: NSRange(location: $1 + 24, length: 9)) }, quoting: casey))
+        // A reply to your own reply quotes its quote too, and still folds when untouched.
+        let own = try reply("Sure.", quoting: casey)
+        XCTAssertTrue(folds(try reply("See you then.", quoting: own), quoting: own))
+        XCTAssertFalse(folds(try reply("See you then.", quoting: own) { $0.addAttribute(.font, value: bold, range: NSRange(location: $1 + 24, length: 5)) }, quoting: own))
     }
 
     func testReplyActionsResumePlainSavedDraftAfterIncomingMail() async throws {

@@ -253,26 +253,26 @@ private struct MessageSection: View {
                 HTMLMessageView(html: html, fallback: message.body, margin: margin, isPreview: isPreview).allowsHitTesting(!isPreview)
             } else {
                 let rich = richText
-                // Rich text folds at the plain body's offsets, so it folds only when it holds exactly the same characters.
                 // Only the composer writes rich text with a quote, so plain mail never folds.
-                let foldable = quoteStart != nil && (rich.map(quoteIsUnchanged) ?? false)
-                let length = foldable && !showsQuote ? visibleLength : nil
-                Group {
-                    if let rich {
-                        RichMessageText(text: length.map { rich.attributedSubstring(from: NSRange(location: 0, length: $0)) } ?? rich)
-                    } else { Text(MessageLinks.linked(message.body)) }
-                }.font(.body).lineSpacing(5).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, margin)
-                if foldable, !isPreview {
-                    Button {
-                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { showsQuote.toggle() }
-                    } label: {
-                        Image(systemName: "ellipsis").font(.caption.weight(.bold)).frame(width: 24, height: 12)
+                if let rich, quoteStart != nil, quoteIsUnchanged(rich), let quoteStart {
+                    // The composer separates the quote with exactly two line breaks. Blank lines above them stay.
+                    messageText(rich.attributedSubstring(from: NSRange(location: 0, length: quoteStart - 2)))
+                    if !isPreview {
+                        Button {
+                            withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { showsQuote.toggle() }
+                        } label: {
+                            Image(systemName: "ellipsis").font(.caption.weight(.bold)).frame(width: 24, height: 12)
+                        }
+                        .buttonStyle(.bordered).buttonBorderShape(.capsule).tint(.secondary)
+                        .accessibilityLabel(showsQuote ? "Hide quoted text" : "Show quoted text")
+                        .padding(.horizontal, margin)
+                        // The quote opens below its button, so the button stays where it was tapped.
+                        if showsQuote { messageText(rich.attributedSubstring(from: NSRange(location: quoteStart, length: rich.length - quoteStart))) }
                     }
-                    .buttonStyle(.bordered).buttonBorderShape(.capsule).tint(.secondary)
-                    .accessibilityLabel(showsQuote ? "Hide quoted text" : "Show quoted text")
-                    .padding(.horizontal, margin)
+                } else if let rich {
+                    messageText(rich)
+                } else {
+                    messageText(nil)
                 }
             }
             if let attachments = message.attachments, !attachments.isEmpty {
@@ -282,24 +282,22 @@ private struct MessageSection: View {
         .padding(.vertical, 14)
     }
 
-    /// True when rich text holds exactly the body's characters, and its quote still looks as the composer wrote it.
-    /// A writer can bold, strike through, or center quoted words to point at them, and those must stay visible.
-    /// The answered message must be plain itself, or the composer copied formatting this check cannot tell apart.
+    private func messageText(_ text: NSAttributedString?) -> some View {
+        Group {
+            if let text { RichMessageText(text: text) } else { Text(MessageLinks.linked(message.body)) }
+        }
+        .font(.body).lineSpacing(5).textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, margin)
+    }
+    /// True when rich text holds exactly the body's characters, and its quote still looks as the composer wrote it from
+    /// the answered message. A writer can bold, strike through, or center quoted words to point at them, and those must stay visible.
     private func quoteIsUnchanged(_ text: NSAttributedString) -> Bool {
         guard let quoteStart, let answered, text.string.utf16.elementsEqual(message.body.utf16) else { return false }
-        if answered.richText != nil {
-            let original = RichText.decode(answered.richText, fallback: answered.body)
-            guard RichText.isPlain(original, in: NSRange(location: 0, length: original.length)) else { return false }
-        }
-        let attribution = QuotedText.attribution(for: answered).utf16.count
-        let length = text.length - quoteStart
-        return RichText.isUnchangedQuote(text, in: NSRange(location: quoteStart, length: length), attributionLength: attribution)
-    }
-    /// The UTF-16 length of the text above the quote, without the blank lines that separated them.
-    private var visibleLength: Int? {
-        guard let quoteStart else { return nil }
-        let above = (message.body as NSString).substring(to: quoteStart)
-        return above.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression).utf16.count
+        let original = RichText.decode(answered.richText, fallback: answered.body)
+        guard original.string.utf16.elementsEqual(answered.body.utf16) else { return false }
+        return RichText.isUnchangedQuote(text, from: quoteStart, attributionLength: QuotedText.attribution(for: answered).utf16.count,
+                                         quoting: original)
     }
 
     @ViewBuilder private var controls: some View {

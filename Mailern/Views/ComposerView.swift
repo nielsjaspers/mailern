@@ -317,15 +317,7 @@ struct ComposerView: View {
             text.replaceCharacters(in: bodyRange, with: RichText.decode(target.richText, fallback: target.body))
             // The quote starts after the signature and the blank line that separates them.
             let start = (ComposerDraft.signatureBlock(draft.signature ?? "") as NSString).length + 2
-            let quote = NSRange(location: start, length: text.length - start)
-            text.addAttribute(.foregroundColor, value: UIColor.systemPurple, range: NSRange(location: start, length: bodyRange.location - start))
-            text.addAttribute(RichText.quote, value: true, range: quote)
-            text.enumerateAttribute(.paragraphStyle, in: quote) { value, range, _ in
-                let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-                style.headIndent += 10
-                style.firstLineHeadIndent += 10
-                text.addAttribute(.paragraphStyle, value: style, range: range)
-            }
+            RichText.markQuote(in: text, from: start, body: bodyRange.location)
         }
         editor.text = text
         editor.selection = NSRange(location: 0, length: 0)

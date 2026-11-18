@@ -986,11 +986,14 @@ final class ThreadFoldsMessagesAndRepliesToEarlierMessageUITests: MailernUITestC
         XCTAssertTrue(sent.existsOrWait(timeout: 5))
         // The quote under the sent reply folds behind a button.
         XCTAssertFalse((sent.value as? String ?? "").contains("wrote:"))
+        // The quote opens below its button.
+        let revealed = app.textViews.matching(NSPredicate(format: "value BEGINSWITH %@ AND value CONTAINS %@", "On ", "Are you free on Saturday?")).firstMatch
         app.buttons["Show quoted text"].tap()
-        XCTAssertTrue((sent.value as? String ?? "").contains("Are you free on Saturday?"))
+        XCTAssertTrue(revealed.existsOrWait(timeout: 5))
+        XCTAssertLessThan(app.buttons["Hide quoted text"].frame.maxY, revealed.frame.minY + 1)
         capture("Sent reply with its quote shown", in: app)
         app.buttons["Hide quoted text"].tap()
-        XCTAssertFalse((sent.value as? String ?? "").contains("wrote:"))
+        waitForAbsence(revealed)
         app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
         XCTAssertTrue(app.navigationBars["Re: \(subject)"].existsOrWait(timeout: 5))
         XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").hasPrefix("One reply draft"))
