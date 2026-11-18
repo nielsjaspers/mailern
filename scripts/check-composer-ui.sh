@@ -11,5 +11,8 @@ exec scripts/check-ui.sh "$simulator_id" "$@" \
   --only-testing MailernUITests/ComposerDragDismissesKeyboardAndKeepsContentUITests \
   --only-testing MailernUITests/FormattingKeepsSelectionAbovePanelUITests \
   --only-testing MailernUITests/InboxDraftPreviewEditAndDiscardUITests \
+  --only-testing MailernUITests/ComposerDraftSaveFailureKeepsEditorUITests \
+  --only-testing MailernUITests/ComposerCleanupFailureClosesAfterAcknowledgementUITests \
+  --only-testing MailernUITests/UndoSendReopensTheReplyUITests \
   --only-testing MailernUITests/ComposerPhotoAttachmentUITests \
   --only-testing MailernUITests/ComposerFileAttachmentUITests

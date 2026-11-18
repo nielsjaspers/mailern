@@ -20,12 +20,12 @@ def run(*args, **kwargs):
     return subprocess.run(args, text=True, check=True, **kwargs)
 
 
-def output(*args):
-    return run(*args, stdout=subprocess.PIPE).stdout.strip()
+def output(*args, timeout=120):
+    return run(*args, stdout=subprocess.PIPE, timeout=timeout).stdout.strip()
 
 
 def state(simulator):
-    listing = json.loads(output("xcrun", "simctl", "list", "devices", "-j"))
+    listing = json.loads(output("xcrun", "simctl", "list", "devices", "-j", timeout=30))
     return next((device["state"] for group in listing["devices"].values() for device in group
                  if device["udid"] == simulator), None)
 
@@ -34,13 +34,14 @@ def shutdown(simulator):
     # Finish teardown even if cancellation arrives, but never wait on CoreSimulator forever.
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
     try:
-        if state(simulator) not in (None, "Shutdown"):
-            try:
+        try:
+            if state(simulator) not in (None, "Shutdown"):
                 subprocess.run(["xcrun", "simctl", "shutdown", simulator], timeout=60)
-            except subprocess.TimeoutExpired:
-                pass
-        if state(simulator) not in (None, "Shutdown"):
-            raise RuntimeError(f"Simulator {simulator} is still running. Run scripts/check-ui.sh {simulator} --stop.")
+            running = state(simulator) not in (None, "Shutdown")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            running = True
+        if running:
+            raise RuntimeError(f"Simulator {simulator} may still be running. Run scripts/check-ui.sh {simulator} --stop.")
         print("Simulator shut down", flush=True)
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
@@ -128,12 +129,12 @@ def main():
             app_id = plistlib.loads((app / "Info.plist").read_bytes())["CFBundleIdentifier"]
             print(f"Build: {time.monotonic() - started:.0f}s", flush=True)
 
-            run("xcrun", "simctl", "bootstatus", simulator, "-b", stdout=subprocess.DEVNULL)
-            run("xcrun", "simctl", "install", simulator, str(app))
+            run("xcrun", "simctl", "bootstatus", simulator, "-b", stdout=subprocess.DEVNULL, timeout=300)
+            run("xcrun", "simctl", "install", simulator, str(app), timeout=120)
             documents = Path(output("xcrun", "simctl", "get_app_container", simulator, app_id, "data")) / "Documents"
             documents.mkdir(parents=True, exist_ok=True)
             shutil.copyfile("Tests/Fixtures/Sample attachment.txt", documents / "Sample attachment.txt")
-            run("xcrun", "simctl", "addmedia", simulator, "Tests/Fixtures/Sample photo.png")
+            run("xcrun", "simctl", "addmedia", simulator, "Tests/Fixtures/Sample photo.png", timeout=120)
 
             for name in ["MailernUITests", "MailernTests"]:
                 plan[name]["PreferredScreenCaptureFormat"] = "screenshots"
@@ -155,6 +156,7 @@ def main():
             result = f"build/ui-{run_id}.xcresult"
             log = f"build/ui-{run_id}.log"
             print(f"Setup: {time.monotonic() - started:.0f}s. Testing, log in {log}", flush=True)
+            # XCTest limits each case once it runs. This bounds a stall before or between cases.
             with open(log, "w") as out:
                 completed = subprocess.run(
                     ["xcodebuild", "-xctestrun", str(patched), "-destination", f"id={simulator}",
@@ -163,7 +165,7 @@ def main():
                      "-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", "120",
                      "-maximum-test-execution-time-allowance", "180",
                      *(f"-only-testing:{test}" for test in selectors)],
-                    stdout=out, stderr=subprocess.STDOUT)
+                    stdout=out, stderr=subprocess.STDOUT, timeout=1800)
             if not Path(result).exists():
                 raise RuntimeError(f"xcodebuild failed before testing. See {log}")
             summary = json.loads(output("xcrun", "xcresulttool", "get", "test-results", "summary", "--path", result))
@@ -179,7 +181,7 @@ def main():
             if not (args.keep_booted and succeeded):
                 try:
                     shutdown(simulator)
-                except RuntimeError as error:
+                except Exception as error:
                     if succeeded:
                         raise
                     # Keep the build or test failure as the reported error.
@@ -194,6 +196,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("UI test run interrupted", file=sys.stderr)
         sys.exit(130)
-    except (RuntimeError, subprocess.CalledProcessError) as error:
+    except (RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         print(error, file=sys.stderr)
         sys.exit(1)

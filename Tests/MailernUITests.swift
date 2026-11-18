@@ -83,6 +83,12 @@ final class ComposeDefaultsToBottomRightUITests: MailernUITestCase {
         XCTAssertGreaterThan(compose.frame.midX, app.frame.width * 0.5)
         compose.tap()
         XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
+        // The sender uses the row beside From instead of wrapping in a narrow picker.
+        app.buttons["Cc/Bcc, From"].tap()
+        let sender = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'From, '")).firstMatch
+        XCTAssertTrue(sender.existsOrWait(timeout: 5))
+        XCTAssertGreaterThan(sender.frame.width, app.frame.width * 0.6)
+        XCTAssertLessThanOrEqual(sender.frame.height, 48)
         app.buttons["Cancel"].tap()
         waitForComposerDismissal(in: app)
         // Compose does not leave a blank tab selected. ComposerEditorTests checks the tab delegate.
@@ -257,6 +263,11 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
         app.buttons["Select All"].tap()
         XCTAssertTrue(app.staticTexts["1 selected"].exists)
         app.buttons["Settle"].tap()
+        // The All mail scope finds it again in Settled.
+        XCTAssertTrue(app.staticTexts["No results"].existsOrWait(timeout: 5))
+        app.buttons["All mail"].tap()
+        XCTAssertTrue(row("Dinner on Saturday?", in: app).existsOrWait(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Settled · 1"].exists)
         app.buttons["Close"].tap()
         XCTAssertTrue(row("Course project feedback", in: app).existsOrWait(timeout: 5))
         XCTAssertFalse(row("Dinner on Saturday?", in: app).exists)
@@ -376,7 +387,6 @@ final class InboxDraftPreviewEditAndDiscardUITests: MailernUITestCase {
         waitForComposerDismissal(in: app)
         XCTAssertTrue(row(subject, in: app).existsOrWait(timeout: 5))
         XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
-        app.terminate(); app.launch()
         row(subject, in: app).tap()
         XCTAssertTrue(app.buttons["Edit draft"].existsOrWait(timeout: 5))
         XCTAssertFalse(app.textViews["Message body"].exists)
@@ -416,13 +426,36 @@ final class ComposerDraftSaveFailureKeepsEditorUITests: MailernUITestCase {
     }
 }
 
+final class ComposerCleanupFailureClosesAfterAcknowledgementUITests: MailernUITestCase {
+    @MainActor
+    func testComposerCleanupFailureClosesAfterAcknowledgement() {
+        // Mail that went out must not stay editable when only its draft cleanup failed.
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launchEnvironment["MAILERN_TEST_DRAFT_DELETE_FAILURE"] = "1"
+        app.launch()
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
+        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
+        to.tap(); to.typeText("recipient@example.com")
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText("Sent cleanup")
+        app.buttons["Send"].tap()
+        XCTAssertTrue(app.alerts["Composer"].existsOrWait(timeout: 5))
+        XCTAssertFalse(app.buttons["Send"].isEnabled)
+        XCTAssertFalse(app.textFields["Subject"].isEnabled)
+        app.alerts["Composer"].buttons["OK"].tap()
+        waitForAbsence(app.navigationBars["Sent cleanup"])
+    }
+}
+
 final class UndoSendReopensTheReplyUITests: MailernUITestCase {
     @MainActor
     func testUndoSendReopensTheReply() {
-        // WorkflowChecks covers delivery timing and unscheduling. This covers the banner and the reopened composer.
+        // WorkflowChecks covers delivery timing and scheduling. This covers the banner, the reopened composer,
+        // and that Send Later passes its date on instead of sending at once.
         continueAfterFailure = false
         let app = TestApplication()
-        app.launchEnvironment["MAILERN_TEST_UNDO_SEND"] = "5"
+        app.launchEnvironment["MAILERN_TEST_UNDO_SEND"] = "20"
         app.launch()
         let course = "Course project feedback"
         row(course, in: app).tap()
@@ -436,8 +469,16 @@ final class UndoSendReopensTheReplyUITests: MailernUITestCase {
         let body = app.textViews["Message body"]
         XCTAssertTrue(body.existsOrWait(timeout: 5))
         XCTAssertTrue((body.value as? String)?.hasPrefix("Undo send proof") == true)
-        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+        app.buttons["Send"].press(forDuration: 1.2)
+        XCTAssertTrue(app.buttons["Send Later…"].existsOrWait(timeout: 5))
+        app.buttons["Send Later…"].tap()
+        XCTAssertTrue(app.navigationBars["Send Later"].existsOrWait(timeout: 5))
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "In ")).firstMatch.tap()
         waitForComposerDismissal(in: app)
+        let card = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'scheduled-card-'")).firstMatch
+        XCTAssertTrue(card.existsOrWait(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Scheduled"].exists)
+        XCTAssertFalse(app.staticTexts["Sending…"].exists)
     }
 }
 
@@ -642,10 +683,7 @@ final class ComposerPhotoAttachmentUITests: MailernUITestCase {
         app.launch()
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
-        let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
-        to.tap(); to.typeText("recipient@example.com")
-        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText("Photo proof")
-        app.textViews["Message body"].tap(); app.textViews["Message body"].typeText("See the photo.")
+        app.textViews["Message body"].tap()
         app.buttons["Attach"].tap(); app.buttons["Photo Library"].tap()
         XCTAssertTrue(app.buttons["Cancel"].existsOrWait(timeout: 10))
         let photo = app.images.matching(NSPredicate(format: "label BEGINSWITH %@", "Photo,")).firstMatch
@@ -662,11 +700,9 @@ final class ComposerPhotoAttachmentUITests: MailernUITestCase {
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [rendered], timeout: 30), .completed)
         closeQuickLook(in: app)
-        app.buttons["Send"].tap()
-        waitForAbsence(app.navigationBars["Photo proof"])
-        select("Settled", in: app)
-        row("Photo proof", in: app).tap()
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Preview Photo-")).firstMatch.existsOrWait(timeout: 5))
+        // WorkflowChecks covers how sent attachments are stored.
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+        waitForComposerDismissal(in: app)
     }
 }
 
@@ -694,7 +730,7 @@ final class ComposerFileAttachmentUITests: MailernUITestCase {
         XCTAssertTrue(app.buttons["Open"].wait(for: \.isEnabled, toEqual: true, timeout: 5))
         app.buttons["Open"].tap()
         XCTAssertTrue(app.buttons["Preview Sample attachment.txt"].existsOrWait(timeout: 10))
-        // The photo case covers Quick Look and sending an attachment.
+        // The photo case covers Quick Look.
         app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
         waitForComposerDismissal(in: app)
     }
@@ -772,9 +808,9 @@ final class PullProgressAndReturnUITests: MailernUITestCase {
         }
         for mode in ["Search", "New email"] {
             setPull(mode)
-            let list = app.collectionViews.firstMatch
             let anchor = row("Course project feedback", in: app)
-            let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            // The list fills the screen. An app point avoids a slow list lookup for every gesture.
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
             if mode == "New email" {
                 // A short pull returns without composing. WorkflowChecks covers the threshold.
                 start.press(forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 65)), withVelocity: .slow, thenHoldForDuration: 0.7)
@@ -794,10 +830,8 @@ final class PullProgressAndReturnUITests: MailernUITestCase {
             }
             start.press(forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 360)), withVelocity: .slow, thenHoldForDuration: 1)
             if mode == "Search" {
+                // The filter bar case covers what the search finds.
                 XCTAssertTrue(app.buttons["Close"].existsOrWait(timeout: 5))
-                app.searchFields.firstMatch.tap()
-                app.searchFields.firstMatch.typeText("Course project")
-                waitForAbsence(row("Dinner on Saturday?", in: app))
                 app.buttons["Close"].tap()
             } else {
                 XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))

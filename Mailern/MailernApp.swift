@@ -35,6 +35,11 @@ struct MailernApp: App {
             if environment["MAILERN_TEST_DRAFT_WRITE_FAILURE"] == "1" {
                 throw CocoaError(.fileWriteOutOfSpace)
             }
+            if environment["MAILERN_TEST_DRAFT_DELETE_FAILURE"] == "1",
+               let previous = try? AttachmentJSON.decoder(for: url).decode([ComposerDraft].self, from: Data(contentsOf: url)),
+               let next = try? AttachmentJSON.decoder(for: url).decode([ComposerDraft].self, from: data), next.count < previous.count {
+                throw CocoaError(.fileWriteOutOfSpace)
+            }
             #endif
             try data.write(to: url, options: .atomic)
         })
