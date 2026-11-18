@@ -40,6 +40,29 @@ struct MailReminder: Equatable, Identifiable {
         return Array(upcoming.sorted(by: precedes).prefix(pendingLimit))
     }
 
+    /// iOS can update the icon while Mailern is closed. Give each returning conversation the full
+    /// unread count at its deadline, including other conversations that return at the same time.
+    @MainActor static func badges(for reminders: [Self], mail: MailStore) -> [String: Int] {
+        let returns = reminders.filter { $0.conversationID != nil }.sorted(by: precedes)
+        guard let last = returns.last else { return [:] }
+        let dates = mail.conversations.compactMap { thread -> Date? in
+            guard thread.unread, thread.workflow == .snoozed, thread.removal == nil,
+                  let date = thread.snoozedUntil, date <= last.date else { return nil }
+            return date
+        }.sorted()
+        var count = mail.inboxUnreadCount
+        var index = 0
+        var badges: [String: Int] = [:]
+        for reminder in returns {
+            while index < dates.count && dates[index] <= reminder.date {
+                count += 1
+                index += 1
+            }
+            badges[reminder.id] = count
+        }
+        return badges
+    }
+
     private static func precedes(_ left: Self, _ right: Self) -> Bool {
         left.date == right.date ? left.id < right.id : left.date < right.date
     }

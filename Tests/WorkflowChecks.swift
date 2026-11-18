@@ -610,11 +610,15 @@ import SQLite3
                          snoozedUntil: due.addingTimeInterval(Double((149 - n) / 3)), messages: [thread.latest])
         }
         try disk.save(MailData(conversations: many))
-        let limited = MailReminder.plan(mail: MailStore(persistence: disk), drafts: DraftStore(url: directory.appending(path: "empty.json")), now: start)
+        let largeMailbox = MailStore(persistence: disk)
+        let limited = MailReminder.plan(mail: largeMailbox, drafts: DraftStore(url: directory.appending(path: "empty.json")), now: start)
         let expected = many.sorted { left, right in
             left.snoozedUntil == right.snoozedUntil ? left.id.uuidString < right.id.uuidString : left.snoozedUntil! < right.snoozedUntil!
         }
         assert(limited.compactMap(\.conversationID) == Array(expected.prefix(64)).map(\.id))
+        let badges = MailReminder.badges(for: limited, mail: largeMailbox)
+        assert(badges[limited[0].id] == 3 && badges[limited[2].id] == 3)
+        assert(badges[limited[63].id] == 66)
         print("PASS: local reminders replace or cancel on mail changes, survive expiry and reload, reject stale actions, and exclude Undo Send")
     }
 

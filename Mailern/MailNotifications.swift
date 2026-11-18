@@ -76,6 +76,8 @@ final class MailNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
                 if lhs.1.date != rhs.1.date { return lhs.1.date < rhs.1.date }
                 return (lhs.0, lhs.1.id) < (rhs.0, rhs.1.id)
             }.prefix(max(0, MailReminder.pendingLimit - reserved))
+            let activeReminders = candidates.filter { $0.0 == active.scope }.map { $0.1 }
+            let badges = MailReminder.badges(for: activeReminders, mail: active.mail)
             let desired = Dictionary(uniqueKeysWithValues: candidates.map { (prefix + $0.0 + "/" + $0.1.id, $0) })
             let excess = pending.filter { $0.identifier.hasPrefix(prefix) && !protected($0.identifier) && desired[$0.identifier] == nil }
             if !excess.isEmpty { center.removePendingNotificationRequests(withIdentifiers: excess.map(\.identifier)) }
@@ -92,12 +94,14 @@ final class MailNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
             let existing = Dictionary(uniqueKeysWithValues: pending.map { ($0.identifier, $0.content) })
             for (identifier, (scope, reminder)) in desired {
                 if dirty || Task.isCancelled { return }
+                let badge = scope == active.scope ? badges[reminder.id].map(NSNumber.init(value:)) : nil
                 if let old = existing[identifier], old.userInfo["token"] as? String == reminder.token,
-                   old.title == reminder.title, old.body == reminder.body { continue }
+                   old.title == reminder.title, old.body == reminder.body, old.badge == badge { continue }
                 let content = UNMutableNotificationContent()
                 content.title = reminder.title
                 content.body = reminder.body
                 content.sound = .default
+                content.badge = badge
                 if reminder.conversationID != nil { content.categoryIdentifier = Self.category }
                 content.userInfo = ["scope": scope, "id": reminder.id, "token": reminder.token]
                 let interval = reminder.date.timeIntervalSinceNow
@@ -145,6 +149,6 @@ final class MailNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
         if id.hasPrefix("scheduled.") { return [] }
         if request.content.categoryIdentifier == Self.category,
            !MailReminder.isActionable(id: id, token: token, mail: box.mail) { return [] }
-        return [.banner, .sound]
+        return [.banner, .sound, .badge]
     }
 }
