@@ -881,11 +881,13 @@ final class ComposerFileAttachmentUITests: MailernUITestCase {
         if !local.existsOrWait(timeout: 1) { browse.tap() }
         XCTAssertTrue(local.existsOrWait(timeout: 10))
         local.tap()
-        // In icon mode the center of the cell can fall below the folder image.
         let folder = app.cells["Mailern, Container"]
-        let icon = folder.images.firstMatch
-        if icon.exists { icon.tap() } else { folder.tap() }
-        app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Sample attachment")).firstMatch.tap()
+        let file = app.cells.matching(NSPredicate(format: "label BEGINSWITH %@", "Sample attachment")).firstMatch
+        folder.tap()
+        // Files can expose the folder during the navigation transition and ignore the first tap.
+        if !file.waitForExistence(timeout: 2), folder.isHittable { folder.tap() }
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        file.tap()
         XCTAssertTrue(app.buttons["Open"].wait(for: \.isEnabled, toEqual: true, timeout: 5))
         app.buttons["Open"].tap()
         XCTAssertTrue(app.buttons["Preview Sample attachment.txt"].existsOrWait(timeout: 10))
