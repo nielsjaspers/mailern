@@ -360,6 +360,14 @@ final class InboxDraftPreviewEditAndDiscardUITests: MailernUITestCase {
         waitForComposerDismissal(in: app)
         XCTAssertTrue(row(subject, in: app).existsOrWait(timeout: 5))
         XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
+        app.buttons["Select"].tap()
+        XCTAssertFalse(row(subject, in: app).isEnabled)
+        row("Dinner on Saturday?", in: app).tap()
+        XCTAssertTrue(app.staticTexts["1 selected"].exists)
+        app.buttons["Select All"].tap()
+        XCTAssertTrue(app.staticTexts["6 selected"].exists)
+        app.buttons["Mark"].tap()
+        app.buttons["Mark read"].tap()
         row(subject, in: app).tap()
         XCTAssertTrue(app.buttons["Edit draft"].existsOrWait(timeout: 5))
         XCTAssertFalse(app.textViews["Message body"].exists)
@@ -584,6 +592,137 @@ final class ThreadFoldsMessagesAndRepliesToEarlierMessageUITests: MailernUITestC
     }
 }
 
+final class BenchmarkMailboxUITests: MailernUITestCase {
+    @MainActor
+    func testLastSearchResultStaysAboveKeyboard() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["More"].tap()
+        app.buttons["Demo"].tap()
+        app.buttons["benchmark-20000"].tap()
+        waitForAbsence(app.navigationBars["Demo"], timeout: 45)
+        let search = app.searchFields.firstMatch
+        if !search.isHittable { app.swipeDown() }
+        search.tap()
+        search.typeText("Sample 200")
+        let last = row("Project update · Sample 20000,", in: app)
+        let keyboard = app.keyboards.firstMatch
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.26))
+        for _ in 0..<5 {
+            if last.exists && last.isHittable && last.frame.midY < keyboard.frame.minY { break }
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+        XCTAssertTrue(keyboard.exists)
+        XCTAssertLessThan(last.frame.midY, keyboard.frame.minY)
+        last.tap()
+        XCTAssertTrue(app.staticTexts["Project update · Sample 20000"].firstMatch.existsOrWait(timeout: 5))
+    }
+
+    @MainActor
+    func testSettleAndUndoEntireLargeInbox() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["More"].tap()
+        app.buttons["Demo"].tap()
+        app.buttons["benchmark-20000"].tap()
+        waitForAbsence(app.navigationBars["Demo"], timeout: 45)
+        let newest = row("Weekly report · Sample 1,", in: app)
+        XCTAssertTrue(newest.existsOrWait(timeout: 10))
+        let unreadHeader = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", " unread")).firstMatch
+        XCTAssertTrue(unreadHeader.exists)
+        let originalUnread = unreadHeader.label
+        func settleAll() {
+            app.buttons["Select"].tap()
+            app.buttons["Select All"].tap()
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label MATCHES %@", "17[^0-9]?143 selected")).firstMatch.exists)
+            app.buttons["Settle"].tap()
+            XCTAssertTrue(app.staticTexts["You're all caught up"].existsOrWait(timeout: 5))
+        }
+        settleAll()
+        app.buttons["Undo"].tap()
+        XCTAssertTrue(newest.existsOrWait(timeout: 5))
+        XCTAssertEqual(unreadHeader.label, originalUnread)
+        settleAll()
+        app.launch()
+        XCTAssertTrue(app.staticTexts["You're all caught up"].existsOrWait(timeout: 10))
+        app.tabBars.buttons["Settled"].tap()
+        XCTAssertTrue(newest.existsOrWait(timeout: 5))
+    }
+
+    @MainActor
+    func testSwitchAndRelaunchLargeMailboxWithoutReplacingDemoMail() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        func openDemo() {
+            app.buttons["More"].tap()
+            app.buttons["Demo"].tap()
+            XCTAssertTrue(app.navigationBars["Demo"].existsOrWait(timeout: 5))
+        }
+        func openSettings() {
+            app.buttons["More"].tap()
+            app.buttons["Settings"].tap()
+            XCTAssertTrue(app.navigationBars["Settings"].existsOrWait(timeout: 5))
+        }
+        let afterSettling = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "After settling")).firstMatch
+        openSettings()
+        afterSettling.tap()
+        app.buttons["Open next conversation"].tap()
+        XCTAssertTrue(app.buttons["After settling, Open next conversation"].existsOrWait(timeout: 5))
+        app.buttons["Done"].tap()
+
+        openDemo()
+        app.buttons["Receive a new email"].tap()
+        let demoMail = row("Coffee this week?", in: app)
+        XCTAssertTrue(demoMail.existsOrWait(timeout: 5))
+        app.buttons["Compose"].tap()
+        let subject = app.textFields["Subject"]
+        XCTAssertTrue(subject.existsOrWait(timeout: 5))
+        subject.tap()
+        subject.typeText("Demo draft before switching")
+        app.buttons["Cancel"].tap()
+        app.buttons["Save Draft"].tap()
+        waitForComposerDismissal(in: app)
+        let demoDraft = row("Demo draft before switching", in: app)
+        XCTAssertTrue(demoDraft.existsOrWait(timeout: 5))
+
+        openDemo()
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "large-mailbox-demo"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["benchmark-10000"].tap()
+        waitForAbsence(app.navigationBars["Demo"], timeout: 45)
+        let generatedMail = row("Weekly report · Sample 1,", in: app)
+        XCTAssertTrue(generatedMail.existsOrWait(timeout: 10))
+        XCTAssertFalse(demoMail.exists)
+        XCTAssertFalse(demoDraft.exists)
+
+        app.launch()
+        XCTAssertTrue(generatedMail.waitForExistence(timeout: 15))
+        openSettings()
+        XCTAssertTrue(app.buttons["After settling, Return to list"].existsOrWait(timeout: 5))
+        app.buttons["Done"].tap()
+        openDemo()
+        XCTAssertFalse(app.buttons["benchmark-10000"].isEnabled)
+        app.buttons["Return to Demo Mail"].tap()
+        waitForAbsence(app.navigationBars["Demo"])
+        XCTAssertTrue(demoMail.existsOrWait(timeout: 10))
+        XCTAssertFalse(generatedMail.exists)
+
+        app.launch()
+        XCTAssertTrue(demoMail.existsOrWait(timeout: 10))
+        XCTAssertTrue(demoDraft.exists)
+        XCTAssertFalse(generatedMail.exists)
+        openSettings()
+        XCTAssertTrue(app.buttons["After settling, Open next conversation"].existsOrWait(timeout: 5))
+        app.buttons["Done"].tap()
+    }
+}
+
 final class SenderBlockingUITests: MailernUITestCase {
     @MainActor
     func testBlockFromMessageAndUnblockFromSettings() {
@@ -801,8 +940,13 @@ final class ComposerFileAttachmentUITests: MailernUITestCase {
         if !local.existsOrWait(timeout: 1) { browse.tap() }
         XCTAssertTrue(local.existsOrWait(timeout: 10))
         local.tap()
-        app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND elementType != 2", "Mailern")).firstMatch.tap()
-        app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Sample attachment")).firstMatch.tap()
+        let folder = app.cells["Mailern, Container"]
+        let file = app.cells.matching(NSPredicate(format: "label BEGINSWITH %@", "Sample attachment")).firstMatch
+        folder.tap()
+        // Files can expose the folder during the navigation transition and ignore the first tap.
+        if !file.waitForExistence(timeout: 2), folder.isHittable { folder.tap() }
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        file.tap()
         XCTAssertTrue(app.buttons["Open"].wait(for: \.isEnabled, toEqual: true, timeout: 5))
         app.buttons["Open"].tap()
         XCTAssertTrue(app.buttons["Preview Sample attachment.txt"].existsOrWait(timeout: 10))

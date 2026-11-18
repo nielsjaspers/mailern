@@ -4,13 +4,13 @@ import SQLite3
 @main struct WorkflowChecks {
     @MainActor static func main() async throws {
         try await checkUndoExpiry()
-        try mailboxLoadFailurePreservesStoredMail()
+        try await mailboxLoadFailurePreservesStoredMail()
         try await checkComposerData()
         try await checkDraftWriteOrdering()
         try await checkInboxDrafts()
         try await checkAttachmentStorage()
         try checkSettledRead()
-        try checkBulkActions()
+        try await checkBulkActions()
         checkDeliberatePull()
         try checkInboxOrder()
         try await checkMailboxFiltersAndDraftActions()
@@ -18,6 +18,7 @@ import SQLite3
         try checkTrashAndJunk()
         try checkSenderBlocking()
         try checkSQLiteStorage()
+        try checkBenchmarkMailbox()
         try await checkAccounts()
         try checkThreadingHeaders()
         checkMessageLinks()
@@ -169,6 +170,7 @@ import SQLite3
         // Loading writes the seed data in full, so search works before the first change. Later saves write only what changed.
         assert(store.search("Saturday").indexed?.isEmpty == false)
         store.markRead(changed)
+        assert(!MailStore(persistence: SQLitePersistence(url: url)).conversation(changed)!.unread)
         // A second connection plants an unreadable row. A save that rewrote every row would replace it.
         var db: OpaquePointer?
         assert(sqlite3_open(url.path, &db) == SQLITE_OK)
@@ -180,6 +182,13 @@ import SQLite3
             return sqlite3_step(statement) == SQLITE_ROW ? String(cString: sqlite3_column_text(statement, 0)) : nil
         }
         assert(sqlite3_exec(db, "UPDATE conversations SET payload = CAST('planted' AS BLOB) WHERE id = '\(untouched.uuidString)'", nil, nil, nil) == SQLITE_OK)
+        assert(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+        store.markRead(changed, unread: true)
+        assert(store.error != nil && store.conversation(changed)!.unread)
+        assert(sqlite3_exec(db, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
+        store.markRead(changed, unread: true)
+        assert(payload(changed)?.contains("\"unread\":true") == true)
+        store.error = nil
         store.move(changed, to: .settled)
         store.receiveNew()
         assert(store.error == nil && payload(untouched) == "planted" && payload(changed)?.contains("settled") == true)
@@ -659,6 +668,60 @@ import SQLite3
         print("PASS: Trash and Junk lists, restore to original workflow, Undo, draft cancels Restore Undo, reply rescues Trash, 30-day purge, permanent deletion, reset")
     }
 
+    static func checkBenchmarkMailbox() throws {
+        for size in BenchmarkMailbox.allCases {
+            let mail = size.makeMail(now: .distantPast)
+            let conversations = mail.conversations
+            assert(conversations.count == size.rawValue)
+            assert(Set(conversations.map(\.id)).count == size.rawValue)
+            assert(Set(conversations.map(\.accountID)) == Set(mail.accounts.map(\.id)))
+            assert(conversations.contains { $0.workflow == .inbox && $0.messages.count == 16 && $0.latest.html != nil })
+            assert(conversations.contains { $0.workflow == .settled && $0.messages.count == 16 && $0.latest.html != nil })
+            for length in [1, 3, 6, 16] {
+                let paragraphCounts = Set(conversations.lazy.filter { $0.messages.count == length }.flatMap(\.messages)
+                    .filter { $0.html != nil }.map { $0.body.components(separatedBy: "\n\n").count })
+                assert(Set(2...5).isSubset(of: paragraphCounts))
+            }
+            assert(conversations.filter { $0.workflow == .inbox }.count == size.rawValue - size.rawValue / 7)
+            assert(conversations.filter { $0.searchText.contains("larchdelta") }.count == 1)
+            let bodyHits = conversations.filter { $0.searchText.contains("handover notes") }.count
+            assert(bodyHits > size.rawValue / 5 && bodyHits < size.rawValue)
+            assert(conversations.first?.subject == "Weekly report · Sample 1")
+        }
+
+        let directory = URL.temporaryDirectory.appending(path: "mailern-benchmark-\(UUID())")
+        let benchmark = SQLitePersistence(url: directory.appending(path: "Benchmark/mail.sqlite"), requiresSeed: true)
+        let baseline = MailData(conversations: DemoData.conversations())
+        let normal = SQLitePersistence(url: directory.appending(path: "mail.sqlite"))
+        try normal.save(baseline)
+        // Opening an empty SQLite file before the seed simulates an interrupted first write.
+        let empty = try benchmark.search("sample")
+        assert(empty == [])
+        do {
+            _ = try benchmark.load()
+            assertionFailure("A selected benchmark without a committed fixture must not load as ordinary demo mail")
+        } catch {}
+        var fixture = MailData(conversations: Array(baseline.conversations.prefix(1)))
+        try benchmark.seedIfNeeded { fixture }
+        fixture.conversations = []
+        try benchmark.seedIfNeeded { fixture }
+        let loaded = try benchmark.load()
+        let untouched = try normal.load()
+        assert(loaded?.conversations == Array(baseline.conversations.prefix(1)))
+        assert(untouched == baseline)
+        var db: OpaquePointer?
+        assert(sqlite3_open(benchmark.url.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        assert(sqlite3_exec(db, "DELETE FROM settings WHERE key = 'accounts'", nil, nil, nil) == SQLITE_OK)
+        do {
+            try benchmark.seedIfNeeded { fixture }
+            assertionFailure("A fixture missing its accounts must not overwrite the mail it already contains")
+        } catch {}
+        let retained = try benchmark.search("Course project feedback")
+        assert(retained == [baseline.conversations[0].id])
+        print("PASS: both benchmark sizes, thread and HTML mix, distinct search match counts, seed recovery, and isolated SQLite storage")
+    }
+
     @MainActor static func checkSenderBlocking() throws {
         let url = URL.temporaryDirectory.appending(path: "mailern-blocked-\(UUID())/mail.sqlite")
         let disk = SQLitePersistence(url: url)
@@ -885,7 +948,7 @@ import SQLite3
         print("PASS: persisted drafts stay with their conversation, standalone new/forward/orphan drafts, draft search, discard preserves section, and sent drafts settle")
     }
 
-    @MainActor static func mailboxLoadFailurePreservesStoredMail() throws {
+    @MainActor static func mailboxLoadFailurePreservesStoredMail() async throws {
         let directory = URL.temporaryDirectory.appending(path: "mail-load-failure-\(UUID())")
         let url = directory.appending(path: "mail.sqlite")
         let file = MailAttachment(name: "Keep.txt", data: Data("Keep this attachment".utf8), contentType: "public.plain-text")
@@ -895,7 +958,13 @@ import SQLite3
         let payload = AttachmentJSON.directory(for: url).appending(path: file.id.uuidString)
         let withheld = directory.appending(path: "withheld-payload")
         try FileManager.default.moveItem(at: payload, to: withheld)
+        let draftURL = directory.appending(path: "drafts.json")
+        let queued = ComposerDraft(text: "Saved during a previous session")
+        try AttachmentJSON.save([queued], to: draftURL)
         let store = MailStore(persistence: SQLitePersistence(url: url))
+        let drafts = DraftStore(url: draftURL, mail: store)
+        await drafts.recoverAfterMailLoad()
+        assert(drafts.needsReload && drafts.all.isEmpty)
         assert(store.error != nil && store.conversations.isEmpty)
         store.error = nil
         assert(!store.send(threadID: nil, account: MailAccount.demo[0], to: ["recipient@example.com"], cc: [], subject: "New", body: "New"))
@@ -906,6 +975,8 @@ import SQLite3
         try FileManager.default.moveItem(at: withheld, to: payload)
         // An exact match proves that none of the blocked actions wrote to the database.
         assert(store.reload() && store.conversations == original && store.accounts == MailAccount.demo)
+        await drafts.recoverAfterMailLoad()
+        assert(!drafts.needsReload && drafts.all == [queued])
         assert(store.send(threadID: nil, account: MailAccount.demo[0], to: ["recipient@example.com"], cc: [], subject: "Recovered", body: "Recovered"))
         assert(Set(original.map(\.id)).isSubset(of: Set(MailStore(persistence: SQLitePersistence(url: url)).conversations.map(\.id))))
         print("PASS: failed mailbox load preserves metadata and attachments despite new-mail actions")
@@ -1079,14 +1150,25 @@ import SQLite3
             return await store.delete(first.id)
         }
         while !deleteStarted { await Task.yield() }
+        var drainStarted = false
+        var drainFinished = false
+        let drained = Task {
+            drainStarted = true
+            await store.finishPendingWrites()
+            drainFinished = true
+            return DraftStore(url: url).drafts.map(\.id)
+        }
+        while !drainStarted { await Task.yield() }
+        assert(!drainFinished, "A new store must wait for the outgoing writer")
         gate.release.signal()
+        let reopened = await drained.value
         let firstSaved = await savingFirst.value
         let secondSaved = await savingSecond.value
         let deleted = await deletingFirst.value
         assert(firstSaved && secondSaved && deleted)
         assert(store.drafts.map(\.id) == [second.id])
-        assert(DraftStore(url: url).drafts.map(\.id) == [second.id])
-        print("PASS: background writes, cancelled-save completion, cross-draft ordering, and ordered deletion")
+        assert(reopened == [second.id] && DraftStore(url: url).drafts.map(\.id) == [second.id])
+        print("PASS: background writes, cancelled-save completion, cross-draft ordering, deletion, and reopening after a drain")
     }
 
     @MainActor static func checkAttachmentStorage() async throws {
@@ -1150,13 +1232,46 @@ import SQLite3
         print("PASS: small metadata, mapped attachment reload, draft-to-mail transfer, unchanged payloads on workflow saves, cleanup, and failed/corrupt metadata protection")
     }
 
-    @MainActor static func checkBulkActions() throws {
-        let disk = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-bulk-\(UUID())/mail.sqlite"))
+    @MainActor static func checkBulkActions() async throws {
+        let url = URL.temporaryDirectory.appending(path: "mailern-bulk-\(UUID())/mail.sqlite")
+        let disk = SQLitePersistence(url: url)
         let store = MailStore(persistence: disk)
         let ids = Set(store.list(.inbox).prefix(2).map(\.id))
         let first = ids.first!
         store.markRead(first)
         let before = store.conversations.filter { ids.contains($0.id) }
+        var db: OpaquePointer?
+        assert(sqlite3_open(url.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let rejectSecond = """
+            CREATE TRIGGER reject_second BEFORE UPDATE ON conversations WHEN OLD.id = '\(before[1].id.uuidString)'
+            BEGIN SELECT RAISE(ABORT, 'injected failure'); END
+            """
+        assert(sqlite3_exec(db, rejectSecond, nil, nil, nil) == SQLITE_OK)
+        store.apply(ids: ids, action: .move(.settled))
+        let afterFailure = MailStore(persistence: SQLitePersistence(url: url))
+        assert(store.error != nil && afterFailure.conversations.filter { ids.contains($0.id) } == before)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_second", nil, nil, nil) == SQLITE_OK)
+        assert(afterFailure.conversations == store.conversations && store.notice == nil)
+        // Reject any UPDATE to an already-pinned row in a mixed batch, including Undo.
+        let pinnedID = before[1].id
+        store.apply(ids: [pinnedID], action: .pin(true))
+        store.apply(ids: [before[0].id], action: .pin(false))
+        assert(sqlite3_exec(db, rejectSecond, nil, nil, nil) == SQLITE_OK)
+        store.error = nil
+        store.apply(ids: ids, action: .pin(true))
+        store.undo()
+        assert(store.error == nil)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_second", nil, nil, nil) == SQLITE_OK)
+        store.apply(ids: ids, action: .move(.settled))
+        assert(sqlite3_exec(db, rejectSecond, nil, nil, nil) == SQLITE_OK)
+        store.undo()
+        assert(store.error != nil && store.notice != nil && ids.allSatisfy { store.conversation($0)?.workflow == .settled })
+        assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_second", nil, nil, nil) == SQLITE_OK)
+        store.undo()
+        assert(store.notice == nil && MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
+        for original in before { store.apply(ids: [original.id], action: .pin(original.pinned)) }
         store.apply(ids: ids, action: .move(.settled))
         assert(ids.allSatisfy { store.conversation($0)!.workflow == .settled })
         store.undo()
@@ -1185,12 +1300,65 @@ import SQLite3
         store.undo()
         assert(store.conversation(first)!.workflow == .inbox && store.conversation(first)!.unread)
         assert(MailStore(persistence: disk).conversations == store.conversations)
+        let draftURL = url.deletingLastPathComponent().appending(path: "drafts.json")
+        let drafts = DraftStore(url: draftURL, mail: store)
+        var reply = ComposerDraft.make(mode: .reply(first), conversation: store.conversation(first), accounts: store.accounts)
+        let bytes = Data("Draft attachment".utf8)
+        reply.attachments = [MailAttachment(name: "sample.txt", data: bytes, contentType: "public.plain-text")]
+        let saved = await drafts.save(reply)
+        var later = reply
+        later.id = UUID()
+        let scheduled = await drafts.schedule(later, at: .now.addingTimeInterval(3600))
+        assert(saved && scheduled)
+        store.apply(ids: ids, action: .remove(.trash))
+        store.apply(ids: [first], action: .restoreRemoved)
+        let stale = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, from: .trash, discarding: $0) }
+        assert(!stale && drafts.all.count == 2 && ids.allSatisfy { store.conversation($0) != nil })
+        store.apply(ids: [first], action: .remove(.trash))
+        assert(sqlite3_exec(db, "CREATE TRIGGER reject_delete BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT, 'injected failure'); END", nil, nil, nil) == SQLITE_OK)
+        let refused = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, from: .trash, discarding: $0) }
+        let reopenedDrafts = DraftStore(url: draftURL)
+        assert(!refused && reopenedDrafts.all == drafts.all && reopenedDrafts.outbox.count == 1)
+        assert(reopenedDrafts.drafts.first?.attachments.first?.data == bytes)
+        assert(ids.allSatisfy { store.conversation($0) != nil })
+        assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_delete", nil, nil, nil) == SQLITE_OK)
+        let fullDisk = DraftStore(url: draftURL, mail: store, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let refusedDraftWrite = await fullDisk.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, from: .trash, discarding: $0) }
+        assert(!refusedDraftWrite && fullDisk.all.count == 2 && store.discardedDraftIDs.isEmpty)
+        let held = draftURL.appendingPathExtension("held")
+        let deleted = await drafts.discardDrafts(for: ids, scheduled: true) { removed in
+            guard store.deletePermanently(ids, from: .trash, discarding: removed) else { return false }
+            // Temporarily put a directory at the destination so the final file rename fails.
+            try! FileManager.default.moveItem(at: draftURL, to: held)
+            try! FileManager.default.createDirectory(at: draftURL, withIntermediateDirectories: false)
+            return true
+        }
+        assert(deleted && drafts.all.isEmpty && drafts.error != nil)
+        try FileManager.default.removeItem(at: draftURL)
+        try FileManager.default.moveItem(at: held, to: draftURL)
+        assert(DraftStore(url: draftURL).all.count == 2 && store.discardedDraftIDs == [reply.id, later.id])
+        let reopenedMail = MailStore(persistence: SQLitePersistence(url: url))
+        let recovered = DraftStore(url: draftURL, mail: reopenedMail)
+        assert(recovered.all.isEmpty && recovered.outbox.isEmpty)
+        await recovered.recoverAfterMailLoad()
+        assert(reopenedMail.discardedDraftIDs.isEmpty && DraftStore(url: draftURL).all.isEmpty)
+        assert(ids.allSatisfy { store.conversation($0) == nil })
+        assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
         print("PASS: batch move/read/pin/snooze/restore, whole-batch field-specific Undo, incoming precedence and persistence")
     }
 
     @MainActor static func checkInboxOrder() throws {
-        struct FixturePersistence: ConversationPersistence {
+        final class FixturePersistence: ConversationPersistence {
             let items: [Conversation]
+            var failNextSearch = false
+            var searches = 0
+            init(items: [Conversation]) { self.items = items }
+            func search(_ text: String) throws -> Set<UUID>? {
+                searches += 1
+                if failNextSearch { failNextSearch = false; throw CocoaError(.fileReadUnknown) }
+                return nil
+            }
             func load() throws -> MailData? { MailData(conversations: items) }
             func save(_ data: MailData) throws {}
         }
@@ -1199,18 +1367,36 @@ import SQLite3
             Conversation(accountID: "icloud", subject: subject, workflow: workflow, unread: unread, pinned: pinned,
                          messages: [MailMessage(sender: "Sender", address: "sender@example.com", to: ["reader@example.com"], date: now.addingTimeInterval(-minutes * 60), body: "Example message")])
         }
-        let store = MailStore(persistence: FixturePersistence(items: [
+        let disk = FixturePersistence(items: [
             item("Read newest", minutes: 1, unread: false),
             item("Unread older", minutes: 20, unread: true),
             item("Read pinned", minutes: 30, unread: false, pinned: true),
             item("Unread newer", minutes: 10, unread: true),
             item("Settled read", minutes: 1, unread: false, workflow: .settled),
             item("Settled unread", minutes: 20, unread: true, workflow: .settled)
-        ]))
+        ])
+        let store = MailStore(persistence: disk)
         assert(store.list(.inbox).map(\.subject) == ["Read pinned", "Read newest", "Unread newer", "Unread older"])
         assert(store.list(.inbox, search: "older").map(\.subject) == ["Unread older"])
         let newer = store.list(.inbox).first { $0.subject == "Unread newer" }!
+        func inbox(_ query: String = "", drafts: [ComposerDraft] = [], filter: MailboxFilter = MailboxFilter()) -> MailboxProjections.Entry {
+            store.mailbox(drafts: drafts, status: .inbox, query: query, filter: filter)
+        }
+        disk.failNextSearch = true
+        let searches = disk.searches
+        for _ in 0..<3 { assert(inbox("older").items.count == 1) }
+        assert(disk.searches == searches + 2)
+        let unread = MailboxFilter(enabled: true, readStatus: .unread)
+        assert(inbox(filter: unread).unread == 2 && store.inboxUnreadCount == 2)
+        assert(inbox("older").items.map(\.id) == [store.list(.inbox, search: "older")[0].id])
+        let draft = ComposerDraft(subject: "Unfinished message")
+        assert(inbox("unfinished", drafts: [draft]).items.map(\.id) == [draft.id])
+        assert(inbox("unfinished").items.isEmpty)
         store.markRead(newer.id)
+        assert(inbox(filter: unread).unread == 1 && store.inboxUnreadCount == 1)
+        let revision = store.mailboxRevision
+        store.markRead(newer.id)
+        assert(store.mailboxRevision == revision)
         assert(store.list(.inbox).map(\.subject) == ["Read pinned", "Read newest", "Unread newer", "Unread older"])
         assert(store.conversation(newer.id)!.workflow == .inbox)
         assert(store.list(.settled).map(\.subject) == ["Settled read", "Settled unread"])

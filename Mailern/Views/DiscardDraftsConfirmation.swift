@@ -26,9 +26,15 @@ struct DiscardDraftsConfirmation: ViewModifier {
                 guard let pending else { return }
                 Task {
                     guard !hasConversations || !store.needsReload else { store.reload(); return }
-                    guard await drafts.discardDrafts(for: pending.ids) else { return }
-                    store.apply(ids: pending.ids, action: pending.action)
-                    onDone()
+                    let committed: Bool
+                    if hasConversations {
+                        committed = await drafts.discardDrafts(for: pending.ids) {
+                            store.apply(ids: pending.ids, action: pending.action, discarding: $0)
+                        }
+                    } else {
+                        committed = await drafts.discardDrafts(for: pending.ids)
+                    }
+                    if committed { onDone() }
                 }
             }
             Button("Cancel", role: .cancel) { request = nil }

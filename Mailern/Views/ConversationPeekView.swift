@@ -118,18 +118,15 @@ struct ConversationPeekView: View {
             store.setUnread(conversation.id, !conversation.unread)
         case .settle:
             if conversation.workflow != .settled && hasDraft { settling = DraftDiscard(ids: [conversation.id], action: .move(.settled)); return }
-            onDismiss()
-            store.move(conversation.id, to: conversation.workflow == .settled ? .inbox : .settled)
+            if store.move(conversation.id, to: conversation.workflow == .settled ? .inbox : .settled) { onDismiss() }
         case .pin:
             onDismiss()
             store.togglePin(conversation.id)
         case .restore:
-            onDismiss()
-            store.move(conversation.id, to: .inbox)
+            if store.move(conversation.id, to: .inbox) { onDismiss() }
         case .trash:
             if hasDraft { settling = DraftDiscard(ids: [conversation.id], action: .remove(.trash)); return }
-            onDismiss()
-            store.apply(ids: [conversation.id], action: .remove(.trash))
+            if store.apply(ids: [conversation.id], action: .remove(.trash)) { onDismiss() }
         }
     }
 }

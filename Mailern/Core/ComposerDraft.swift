@@ -166,17 +166,28 @@ final class DraftStore {
     var error: String?
     /// Counts Pin, Snooze, Restore, Settle, and Discard on standalone drafts, like `MailStore.actionCount`.
     private(set) var actionCount = 0
+    private let mail: MailStore?
     private let url: URL
     private let write: @Sendable (Data, URL) throws -> Void
     private var loadFailure: String?
-    var needsReload: Bool { loadFailure != nil }
+    var needsReload: Bool { loadFailure != nil || mail?.discardedDraftIDs.isEmpty == false }
+    private var needsMailRecovery = false
     @ObservationIgnored private var pending: Task<Bool, Never>?
 
-    init(url: URL = URL.applicationSupportDirectory.appending(path: "Mailern/drafts-v1.json"),
+    init(url: URL = URL.applicationSupportDirectory.appending(path: "Mailern/drafts-v1.json"), mail: MailStore? = nil,
          write: @escaping @Sendable (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }) {
         self.url = url
+        self.mail = mail
         self.write = write
-        do { all = try Self.read(url) }
+        if let mail, mail.needsReload {
+            loadFailure = mail.error
+            needsMailRecovery = true
+            return
+        }
+        do {
+            all = try Self.read(url).filter { mail?.discardedDraftIDs.contains($0.id) != true }
+            needsMailRecovery = mail?.discardedDraftIDs.isEmpty == false
+        }
         catch { failedToLoad(error) }
     }
     private nonisolated static func read(_ url: URL) throws -> [ComposerDraft] {
@@ -186,9 +197,13 @@ final class DraftStore {
         let url = url
         _ = await enqueue {
             do {
-                self.all = try await Task.detached { try Self.read(url) }.value
+                if let mail = self.mail, mail.needsReload { self.error = mail.error; return false }
+                let loaded = try await Task.detached { try Self.read(url) }.value
+                let discarded = self.mail?.discardedDraftIDs ?? []
+                self.all = loaded.filter { !discarded.contains($0.id) }
                 self.loadFailure = nil
                 self.error = nil
+                if !discarded.isEmpty { return await self.persist(self.all) }
                 return true
             } catch { self.failedToLoad(error); return false }
         }
@@ -218,20 +233,46 @@ final class DraftStore {
             return await self.persist(self.all.filter { $0.id != id })
         }
     }
-    /// Discards the given standalone drafts and every reply draft attached to the given conversations.
-    /// Scheduled replies stay unless `scheduled` is true, as when their conversation is deleted.
-    /// Discards the drafts in `ids` and the reply drafts of conversations in `ids`. Settling or trashing a standalone
-    /// draft row counts as a move. Reply drafts do not, because their conversation's move counts already.
-    func discardDrafts(for ids: Set<UUID>, scheduled: Bool = false) async -> Bool {
-        let standalone = drafts.contains { ids.contains($0.id) }
-        let discarded = await enqueue {
-            await self.persist(self.all.filter { draft in
-                guard scheduled || draft.sendAt == nil else { return true }
-                return !ids.contains(draft.id) && !(draft.mode.replyID.map(ids.contains) ?? false)
-            })
+    /// Mail records the discarded IDs in the same transaction as the move. The draft file can catch up after a crash.
+    func discardDrafts(for ids: Set<UUID>, scheduled: Bool = false,
+                       committingMail: (@MainActor (Set<UUID>) -> Bool)? = nil) async -> Bool {
+        await enqueue {
+            guard self.loadFailure == nil else { self.error = self.loadFailure; return false }
+            let removed = Set(self.all.filter { draft in
+                (scheduled || draft.sendAt == nil) && (ids.contains(draft.id) || draft.mode.replyID.map(ids.contains) == true)
+            }.map(\.id))
+            guard !removed.isEmpty else { return committingMail?([]) ?? true }
+            let standalone = self.drafts.contains { removed.contains($0.id) && ids.contains($0.id) }
+            let remaining = self.all.filter { !removed.contains($0.id) }
+            if let committingMail {
+                let url = self.url
+                let write = self.write
+                let staged: URL
+                do {
+                    staged = try await Task.detached(priority: .utility) {
+                        try AttachmentJSON.stageRemoval(remaining, at: url, write: write)
+                    }.value
+                } catch {
+                    self.error = "Could not save drafts. \(error.localizedDescription)"
+                    return false
+                }
+                defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
+                guard committingMail(removed) else { return false }
+                self.all = remaining
+                do {
+                    try AttachmentJSON.installRemoval(staged, at: url)
+                    self.mail?.finishDraftDiscards()
+                    self.error = nil
+                    await Task.detached { AttachmentJSON.removeUnusedPayloads(for: url, as: [ComposerDraft].self) }.value
+                } catch {
+                    self.error = "Mail was updated. Retry draft cleanup. \(error.localizedDescription)"
+                }
+            } else {
+                guard await self.persist(remaining) else { return false }
+            }
+            if standalone { self.actionCount += 1 }
+            return true
         }
-        if discarded && standalone { actionCount += 1 }
-        return discarded
     }
     /// Discards every draft sent from the given account.
     func discardDrafts(accountID: String) async -> Bool {
@@ -327,6 +368,15 @@ final class DraftStore {
             return await self.persist(updated)
         }
     }
+    func recoverAfterMailLoad() async {
+        guard needsMailRecovery, mail?.needsReload != true else { return }
+        needsMailRecovery = false
+        await reload()
+    }
+
+    func finishPendingWrites() async {
+        _ = await pending?.value
+    }
     private func updateMailbox(ids: Set<UUID>, change: @escaping (inout ComposerDraft) -> Void) async -> Bool {
         await enqueue {
             var updated = self.all
@@ -348,11 +398,14 @@ final class DraftStore {
         guard loadFailure == nil else { error = loadFailure; return false }
         let url = url
         let write = write
+        let discarded = mail?.discardedDraftIDs ?? []
+        let updated = discarded.isEmpty ? updated : updated.filter { !discarded.contains($0.id) }
         do {
             try await Task.detached(priority: .utility) {
                 try AttachmentJSON.save(updated, to: url, write: write)
             }.value
             all = updated
+            mail?.finishDraftDiscards()
             error = nil
             return true
         } catch { self.error = "Could not save drafts. \(error.localizedDescription)"; return false }

@@ -5,35 +5,47 @@ import CoreFoundation
 
 @main
 struct MailernApp: App {
-    @State private var store = makeStore()
-    @State private var drafts = makeDrafts()
-    #if DEBUG
-    @State private var fixtureSession = TestStorage.session
+    @State private var mailboxes = MailboxSessions()
 
+    #if DEBUG
     init() {
         TestStorage.applyAnimationSetting()
     }
     #endif
 
-    private static func makeStore() -> MailStore {
-        let store = MailStore(persistence: TestStorage.mail)
-        #if DEBUG
-        if TestStorage.isTestSession, TestStorage.environment["MAILERN_TEST_LONG_THREAD"] == "1",
-           let id = store.conversations.first(where: { $0.subject == "Dinner on Saturday?" })?.id {
-            for _ in 0..<15 { store.receiveReply(id) }
+    @MainActor fileprivate struct MailboxSession: Identifiable {
+        let id = UUID()
+        let benchmark: BenchmarkMailbox?
+        let store: MailStore
+        let drafts: DraftStore
+        let defaults: UserDefaults
+        let snoozePreferences: SnoozePreferences
+
+        init(benchmark: BenchmarkMailbox?) {
+            self.benchmark = benchmark
+            defaults = TestStorage.preferences(for: benchmark)
+            snoozePreferences = SnoozePreferences(defaults: defaults)
+            store = MailStore(persistence: SQLitePersistence(url: TestStorage.mailURL(for: benchmark), requiresSeed: benchmark != nil))
+            drafts = makeDrafts(mail: store, url: TestStorage.directory(for: benchmark).appending(path: "drafts-v1.json"))
+            #if DEBUG
+            if benchmark == nil, TestStorage.isTestSession {
+                if TestStorage.environment["MAILERN_TEST_LONG_THREAD"] == "1",
+                   let id = store.conversations.first(where: { $0.subject == "Dinner on Saturday?" })?.id {
+                    for _ in 0..<15 { store.receiveReply(id) }
+                }
+                if TestStorage.environment["MAILERN_TEST_LARGE_INBOX"] == "1" {
+                    for _ in 0..<20 { store.receiveNew() }
+                }
+            }
+            #endif
         }
-        if TestStorage.isTestSession, TestStorage.environment["MAILERN_TEST_LARGE_INBOX"] == "1" {
-            for _ in 0..<20 { store.receiveNew() }
-        }
-        #endif
-        return store
     }
-    private static func makeDrafts() -> DraftStore {
+    private static func makeDrafts(mail: MailStore, url: URL) -> DraftStore {
         #if DEBUG
         // Pending writes must retain the fault settings of their own fixture session.
         let environment = TestStorage.environment
         #endif
-        return DraftStore(url: TestStorage.draftsURL, write: { data, url in
+        return DraftStore(url: url, mail: mail, write: { data, url in
             #if DEBUG
             if environment["MAILERN_TEST_DRAFT_WRITE_FAILURE"] == "1" {
                 throw CocoaError(.fileWriteOutOfSpace)
@@ -47,20 +59,71 @@ struct MailernApp: App {
             try data.write(to: url, options: .atomic)
         })
     }
-    @State private var snoozePreferences = SnoozePreferences(defaults: TestStorage.defaults)
+    @MainActor @Observable fileprivate final class MailboxSessions {
+        let id = UUID()
+        private let demo = MailboxSession(benchmark: nil)
+        private var fixture = TestStorage.selectedBenchmark.map { MailboxSession(benchmark: $0) }
+        @ObservationIgnored private var dueWork: Task<Void, Never>?
+        @ObservationIgnored private var selecting = false
+        @ObservationIgnored private var switching = false
+        var active: MailboxSession { fixture ?? demo }
+
+        func select(_ benchmark: BenchmarkMailbox?) async throws {
+            guard !selecting, benchmark != active.benchmark else { return }
+            selecting = true
+            defer { selecting = false }
+            if let benchmark {
+                let url = TestStorage.mailURL(for: benchmark)
+                try await Task.detached(priority: .userInitiated) {
+                    try SQLitePersistence(url: url).seedIfNeeded { benchmark.makeMail() }
+                }.value
+            }
+            // Stop the timer from starting another operation on the outgoing fixture while it drains.
+            switching = true
+            defer { switching = false }
+            await dueWork?.value
+            await fixture?.drafts.finishPendingWrites()
+            try Task.checkCancellation()
+            let next = benchmark.map { MailboxSession(benchmark: $0) }
+            if let store = next?.store, store.needsReload {
+                throw SQLitePersistence.Failure(message: store.error ?? "The large mailbox could not be loaded.")
+            }
+            TestStorage.selectedBenchmark = benchmark
+            fixture = next
+        }
+
+        func processDue() async {
+            guard !switching, dueWork == nil else { return }
+            let sessions = [demo] + (fixture.map { [$0] } ?? [])
+            let work = Task {
+                for session in sessions {
+                    await session.drafts.recoverAfterMailLoad()
+                    session.store.wakeDue()
+                    await session.drafts.wakeDue()
+                    await session.drafts.sendDue(through: session.store)
+                }
+            }
+            dueWork = work
+            await work.value
+            dueWork = nil
+        }
+    }
+
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup {
-            MailboxView().environment(store).environment(drafts).environment(snoozePreferences).tint(.teal)
-                .defaultAppStorage(TestStorage.defaults)
+            let sessions = mailboxes
+            let session = sessions.active
+            MailboxView(benchmark: session.benchmark, selectBenchmark: sessions.select)
+                .environment(session.store).environment(session.drafts).environment(session.snoozePreferences).tint(.teal)
+                .defaultAppStorage(session.defaults)
+                .id(session.id)
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { store.wakeDue(); Task { await drafts.wakeDue(); await drafts.sendDue(through: store) } }
+                    if phase == .active { Task { await sessions.processDue() } }
                 }
-                .task {
+                .task(id: sessions.id) {
                     while !Task.isCancelled {
-                        store.wakeDue()
-                        await drafts.wakeDue()
-                        await drafts.sendDue(through: store)
+                        await sessions.processDue()
                         try? await Task.sleep(for: .seconds(1))
                     }
                 }
@@ -69,14 +132,10 @@ struct MailernApp: App {
                     TestStorage.observeReset { environment in
                         TestStorage.environment = environment
                         TestStorage.applyAnimationSetting()
-                        store = Self.makeStore()
-                        drafts = Self.makeDrafts()
-                        snoozePreferences = SnoozePreferences(defaults: TestStorage.defaults)
-                        fixtureSession = TestStorage.session
+                        mailboxes = MailboxSessions()
                     }
-                    TestStorage.acknowledge()
                 }
-                .id(fixtureSession)
+                .onChange(of: sessions.id, initial: true) { _, _ in TestStorage.acknowledge() }
                 #endif
         }
     }
@@ -84,24 +143,45 @@ struct MailernApp: App {
 
 // Each UI test uses its own persisted files and preferences, including across relaunches.
 private enum TestStorage {
-    static var defaults: UserDefaults {
+    private static let benchmarkKey = "demoBenchmarkMailbox"
+
+    private static var suite: String? {
         #if DEBUG
-        if let session {
-            let defaults = UserDefaults(suiteName: "Mailern.UITests.\(session)")!
+        if let session { return "Mailern.UITests.\(session)" }
+        #endif
+        return nil
+    }
+    private static var defaultPreferences: UserDefaults {
+        suite.map { UserDefaults(suiteName: $0)! } ?? .standard
+    }
+    static func preferences(for benchmark: BenchmarkMailbox?) -> UserDefaults {
+        let defaults = benchmark.map { UserDefaults(suiteName: "\(suite ?? "Mailern").Benchmark.\($0.id)")! } ?? defaultPreferences
+        #if DEBUG
+        if isTestSession {
             // Most cases check sent messages at once. The Undo Send case sets its own delay.
             defaults.register(defaults: [UndoSend.key: Int(environment["MAILERN_TEST_UNDO_SEND"] ?? "") ?? 0])
-            return defaults
         }
         #endif
-        return .standard
+        return defaults
     }
-    static var draftsURL: URL { directory.appending(path: "drafts-v1.json") }
-    static var mail: SQLitePersistence { SQLitePersistence(url: directory.appending(path: "mail.sqlite")) }
-    private static var directory: URL {
+    static var selectedBenchmark: BenchmarkMailbox? {
+        get {
+            guard let benchmark = BenchmarkMailbox(rawValue: defaultPreferences.integer(forKey: benchmarkKey)),
+                  FileManager.default.fileExists(atPath: mailURL(for: benchmark).path) else { return nil }
+            return benchmark
+        }
+        set { defaultPreferences.set(newValue?.id, forKey: benchmarkKey) }
+    }
+    static func mailURL(for benchmark: BenchmarkMailbox?) -> URL {
+        directory(for: benchmark).appending(path: "mail.sqlite")
+    }
+    static func directory(for benchmark: BenchmarkMailbox?) -> URL {
+        var directory = URL.applicationSupportDirectory.appending(path: "Mailern")
         #if DEBUG
-        if let session { return URL.applicationSupportDirectory.appending(path: "Mailern/UITests/\(session)") }
+        if let session { directory = directory.appending(path: "UITests/\(session)") }
         #endif
-        return URL.applicationSupportDirectory.appending(path: "Mailern")
+        if let benchmark { directory = directory.appending(path: "Benchmark/\(benchmark.id)") }
+        return directory
     }
     #if DEBUG
     static var environment = ProcessInfo.processInfo.environment

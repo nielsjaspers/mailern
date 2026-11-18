@@ -6,30 +6,53 @@ import SQLite3
 /// A trigram full-text index covers subjects, senders, addresses, and bodies for substring search.
 final class SQLitePersistence: ConversationPersistence {
     let url: URL
+    private let requiresSeed: Bool
     private var db: OpaquePointer?
     /// What the database holds after the last successful load or save. Nil means unknown, so the next save rewrites everything.
     private var stored: MailData?
     /// Load order. New conversations go to the front, so inserting one does not renumber the others.
     private var positions: [UUID: Int] = [:]
 
-    init(url: URL) { self.url = url }
+    init(url: URL, requiresSeed: Bool = false) {
+        self.url = url
+        self.requiresSeed = requiresSeed
+    }
     deinit { sqlite3_close(db) }
 
     static var local: SQLitePersistence {
         SQLitePersistence(url: URL.applicationSupportDirectory.appending(path: "Mailern/mail.sqlite"))
     }
 
+    /// An interrupted first write can leave an SQLite file with no data. The accounts row commits with the fixture.
+    func seedIfNeeded(_ makeData: () -> MailData) throws {
+        let db = try open()
+        guard try setting(db, "accounts") == nil else { return }
+        var hasMail = false
+        try query(db, "SELECT 1 FROM conversations LIMIT 1") { _ in hasMail = true }
+        guard !hasMail else { throw Failure(message: "This large mailbox contains mail but is missing its accounts.") }
+        try save(makeData())
+    }
+
     func load() throws -> MailData? {
         stored = nil
         positions = [:]
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            if requiresSeed { throw Failure(message: "This large mailbox has not been generated.") }
+            return nil
+        }
         let db = try open()
         let decoder = AttachmentJSON.decoder(for: url)
         // The accounts row is written in the same transaction as the first conversations. Without it, nothing was stored.
-        guard let accounts = try setting(db, "accounts") else { return nil }
+        guard let accounts = try setting(db, "accounts") else {
+            if requiresSeed { throw Failure(message: "This large mailbox is incomplete. Return to Demo Mail and open it again.") }
+            return nil
+        }
         var data = MailData(conversations: [], accounts: try decoder.decode([MailAccount].self, from: accounts))
         if let blocked = try setting(db, "blockedSenders") {
             data.blockedSenders = try decoder.decode(Set<String>.self, from: blocked)
+        }
+        if let discarded = try setting(db, "discardedDraftIDs") {
+            data.discardedDraftIDs = try decoder.decode(Set<UUID>.self, from: discarded)
         }
         var loaded: [UUID: Int] = [:]
         try query(db, "SELECT position, payload FROM conversations ORDER BY position") { row in
@@ -40,6 +63,35 @@ final class SQLitePersistence: ConversationPersistence {
         stored = data
         positions = loaded
         return data
+    }
+
+    func saveMetadata(in data: MailData, at indices: [Int]) throws {
+        guard stored != nil else { return try save(data) }
+        let db = try open()
+        let encoder = AttachmentJSON.encoder(for: url)
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "UPDATE conversations SET payload = ? WHERE id = ?", -1, &statement, nil) == SQLITE_OK,
+              let statement else { throw Failure(message: String(cString: sqlite3_errmsg(db))) }
+        defer { sqlite3_finalize(statement) }
+        try exec(db, "BEGIN IMMEDIATE")
+        do {
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for index in indices {
+                let conversation = data.conversations[index]
+                let payload = try encoder.encode(conversation)
+                guard payload.withUnsafeBytes({ sqlite3_bind_blob(statement, 1, $0.baseAddress, Int32($0.count), transient) }) == SQLITE_OK,
+                      sqlite3_bind_text(statement, 2, conversation.id.uuidString, -1, transient) == SQLITE_OK,
+                      sqlite3_step(statement) == SQLITE_DONE else { throw Failure(message: String(cString: sqlite3_errmsg(db))) }
+                guard sqlite3_changes(db) == 1 else { throw Failure(message: "The conversation could not be updated.") }
+                sqlite3_reset(statement)
+            }
+            try saveDraftDiscards(db, data.discardedDraftIDs)
+            try exec(db, "COMMIT")
+        } catch {
+            try? exec(db, "ROLLBACK")
+            throw error
+        }
+        stored = data
     }
 
     func save(_ data: MailData) throws {
@@ -59,18 +111,24 @@ final class SQLitePersistence: ConversationPersistence {
             if previous == nil {
                 try exec(db, "DELETE FROM conversations; DELETE FROM search; DELETE FROM settings")
             }
-            for id in removed {
-                try run(db, "DELETE FROM conversations WHERE id = ?", [.text(id.uuidString)])
-                try run(db, "DELETE FROM search WHERE id = ?", [.text(id.uuidString)])
+            let changed = data.conversations.filter { old[$0.id] != $0 }
+            func needsIndex(_ conversation: Conversation) -> Bool {
+                guard let prior = old[conversation.id] else { return true }
+                return prior.subject != conversation.subject || prior.messages != conversation.messages
             }
-            for conversation in data.conversations where old[conversation.id] != conversation {
+            // The FTS ID column is unindexed. Delete the entire batch in a single scan.
+            let replaced = changed.lazy.filter { old[$0.id] != nil && needsIndex($0) }.map(\.id)
+            try deleteRows(db, table: "search", ids: removed.union(replaced))
+            try deleteRows(db, table: "conversations", ids: removed)
+            for conversation in changed {
                 let id = SQLValue.text(conversation.id.uuidString)
                 try run(db, """
                     INSERT INTO conversations (id, position, payload) VALUES (?, ?, ?)
                     ON CONFLICT (id) DO UPDATE SET payload = excluded.payload
                     """, [id, .integer(positions[conversation.id]!), .blob(encoder.encode(conversation))])
-                try run(db, "DELETE FROM search WHERE id = ?", [id])
-                try run(db, "INSERT INTO search (id, content) VALUES (?, ?)", [id, .text(Self.folded(conversation.searchText))])
+                if needsIndex(conversation) {
+                    try run(db, "INSERT INTO search (id, content) VALUES (?, ?)", [id, .text(Self.folded(conversation.searchText))])
+                }
             }
             if previous?.accounts != data.accounts {
                 try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('accounts', ?)", [.blob(encoder.encode(data.accounts))])
@@ -78,6 +136,7 @@ final class SQLitePersistence: ConversationPersistence {
             if previous?.blockedSenders != data.blockedSenders {
                 try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('blockedSenders', ?)", [.blob(encoder.encode(data.blockedSenders))])
             }
+            try saveDraftDiscards(db, data.discardedDraftIDs)
             try exec(db, "COMMIT")
         } catch {
             try? exec(db, "ROLLBACK")
@@ -88,6 +147,19 @@ final class SQLitePersistence: ConversationPersistence {
         if previous == nil || !removed.isEmpty {
             AttachmentJSON.removePayloads(for: url, keeping: Set(data.conversations.flatMap { $0.messages.flatMap { $0.attachments ?? [] } }.map(\.id)))
         }
+    }
+
+    // A committed mail move must keep its discarded replies out of the separate draft file on recovery.
+    private func saveDraftDiscards(_ db: OpaquePointer, _ ids: Set<UUID>) throws {
+        guard ids != (stored?.discardedDraftIDs ?? []) else { return }
+        try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('discardedDraftIDs', ?)",
+                [.blob(try JSONEncoder().encode(ids))])
+    }
+
+    private func deleteRows(_ db: OpaquePointer, table: String, ids: Set<UUID>) throws {
+        guard !ids.isEmpty else { return }
+        let json = String(decoding: try JSONEncoder().encode(ids), as: UTF8.self)
+        try run(db, "DELETE FROM \(table) WHERE id IN (SELECT value FROM json_each(?))", [.text(json)])
     }
 
     func search(_ text: String) throws -> Set<UUID>? {
@@ -159,11 +231,12 @@ final class SQLitePersistence: ConversationPersistence {
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         for (index, value) in values.enumerated() {
             let position = Int32(index + 1)
-            switch value {
+            let result = switch value {
             case .text(let text): sqlite3_bind_text(statement, position, text, -1, transient)
             case .integer(let number): sqlite3_bind_int64(statement, position, Int64(number))
-            case .blob(let data): _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, position, $0.baseAddress, Int32($0.count), transient) }
+            case .blob(let data): data.withUnsafeBytes { sqlite3_bind_blob(statement, position, $0.baseAddress, Int32($0.count), transient) }
             }
+            guard result == SQLITE_OK else { throw Failure(message: String(cString: sqlite3_errmsg(db))) }
         }
         while true {
             switch sqlite3_step(statement) {

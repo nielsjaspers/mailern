@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct MailboxView: View {
+    var benchmark: BenchmarkMailbox?
+    var selectBenchmark: ((BenchmarkMailbox?) async throws -> Void)?
     @Environment(MailStore.self) private var store
     @State private var selection: Workflow = .inbox
     @State private var search = ""
@@ -69,7 +71,7 @@ struct MailboxView: View {
                     onDismiss: { peeking = nil },
                     onOpen: {
                         peeking = nil
-                        open(id, in: selection)
+                        paths[selection, default: []].append(.conversation(id))
                     },
                     onCompose: { mode in
                         peeking = nil
@@ -84,16 +86,20 @@ struct MailboxView: View {
         .onChange(of: selection) { _, _ in peeking = nil; searching = false; endSelection() }
         .onChange(of: searching) { _, active in if !active { searchScope = .section } }
         // Bulk actions and filters belong to one section, so All mail leaves selection.
-        .onChange(of: searchScope) { _, _ in peeking = nil; endSelection() }
+        .onChange(of: searchScope) { _, scope in
+            if scope == .section { store.endAllMailSearch() }
+            peeking = nil
+            endSelection()
+        }
         .onChange(of: search) { _, _ in pruneSelection() }
         .onChange(of: filterData) { _, _ in peeking = nil; pruneSelection() }
         .onChange(of: drafts.drafts) { _, saved in
             store.clearWorkflowUndo(involving: Set(saved.compactMap { $0.mode.replyID }))
             pruneSelection()
         }
-        .onChange(of: store.conversations) { _, conversations in
+        .onChange(of: store.mailboxRevision) { _, _ in
             pruneSelection()
-            if let id = peeking, !conversations.contains(where: { $0.id == id && $0.workflow == selection }) {
+            if let id = peeking, store.conversation(id)?.workflow != selection {
                 peeking = nil
             }
         }
@@ -111,7 +117,7 @@ struct MailboxView: View {
         .sheet(isPresented: $settings) {
             NavigationStack { SettingsView(pullAction: $pullAction) }
         }
-        .sheet(isPresented: $demo) { DemoView() }
+        .sheet(isPresented: $demo) { DemoView(benchmark: benchmark, selectBenchmark: selectBenchmark) }
         .sheet(item: $filtering) { status in
             MailboxFilterView(status: status, filter: filterBinding(status))
         }
@@ -165,7 +171,7 @@ struct MailboxView: View {
                     Tab(status.title, systemImage: status.symbol, value: MailboxTab.workflow(status)) {
                         section(status)
                     }
-                    .badge(status == .inbox ? inboxUnreadCount : 0)
+                    .badge(status == .inbox ? store.inboxUnreadCount : 0)
                 }
                 Tab(value: MailboxTab.compose, role: .prominent) {
                     Color.clear
@@ -181,7 +187,7 @@ struct MailboxView: View {
                     section(status)
                         .tabItem { Label(status.title, systemImage: status.symbol) }
                         .tag(status)
-                        .badge(status == .inbox ? inboxUnreadCount : 0)
+                        .badge(status == .inbox ? store.inboxUnreadCount : 0)
                 }
             }
         }
@@ -191,7 +197,7 @@ struct MailboxView: View {
         NavigationStack(
             path: Binding(get: { paths[status, default: []] }, set: { paths[status] = $0 })
         ) {
-            mailbox(status)
+            mailboxViewport(status)
                 .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner() }
                 .navigationTitle(status.title)
                 .searchable(text: $search, isPresented: Binding(
@@ -209,10 +215,13 @@ struct MailboxView: View {
                     }
                 }
                 .toolbar {
-                    BulkSelectionToolbar(active: selecting, status: status, count: selectedIDs.count,
-                                         hasUnread: selectedConversations.contains { $0.unread },
-                                         allPinned: !selectedIDs.isEmpty && selectedConversations.allSatisfy { $0.pinned },
-                                         apply: applySelection, snooze: { bulkSnooze = true })
+                    if selecting && status == selection {
+                        let candidates = projection(status).selection
+                        BulkSelectionToolbar(status: status, count: selectedIDs.count,
+                                             hasUnread: !selectedIDs.isDisjoint(with: candidates.unread),
+                                             allPinned: !selectedIDs.isEmpty && selectedIDs.isDisjoint(with: candidates.unpinned),
+                                             apply: applySelection, snooze: { bulkSnooze = true })
+                    }
                 }
                 .toolbar(selecting || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
                 .navigationDestination(for: MailboxRoute.self) { route in
@@ -224,7 +233,7 @@ struct MailboxView: View {
                                     let order = store.conversations(with: sender.address).map(\.id)
                                     return MailboxItem.conversation(after: id, in: order, available: Set(order))
                                 }
-                                let available = Set(items(status).compactMap { $0.conversation?.id })
+                                let available = Set(projection(status).items.compactMap { $0.conversation?.id })
                                 return MailboxItem.conversation(after: id, in: openedOrder[status] ?? [], available: available)
                             }, open: { next in
                                 guard paths[status]?.last == .conversation(id) else { return }
@@ -248,8 +257,8 @@ struct MailboxView: View {
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             if selecting {
-                let visibleIDs = Set(items(status).filter { $0.conversation != nil }.map(\.id))
-                let allSelected = !visibleIDs.isEmpty && visibleIDs.isSubset(of: selectedIDs)
+                let visibleIDs = projection(status).selection.eligible
+                let allSelected = !visibleIDs.isEmpty && visibleIDs.count <= selectedIDs.count && visibleIDs.isSubset(of: selectedIDs)
                 Button(allSelected ? "Deselect All" : "Select All") {
                     selectedIDs = allSelected ? [] : visibleIDs
                 }
@@ -323,8 +332,21 @@ struct MailboxView: View {
         )
     }
 
+    private func mailboxViewport(_ status: Workflow) -> some View {
+        // Draw through the keyboard transition, but let the last result scroll above the keyboard.
+        GeometryReader { available in
+            GeometryReader { viewport in
+                let covered = max(0, viewport.frame(in: .global).maxY - available.frame(in: .global).maxY)
+                mailbox(status)
+                    .contentMargins(.bottom, covered, for: .scrollContent)
+            }
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+        }
+    }
+
     private func mailbox(_ status: Workflow) -> some View {
-        let items = items(status)
+        let projection = projection(status)
+        let items = projection.items
         let pulls = status == .inbox && pullAction != .off && !selecting
         let pullsEmpty = items.isEmpty && pulls && search.isEmpty
         let searchingHere = searching && status == selection
@@ -353,7 +375,7 @@ struct MailboxView: View {
                     let found = items.filter { $0.workflow == mailbox }
                     if !found.isEmpty {
                         Section {
-                            ForEach(found) { row($0, status: status) }
+                            ForEach(found) { row($0, status: status, order: projection.order) }
                         } header: {
                             Label("\(mailbox.title) · \(found.count)", systemImage: mailbox.symbol).textCase(nil)
                         }
@@ -361,13 +383,13 @@ struct MailboxView: View {
                 }
             } else {
                 Section {
-                    ForEach(items) { row($0, status: status) }
+                    ForEach(items) { row($0, status: status, order: projection.order) }
                 } header: {
                     VStack(alignment: .leading, spacing: 0) {
                         if selecting {
                             Text("\(selectedIDs.count) selected").textCase(nil)
                         } else if status == .inbox {
-                            let unreadCount = items.filter(\.unread).count
+                            let unreadCount = projection.unread
                             Text(unreadCount > 0 ? "\(unreadCount) unread" : "All read").textCase(nil)
                         } else {
                             Text(items.count == 1 ? "1 item" : "\(items.count) items").textCase(nil)
@@ -389,57 +411,64 @@ struct MailboxView: View {
         .environment(\.editMode, .constant(selecting ? .active : .inactive))
         .modifier(InboxPullModifier(mode: status == .inbox && !selecting ? pullAction : .off, interaction: pull))
     }
-    @ViewBuilder private func row(_ item: MailboxItem, status: Workflow) -> some View {
-        if let conversation = item.conversation {
-            let background = item.hasDraft ? Color.orange.opacity(0.07) : conversation.unread ? ConversationRow.unreadBackground : .clear
-            Button {
-                if selecting {
-                    if selectedIDs.contains(conversation.id) { selectedIDs.remove(conversation.id) }
-                    else { selectedIDs.insert(conversation.id) }
-                } else if peeking == nil { open(conversation.id, in: status) }
-            } label: {
-                ConversationRow(conversation: conversation, hasDraft: item.hasDraft)
+    @ViewBuilder private func row(_ item: MailboxItem, status: Workflow, order: [UUID]) -> some View {
+        let isThread = item.conversation != nil
+        let acceptsRead = isThread && item.workflow != .settled
+        let background: Color = item.hasDraft ? .orange.opacity(0.07) : item.unread ? ConversationRow.unreadBackground : .clear
+        // One button per ID lets List discover offscreen rows without constructing their gestures and menus.
+        Button {
+            if !isThread { paths[status, default: []].append(.conversation(item.id)) }
+            else if selecting {
+                if selectedIDs.contains(item.id) { selectedIDs.remove(item.id) }
+                else { selectedIDs.insert(item.id) }
+            } else if peeking == nil {
+                openedOrder[status] = order
+                paths[status, default: []].append(.conversation(item.id))
             }
-                .buttonStyle(.plain)
-                .listRowBackground(background)
-                .tag(conversation.id)
-                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && (leftPrimary != .read || conversation.workflow != .settled)) {
-                    swipeButtons(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, conversation: conversation, hasDraft: item.hasDraft)
-                }
-                .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && (rightPrimary != .read || conversation.workflow != .settled)) {
-                    swipeButtons(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, conversation: conversation, hasDraft: item.hasDraft)
-                }
-                .gesture(EmptySwipeGuard(
-                    left: conversationSwipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, conversation: conversation).isEmpty,
-                    right: conversationSwipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, conversation: conversation).isEmpty
-                ))
-                .simultaneousGesture(
-                    LongPressGesture().onEnded { _ in
-                        guard !selecting else { return }
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        peeking = conversation.id
-                    }
-                )
-                .accessibilityAction(named: "Peek") { if !selecting { peeking = conversation.id } }
-                .accessibilityAction(named: "Move to Trash") { if !selecting { trash(conversation.id, hasDraft: item.hasDraft) } }
-        } else if let draft = item.drafts.first {
-            Button { paths[status, default: []].append(.conversation(draft.id)) } label: {
-                DraftRow(draft: draft)
+        } label: {
+            switch item {
+            case .thread(let conversation, let replies): ConversationRow(conversation: conversation, hasDraft: !replies.isEmpty)
+            case .draft(let draft): DraftRow(draft: draft)
             }
-                .buttonStyle(.plain)
-                .disabled(selecting)
-                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                .listRowBackground(Color.orange.opacity(0.07))
-                .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && leftPrimary != .read) { draftSwipeButtons(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, draft: draft) }
-                .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && rightPrimary != .read) { draftSwipeButtons(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, draft: draft) }
-                .gesture(EmptySwipeGuard(
-                    left: draftSwipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary).isEmpty,
-                    right: draftSwipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary).isEmpty
-                ))
-                .accessibilityAction(named: draft.pinned == true ? "Unpin" : "Pin") { Task { await drafts.togglePin(draft.id) } }
-                .accessibilityAction(named: "Snooze") { snoozingDraft = draft }
-                .accessibilityAction(named: "Settle") { settling = DraftDiscard(ids: [draft.id], action: .move(.settled)) }
+        }
+        .buttonStyle(.plain)
+        .disabled(selecting && !isThread)
+        .selectionDisabled(!isThread)
+        .listRowBackground(background)
+        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+        .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && (leftPrimary != .read || acceptsRead)) {
+            rowActions(item, primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary)
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && (rightPrimary != .read || acceptsRead)) {
+            rowActions(item, primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary)
+        }
+        .gesture(EmptySwipeGuard(
+            left: swipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary).allSatisfy { $0 == .read && !acceptsRead },
+            right: swipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary).allSatisfy { $0 == .read && !acceptsRead }
+        ))
+        .simultaneousGesture(LongPressGesture().onEnded { _ in
+            guard isThread, !selecting else { return }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            peek(item.id, in: status, order: order)
+        }, isEnabled: isThread)
+        .accessibilityActions {
+            switch item {
+            case .thread(let conversation, _):
+                Button("Peek") { if !selecting { peek(conversation.id, in: status, order: order) } }
+                Button("Move to Trash") { if !selecting { trash(conversation.id, hasDraft: item.hasDraft) } }
+            case .draft(let draft):
+                Button(draft.pinned == true ? "Unpin" : "Pin") { Task { await drafts.togglePin(draft.id) } }
+                Button("Snooze") { snoozingDraft = draft }
+                Button("Settle") { settling = DraftDiscard(ids: [draft.id], action: .move(.settled)) }
+            }
+        }
+    }
+    @ViewBuilder private func rowActions(_ item: MailboxItem, primary: MailboxSwipeAction, secondary: MailboxSwipeAction, tertiary: MailboxSwipeAction) -> some View {
+        switch item {
+        case .thread(let conversation, let replies):
+            swipeButtons(primary: primary, secondary: secondary, tertiary: tertiary, conversation: conversation, hasDraft: !replies.isEmpty)
+        case .draft(let draft):
+            draftSwipeButtons(primary: primary, secondary: secondary, tertiary: tertiary, draft: draft)
         }
     }
     private func swipeActions(
@@ -504,10 +533,10 @@ struct MailboxView: View {
     }
 
     /// What `status` lists now: its own items, or all mail while that search scope is active.
-    private func items(_ status: Workflow) -> [MailboxItem] {
+    private func projection(_ status: Workflow) -> MailboxProjections.Entry {
         let scope: Workflow? = allMail(status) ? nil : status
-        return MailboxItem.list(conversations: store.conversations, drafts: drafts.drafts, status: scope,
-                                search: store.search(search), filter: scope.map { filters[$0] } ?? MailboxFilter())
+        return store.mailbox(drafts: drafts.drafts, status: scope, query: search,
+                                filter: scope.map { filters[$0] } ?? MailboxFilter())
     }
     private var filters: MailboxFilters {
         (try? JSONDecoder().decode(MailboxFilters.self, from: filterData)) ?? MailboxFilters()
@@ -518,9 +547,6 @@ struct MailboxView: View {
             updated[status] = value
             if let data = try? JSONEncoder().encode(updated) { filterData = data }
         })
-    }
-    private var inboxUnreadCount: Int {
-        MailboxItem.list(conversations: store.conversations, drafts: drafts.drafts, status: .inbox).filter(\.unread).count
     }
     @ViewBuilder private func draftSwipeButtons(primary: MailboxSwipeAction, secondary: MailboxSwipeAction, tertiary: MailboxSwipeAction, draft: ComposerDraft) -> some View {
         if !selecting {
@@ -546,12 +572,10 @@ struct MailboxView: View {
     ) -> [MailboxSwipeAction] {
         swipeActions(primary: primary, secondary: secondary, tertiary: tertiary).filter { $0 != .read }
     }
-    private var selectedConversations: [Conversation] {
-        store.conversations.filter { selectedIDs.contains($0.id) }
-    }
     private func endSelection() { selecting = false; selectedIDs = [] }
     private func pruneSelection() {
-        selectedIDs.formIntersection(items(selection).filter { $0.conversation != nil }.map(\.id))
+        guard !selectedIDs.isEmpty else { return }
+        selectedIDs.formIntersection(projection(selection).selection.eligible)
     }
     private func applySelection(_ action: ConversationAction) {
         let ids = selectedIDs
@@ -563,8 +587,7 @@ struct MailboxView: View {
             settling = DraftDiscard(ids: ids, action: action)
             return
         }
-        endSelection()
-        act { store.apply(ids: ids, action: action) }
+        act { if store.apply(ids: ids, action: action) { endSelection() } }
     }
     private func performPull() {
         guard pullAction != .off && !selecting else { return }
@@ -573,9 +596,9 @@ struct MailboxView: View {
         if pullAction == .search { withTransaction(transaction) { searching = true } }
         if pullAction == .compose { openComposer(.new) }
     }
-    private func open(_ id: UUID, in status: Workflow) {
-        openedOrder[status] = items(status).map(\.id)
-        paths[status, default: []].append(.conversation(id))
+    private func peek(_ id: UUID, in status: Workflow, order: [UUID]) {
+        openedOrder[status] = order
+        peeking = id
     }
     private func openComposer(_ mode: ComposeMode) {
         composer = mode
@@ -626,7 +649,6 @@ private struct MailboxSearchToolbar: ViewModifier {
 }
 
 struct BulkSelectionToolbar: ToolbarContent {
-    let active: Bool
     let status: Workflow
     let count: Int
     let hasUnread: Bool
@@ -635,33 +657,31 @@ struct BulkSelectionToolbar: ToolbarContent {
     let snooze: () -> Void
 
     var body: some ToolbarContent {
-        if active {
-            ToolbarItemGroup(placement: .bottomBar) {
-                Button(status == .settled ? "Restore" : "Settle", systemImage: status == .settled ? "tray" : "checkmark") {
-                    apply(.move(status == .settled ? .inbox : .settled))
-                }.disabled(count == 0)
-                Spacer()
-                Button("Snooze", systemImage: "clock", action: snooze).disabled(count == 0)
-                Spacer()
-                Button("Move to Trash", systemImage: RemovedMailbox.trash.symbol) { apply(.remove(.trash)) }.disabled(count == 0)
-                Spacer()
-                Menu {
-                    if status != .settled {
-                        Button(hasUnread ? "Mark read" : "Mark unread",
-                               systemImage: hasUnread ? "envelope.open" : "envelope.badge") {
-                            apply(.read(unread: !hasUnread))
-                        }
+        ToolbarItemGroup(placement: .bottomBar) {
+            Button(status == .settled ? "Restore" : "Settle", systemImage: status == .settled ? "tray" : "checkmark") {
+                apply(.move(status == .settled ? .inbox : .settled))
+            }.disabled(count == 0)
+            Spacer()
+            Button("Snooze", systemImage: "clock", action: snooze).disabled(count == 0)
+            Spacer()
+            Button("Move to Trash", systemImage: RemovedMailbox.trash.symbol) { apply(.remove(.trash)) }.disabled(count == 0)
+            Spacer()
+            Menu {
+                if status != .settled {
+                    Button(hasUnread ? "Mark read" : "Mark unread",
+                           systemImage: hasUnread ? "envelope.open" : "envelope.badge") {
+                        apply(.read(unread: !hasUnread))
                     }
-                    if status == .snoozed {
-                        Button("Restore to Inbox", systemImage: "tray") { apply(.move(.inbox)) }
-                    }
-                    Button(allPinned ? "Unpin" : "Pin", systemImage: allPinned ? "pin.slash" : "pin") {
-                        apply(.pin(!allPinned))
-                    }
-                    Button("Move to Junk", systemImage: RemovedMailbox.junk.symbol) { apply(.remove(.junk)) }
-                } label: { Label("Mark", systemImage: "ellipsis.circle") }
-                .disabled(count == 0)
-            }
+                }
+                if status == .snoozed {
+                    Button("Restore to Inbox", systemImage: "tray") { apply(.move(.inbox)) }
+                }
+                Button(allPinned ? "Unpin" : "Pin", systemImage: allPinned ? "pin.slash" : "pin") {
+                    apply(.pin(!allPinned))
+                }
+                Button("Move to Junk", systemImage: RemovedMailbox.junk.symbol) { apply(.remove(.junk)) }
+            } label: { Label("Mark", systemImage: "ellipsis.circle") }
+            .disabled(count == 0)
         }
     }
 }

@@ -32,8 +32,8 @@ struct SnoozeView: View {
         Task {
             defer { saving = false }
             if !draftIDs.isEmpty, !(await drafts.snooze(draftIDs, until: date)) { return }
+            guard ids.isEmpty || store.apply(ids: ids, action: .move(.snoozed, until: date)) else { return }
             beforeSnooze()
-            store.apply(ids: ids, action: .move(.snoozed, until: date))
             dismiss(); onSnooze()
         }
     }
