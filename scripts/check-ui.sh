@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-exec python3 scripts/run-ui-workers.py "$@"
+exec python3 scripts/run-ui-tests.py "$@"
