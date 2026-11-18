@@ -660,7 +660,8 @@ import SQLite3
     }
 
     @MainActor static func checkSenderBlocking() throws {
-        let disk = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-blocked-\(UUID())/mail.sqlite"))
+        let url = URL.temporaryDirectory.appending(path: "mailern-blocked-\(UUID())/mail.sqlite")
+        let disk = SQLitePersistence(url: url)
         let account = MailAccount.demo[0]
         let first = MailMessage(sender: "Alex", address: "alex@example.com", to: [account.address],
                                 date: .distantPast, body: "First", subject: "Project update")
@@ -688,10 +689,19 @@ import SQLite3
         assert(junk.map(\.messages) == [[blockedReply]], "Only the blocked reply goes to Junk")
         assert(store.conversation(thread)?.messages == [first, second])
 
+        let loaded = store.reload()
+        assert(loaded)
+        var anotherBlockedReply = blockedReply
+        anotherBlockedReply.id = UUID()
+        anotherBlockedReply.date = blockedReply.date.addingTimeInterval(30)
+        store.receive(anotherBlockedReply, accountID: account.id)
+        assert(store.list(.junk).map(\.messages) == [[blockedReply, anotherBlockedReply]], "Replies to the original reuse its Junk split after reload")
+
         var otherReply = second
         otherReply.id = UUID()
         otherReply.date = .now.addingTimeInterval(60)
         otherReply.answer(blockedReply)
+        otherReply.references = nil
         store.receive(otherReply, accountID: account.id)
         assert(store.conversation(thread)?.messages == [first, second, otherReply])
 
@@ -701,15 +711,35 @@ import SQLite3
         assert(store.conversations(with: first.address.uppercased()).map(\.subject) == ["Sent to Alex", "Project update", "Project update"])
         assert(store.conversations(with: second.address).map(\.id) == [thread])
 
-        store.deletePermanently([junk[0].id])
+        let splitID = junk[0].id
+        store.apply(ids: [splitID], action: .restoreRemoved)
+        store.apply(ids: [thread], action: .remove(.trash))
+        var directReply = otherReply
+        directReply.id = UUID()
+        directReply.answer(otherReply)
+        directReply.references = [blockedReply.threadingID, otherReply.threadingID]
+        store.receive(directReply, accountID: account.id)
+        assert(store.conversation(thread)?.latest == directReply && store.conversation(thread)?.removal == nil,
+               "A restored split must not take replies addressed to the original conversation")
+        assert(store.conversation(splitID)?.messages == [blockedReply, anotherBlockedReply])
+
+        store.deletePermanently([splitID])
         let reopened = MailStore(persistence: disk)
         assert(reopened.isSenderBlocked(first.address), "A block must survive deleting its Junk and relaunching")
-        reopened.setSenderBlocked(false, address: first.address.uppercased())
+        var lock: OpaquePointer?
+        assert(sqlite3_open(url.path, &lock) == SQLITE_OK && sqlite3_exec(lock, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+        let failedUnblock = !reopened.setSenderBlocked(false, address: first.address)
+        sqlite3_exec(lock, "ROLLBACK", nil, nil, nil)
+        sqlite3_close(lock)
+        assert(failedUnblock && reopened.isSenderBlocked(first.address) && reopened.error != nil)
+        assert(MailStore(persistence: disk).isSenderBlocked(first.address))
+        let saved = reopened.setSenderBlocked(false, address: first.address.uppercased())
+        assert(saved)
         let unblocked = MailStore(persistence: disk)
         unblocked.receive(blockedReply, accountID: account.id)
         assert(unblocked.blockedSenders.isEmpty && unblocked.list(.junk).isEmpty)
         assert(unblocked.conversation(thread)?.latest == blockedReply)
-        print("PASS: Junk and Undo are independent of blocks, mixed threads keep unblocked replies, sender history includes sent mail, blocks and unblocks persist")
+        print("PASS: Junk and Undo are independent of blocks, blocked replies share a split, unblocked replies keep their thread through restore, sender history includes sent mail, and blocks persist through write failure")
     }
 
     @MainActor static func checkUndoExpiry() async throws {

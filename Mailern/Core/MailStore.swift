@@ -118,12 +118,14 @@ final class MailStore {
     }
     func isSenderBlocked(_ address: String) -> Bool { blockedSenders.contains(address.lowercased()) }
 
-    func setSenderBlocked(_ blocked: Bool, address: String) {
+    @discardableResult func setSenderBlocked(_ blocked: Bool, address: String) -> Bool {
         let address = address.lowercased()
-        guard canWrite(), blocked != isSenderBlocked(address) else { return }
+        guard canWrite() else { return false }
+        guard blocked != blockedSenders.contains(address) else { return true }
         let before = blockedSenders
         if blocked { blockedSenders.insert(address) } else { blockedSenders.remove(address) }
-        if !save() { blockedSenders = before }
+        guard save() else { blockedSenders = before; return false }
+        return true
     }
 
     private var data: MailData { MailData(conversations: conversations, accounts: accounts, blockedSenders: blockedSenders) }
@@ -346,23 +348,34 @@ final class MailStore {
         clearNotice()
         let blocked = isSenderBlocked(message.address)
         let junk = junk || blocked
-        let answered = Set([message.inReplyTo].compactMap { $0 } + (message.references ?? []))
-        let matches = answered.isEmpty ? [] : conversations.indices.filter {
-            conversations[$0].accountID == accountID && conversations[$0].contains(messageIDs: answered)
+        // A reply can reference both the original and a Junk split. Its direct parent takes precedence.
+        var target = message.inReplyTo.flatMap { replyTarget(in: accountID, headers: [$0]) }
+            ?? replyTarget(in: accountID, headers: Set(message.references ?? []))
+        var blockedReplySourceID: UUID?
+        if let index = target {
+            let parent = conversations[index]
+            if blocked, parent.removal != .junk {
+                blockedReplySourceID = parent.id
+                target = conversations.firstIndex { $0.blockedReplySourceID == parent.id && $0.removal == .junk }
+            } else if !junk, parent.removal == .junk, let sourceID = parent.blockedReplySourceID {
+                // A regular reply to a blocked message goes back to the original while the split is in Junk.
+                target = conversations.firstIndex { $0.id == sourceID }
+            }
         }
-        // A blocked reply must leave the original conversation where it was. Later replies from
-        // other senders can reference both parts, so prefer the original over the Junk split.
-        let target = blocked
-            ? matches.first { conversations[$0].removal == .junk }
-            : matches.first { conversations[$0].removal != .junk } ?? matches.first
         if let i = target {
             conversations[i].receive(message)
             if junk { conversations[i].removal = .junk }
         } else {
             conversations.insert(Conversation(accountID: accountID, subject: message.subject ?? "(No Subject)",
-                                              removal: junk ? .junk : nil, messages: [message]), at: 0)
+                                              removal: junk ? .junk : nil, blockedReplySourceID: blockedReplySourceID,
+                                              messages: [message]), at: 0)
         }
         save()
+    }
+
+    private func replyTarget(in accountID: String, headers: Set<String>) -> Int? {
+        guard !headers.isEmpty else { return nil }
+        return conversations.firstIndex { $0.accountID == accountID && $0.contains(messageIDs: headers) }
     }
     func receiveReply(_ id: UUID) {
         guard let c = conversation(id) else { return }

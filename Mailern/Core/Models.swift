@@ -109,6 +109,8 @@ struct Conversation: Codable, Identifiable, Equatable {
     /// Replies to a muted conversation join it without moving it or marking it unread.
     var muted: Bool?
     var followUp: FollowUp?
+    /// Connects a group of blocked replies in Junk to the conversation they answered.
+    var blockedReplySourceID: UUID?
     var messages: [MailMessage]
     var latest: MailMessage { messages[messages.count - 1] }
     var effectiveSubject: String { subject(at: latest) }
