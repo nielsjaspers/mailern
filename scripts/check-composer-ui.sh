@@ -7,7 +7,6 @@ exec scripts/check-ui.sh "$simulator_id" "$@" \
   --only-testing MailernTests \
   --only-testing MailernUITests/RecipientSearchUITests \
   --only-testing MailernUITests/ComposerSelectionHandleDragKeepsEditingUITests \
-  --only-testing MailernUITests/AttachmentMenuDismissalKeepsEditorUsableUITests \
   --only-testing MailernUITests/ComposerDragDismissesKeyboardAndKeepsContentUITests \
   --only-testing MailernUITests/FormattingKeepsSelectionAbovePanelUITests \
   --only-testing MailernUITests/InboxDraftPreviewEditAndDiscardUITests \

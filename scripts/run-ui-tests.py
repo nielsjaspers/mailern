@@ -26,16 +26,29 @@ def run_group(*args, timeout, **kwargs):
     try:
         return child.wait(timeout=timeout)
     except BaseException:
-        for sig, grace in [(signal.SIGTERM, 10), (signal.SIGKILL, None)]:
-            try:
-                os.killpg(child.pid, sig)
-                child.wait(timeout=grace)
-                break
-            except ProcessLookupError:
-                break
-            except subprocess.TimeoutExpired:
-                continue
+        stop_group(child)
         raise
+
+
+def stop_group(child):
+    """Ask the whole group to exit, then kill whatever outlives the grace period, even if the leader exited."""
+    def alive():
+        try:
+            os.killpg(child.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+    if alive():
+        os.killpg(child.pid, signal.SIGTERM)
+        deadline = time.monotonic() + 10
+        while alive() and time.monotonic() < deadline:
+            child.poll()
+            time.sleep(0.2)
+        if alive():
+            os.killpg(child.pid, signal.SIGKILL)
+    child.wait()
 
 
 def output(*args, timeout=120):

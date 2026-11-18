@@ -1,6 +1,6 @@
 # Simulator tests
 
-Run `scripts/check-ui.sh <disposable-simulator-id> [--only-testing <Target/Class/test>]`. Never use a simulator the user works in; create a disposable one with `xcrun simctl create` if none exists. The runner uses only that simulator. Prefer focused runs while iterating; the full suite takes about five minutes. The composer suite has a `scripts/check-composer-ui.sh` shortcut.
+Run `scripts/check-ui.sh <disposable-simulator-id> [--only-testing <Target/Class/test>]`. Never use a simulator the user works in; create a disposable one with `xcrun simctl create` if none exists. The runner uses only that simulator. Prefer focused runs while iterating; the full suite takes just under five minutes on a 16 GB M1 Pro. The composer suite has a `scripts/check-composer-ui.sh` shortcut.
 
 Script runs turn off UIKit animations. After changing a transition, also run the affected tests with `MAILERN_TEST_ANIMATIONS=on`.
 

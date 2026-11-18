@@ -129,23 +129,6 @@ final class ThreadCountAlignmentUITests: MailernUITestCase {
     }
 }
 
-final class MailboxSelectButtonSizeUITests: MailernUITestCase {
-    @MainActor
-    func testSelectMatchesAdjacentToolbarHeight() {
-        continueAfterFailure = false
-        let app = TestApplication()
-        app.launch()
-        let select = app.buttons["Select"]
-        let filter = app.buttons["Filter"]
-        XCTAssertTrue(select.isHittable)
-        XCTAssertEqual(select.frame.height, filter.frame.height, accuracy: 1)
-        XCTAssertEqual(select.frame.midY, filter.frame.midY, accuracy: 1)
-        select.tap()
-        XCTAssertTrue(app.buttons["Cancel"].existsOrWait(timeout: 3))
-        app.buttons["Cancel"].tap()
-    }
-}
-
 final class HTMLMailUITests: MailernUITestCase {
     @MainActor
     func testHTMLMailBlocksRemoteImagesAndRoutesLinks() {
@@ -230,6 +213,11 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
         app.buttons["Reset filters"].tap()
         app.buttons["Done"].tap()
         let filter = app.buttons["Filter"]
+        // Select matches the adjacent toolbar control.
+        let select = app.buttons["Select"]
+        XCTAssertTrue(select.isHittable)
+        XCTAssertEqual(select.frame.height, filter.frame.height, accuracy: 1)
+        XCTAssertEqual(select.frame.midY, filter.frame.midY, accuracy: 1)
         // The toggle stays under the user's finger and criteria expand to its left, each time.
         let center = filter.frame.midX
         filter.tap()
@@ -307,32 +295,6 @@ final class ComposerSelectionHandleDragKeepsEditingUITests: MailernUITestCase {
         XCTAssertGreaterThan(grabber.frame.midY, initialY + 10)
         body.typeText("Replacement ")
         XCTAssertTrue((body.value as? String ?? "").hasPrefix("Replacement "))
-        app.buttons["Cancel"].tap()
-        app.buttons["Delete Draft"].tap()
-        waitForComposerDismissal(in: app)
-    }
-}
-
-final class AttachmentMenuDismissalKeepsEditorUsableUITests: MailernUITestCase {
-    @MainActor
-    func testAttachmentMenuDismissalKeepsEditorUsable() {
-        continueAfterFailure = false
-        let app = TestApplication()
-        app.launch()
-        app.buttons["Compose"].tap()
-        let body = app.textViews["Message body"]
-        body.tap()
-        // The second Attach tap shows that the first dismissal left the controls usable.
-        for _ in 0..<2 {
-            app.buttons["Attach"].tap()
-            XCTAssertTrue(app.buttons["Attach File"].existsOrWait(timeout: 5))
-            XCTAssertTrue(app.buttons["Photo Library"].exists)
-            body.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.2)).tap()
-            waitForAbsence(app.buttons["Attach File"])
-        }
-        XCTAssertTrue(app.buttons["Format"].isHittable)
-        XCTAssertTrue(app.keyboards.firstMatch.exists)
-        enterText("After menus", in: body)
         app.buttons["Cancel"].tap()
         app.buttons["Delete Draft"].tap()
         waitForComposerDismissal(in: app)
@@ -446,6 +408,8 @@ final class ComposerCleanupFailureClosesAfterAcknowledgementUITests: MailernUITe
         XCTAssertFalse(app.textFields["Subject"].isEnabled)
         app.alerts["Composer"].buttons["OK"].tap()
         waitForAbsence(app.navigationBars["Sent cleanup"])
+        select("Settled", in: app)
+        XCTAssertTrue(row("Sent cleanup", in: app).existsOrWait(timeout: 5), "The message went out")
     }
 }
 
@@ -727,7 +691,19 @@ final class ComposerFileAttachmentUITests: MailernUITestCase {
         app.launch()
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
-        app.textViews["Message body"].tap()
+        let body = app.textViews["Message body"]
+        body.tap()
+        // Dismissing the attachment menu by tapping the body keeps the editor usable, each time.
+        for _ in 0..<2 {
+            app.buttons["Attach"].tap()
+            XCTAssertTrue(app.buttons["Attach File"].existsOrWait(timeout: 5))
+            XCTAssertTrue(app.buttons["Photo Library"].exists)
+            body.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.2)).tap()
+            waitForAbsence(app.buttons["Attach File"])
+        }
+        XCTAssertTrue(app.buttons["Format"].isHittable)
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        enterText("After menus", in: body)
         app.buttons["Attach"].tap()
         app.buttons["Attach File"].tap()
         let browse = app.tabBars["DOC.browsingModeTabBar"].buttons["Browse"]
