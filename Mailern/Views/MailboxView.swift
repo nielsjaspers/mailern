@@ -376,56 +376,60 @@ struct MailboxView: View {
         }
     }
     @ViewBuilder private func row(_ item: MailboxItem, status: Workflow) -> some View {
-        if let conversation = item.conversation {
-            let background: Color = item.hasDraft ? .orange : conversation.unread ? .blue : .clear
-            Button {
-                if selecting {
-                    if selectedIDs.contains(conversation.id) { selectedIDs.remove(conversation.id) }
-                    else { selectedIDs.insert(conversation.id) }
-                } else if peeking == nil { open(conversation.id, in: status) }
-            } label: {
-                ConversationRow(conversation: conversation, hasDraft: item.hasDraft)
+        let isThread = item.conversation != nil
+        let acceptsRead = isThread && item.workflow != .settled
+        let background: Color = item.hasDraft ? .orange : item.unread ? .blue : .clear
+        // One button per ID lets List discover offscreen rows without constructing their gestures and menus.
+        Button {
+            if !isThread { paths[status, default: []].append(.conversation(item.id)) }
+            else if selecting {
+                if selectedIDs.contains(item.id) { selectedIDs.remove(item.id) }
+                else { selectedIDs.insert(item.id) }
+            } else if peeking == nil { open(item.id, in: status) }
+        } label: {
+            switch item {
+            case .thread(let conversation, let replies): ConversationRow(conversation: conversation, hasDraft: !replies.isEmpty)
+            case .draft(let draft): DraftRow(draft: draft)
             }
-                .buttonStyle(.plain)
-                .listRowBackground(background.opacity(0.07))
-                .tag(conversation.id)
-                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && (leftPrimary != .read || conversation.workflow != .settled)) {
-                    swipeButtons(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, conversation: conversation, hasDraft: item.hasDraft)
-                }
-                .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && (rightPrimary != .read || conversation.workflow != .settled)) {
-                    swipeButtons(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, conversation: conversation, hasDraft: item.hasDraft)
-                }
-                .gesture(EmptySwipeGuard(
-                    left: conversationSwipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, conversation: conversation).isEmpty,
-                    right: conversationSwipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, conversation: conversation).isEmpty
-                ))
-                .simultaneousGesture(
-                    LongPressGesture().onEnded { _ in
-                        guard !selecting else { return }
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        peeking = conversation.id
-                    }
-                )
-                .accessibilityAction(named: "Peek") { if !selecting { peeking = conversation.id } }
-                .accessibilityAction(named: "Move to Trash") { if !selecting { trash(conversation.id, hasDraft: item.hasDraft) } }
-        } else if let draft = item.drafts.first {
-            Button { paths[status, default: []].append(.conversation(draft.id)) } label: {
-                DraftRow(draft: draft)
+        }
+        .buttonStyle(.plain)
+        .disabled(selecting && !isThread)
+        .selectionDisabled(!isThread)
+        .listRowBackground(background.opacity(0.07))
+        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+        .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && (leftPrimary != .read || acceptsRead)) {
+            rowActions(item, primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary)
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && (rightPrimary != .read || acceptsRead)) {
+            rowActions(item, primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary)
+        }
+        .gesture(EmptySwipeGuard(
+            left: swipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary).allSatisfy { $0 == .read && !acceptsRead },
+            right: swipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary).allSatisfy { $0 == .read && !acceptsRead }
+        ))
+        .simultaneousGesture(LongPressGesture().onEnded { _ in
+            guard isThread, !selecting else { return }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            peeking = item.id
+        }, isEnabled: isThread)
+        .accessibilityActions {
+            switch item {
+            case .thread(let conversation, _):
+                Button("Peek") { if !selecting { peeking = conversation.id } }
+                Button("Move to Trash") { if !selecting { trash(conversation.id, hasDraft: item.hasDraft) } }
+            case .draft(let draft):
+                Button(draft.pinned == true ? "Unpin" : "Pin") { Task { await drafts.togglePin(draft.id) } }
+                Button("Snooze") { snoozingDraft = draft }
+                Button("Settle") { settling = DraftDiscard(ids: [draft.id], action: .move(.settled)) }
             }
-                .buttonStyle(.plain)
-                .disabled(selecting)
-                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                .listRowBackground(Color.orange.opacity(0.07))
-                .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && leftPrimary != .read) { draftSwipeButtons(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary, draft: draft) }
-                .swipeActions(edge: .leading, allowsFullSwipe: rightPrimary != .none && rightPrimary != .read) { draftSwipeButtons(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary, draft: draft) }
-                .gesture(EmptySwipeGuard(
-                    left: draftSwipeActions(primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary).isEmpty,
-                    right: draftSwipeActions(primary: rightPrimary, secondary: rightSecondary, tertiary: rightTertiary).isEmpty
-                ))
-                .accessibilityAction(named: draft.pinned == true ? "Unpin" : "Pin") { Task { await drafts.togglePin(draft.id) } }
-                .accessibilityAction(named: "Snooze") { snoozingDraft = draft }
-                .accessibilityAction(named: "Settle") { settling = DraftDiscard(ids: [draft.id], action: .move(.settled)) }
+        }
+    }
+    @ViewBuilder private func rowActions(_ item: MailboxItem, primary: MailboxSwipeAction, secondary: MailboxSwipeAction, tertiary: MailboxSwipeAction) -> some View {
+        switch item {
+        case .thread(let conversation, let replies):
+            swipeButtons(primary: primary, secondary: secondary, tertiary: tertiary, conversation: conversation, hasDraft: !replies.isEmpty)
+        case .draft(let draft):
+            draftSwipeButtons(primary: primary, secondary: secondary, tertiary: tertiary, draft: draft)
         }
     }
     private func swipeActions(
