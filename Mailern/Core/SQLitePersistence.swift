@@ -19,6 +19,12 @@ final class SQLitePersistence: ConversationPersistence {
         SQLitePersistence(url: URL.applicationSupportDirectory.appending(path: "Mailern/mail.sqlite"))
     }
 
+    /// An interrupted first write can leave an SQLite file with no data. The accounts row commits with the fixture.
+    func seedIfNeeded(_ makeData: () -> MailData) throws {
+        let db = try open()
+        if try setting(db, "accounts") == nil { try save(makeData()) }
+    }
+
     func load() throws -> MailData? {
         stored = nil
         positions = [:]

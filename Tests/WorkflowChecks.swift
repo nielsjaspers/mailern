@@ -18,6 +18,7 @@ import SQLite3
         try checkTrashAndJunk()
         try checkSenderBlocking()
         try checkSQLiteStorage()
+        try checkBenchmarkMailbox()
         try await checkAccounts()
         try checkThreadingHeaders()
         checkMessageLinks()
@@ -657,6 +658,37 @@ import SQLite3
         reloaded.reset()
         assert(reloaded.blockedSenders.isEmpty && reloaded.list(.junk).isEmpty)
         print("PASS: Trash and Junk lists, restore to original workflow, Undo, draft cancels Restore Undo, reply rescues Trash, 30-day purge, permanent deletion, reset")
+    }
+
+    static func checkBenchmarkMailbox() throws {
+        for size in BenchmarkMailbox.allCases {
+            let mail = size.makeMail(now: .distantPast)
+            let conversations = mail.conversations
+            assert(conversations.count == size.rawValue)
+            assert(Set(conversations.map(\.id)).count == size.rawValue)
+            assert(Set(conversations.map(\.accountID)) == Set(mail.accounts.map(\.id)))
+            assert(conversations.contains { $0.messages.count == 16 && $0.messages.contains { $0.html != nil } })
+            assert(conversations.filter { $0.workflow == .inbox }.count == size.rawValue * 4 / 5)
+            assert(conversations.first?.subject == "Weekly report · Sample 1")
+        }
+
+        let directory = URL.temporaryDirectory.appending(path: "mailern-benchmark-\(UUID())")
+        let benchmark = SQLitePersistence(url: directory.appending(path: "Benchmark/mail.sqlite"))
+        let baseline = MailData(conversations: DemoData.conversations())
+        let normal = SQLitePersistence(url: directory.appending(path: "mail.sqlite"))
+        try normal.save(baseline)
+        // Opening an empty SQLite file before the seed simulates an interrupted first write.
+        let empty = try benchmark.search("sample")
+        assert(empty == [])
+        var fixture = MailData(conversations: Array(baseline.conversations.prefix(1)))
+        try benchmark.seedIfNeeded { fixture }
+        fixture.conversations = []
+        try benchmark.seedIfNeeded { fixture }
+        let loaded = try benchmark.load()
+        let untouched = try normal.load()
+        assert(loaded?.conversations == Array(baseline.conversations.prefix(1)))
+        assert(untouched == baseline)
+        print("PASS: both benchmark sizes, realistic thread and HTML mix, seed recovery, and isolated SQLite storage")
     }
 
     @MainActor static func checkSenderBlocking() throws {
