@@ -395,7 +395,7 @@ struct ComposerView: View {
                 return
             }
             if let sendAt {
-                guard await drafts.schedule(content, at: sendAt) else { return }
+                guard await drafts.schedule(content, at: sendAt, holdingForUndo: scheduled == nil) else { return }
                 if scheduled == nil { drafts.undoable = content.id }
             } else {
                 // The draft's ID makes sending a leftover draft again a no-op if deleting it fails below.

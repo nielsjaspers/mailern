@@ -27,6 +27,7 @@ import SQLite3
         try checkMute()
         try checkFollowUp()
         try await checkOutbox()
+        try await checkLocalReminders()
         try checkActionHaptics()
         await checkDraftDiscardHaptics()
         checkAllMailSearch()
@@ -545,6 +546,76 @@ import SQLite3
         assert(store.send(threadID: nil, account: account, to: ["sam@example.com"], cc: [], subject: "Late", body: "x", followUp: .now.addingTimeInterval(-1)))
         assert(store.conversations[0].workflow == .settled && store.conversations[0].followUp == nil)
         print("PASS: follow-up reminders wait in Snoozed, return marked without a reply, end on reply or a manual move, undo, persistence")
+    }
+
+    @MainActor static func checkLocalReminders() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-reminders-\(UUID())")
+        let disk = SQLitePersistence(url: directory.appending(path: "mail.sqlite"))
+        let mail = MailStore(persistence: disk)
+        let url = directory.appending(path: "drafts.json")
+        let drafts = DraftStore(url: url)
+        let start = Date.now
+        let due = start.addingTimeInterval(600)
+        let thread = mail.list(.inbox).first { $0.messages.contains { !$0.outgoing } }!
+        func reminder() -> MailReminder? {
+            MailReminder.plan(mail: mail, drafts: drafts, now: start).first { $0.conversationID == thread.id }
+        }
+        assert(mail.move(thread.id, to: .snoozed, until: due))
+        let original = reminder()!
+        let delayed = due.addingTimeInterval(120)
+        assert(mail.move(thread.id, to: .snoozed, until: delayed))
+        let replacement = reminder()!
+        assert(original.id == replacement.id && original.token != replacement.token)
+        assert(!MailReminder.act(id: original.id, token: original.token, action: "settle", mail: mail, now: delayed))
+        assert(!MailReminder.act(id: replacement.id, token: replacement.token, action: "settle", mail: mail, now: start))
+        mail.wakeDue(now: delayed)
+        let reopened = MailStore(persistence: disk)
+        assert(MailReminder.isActionable(id: replacement.id, token: replacement.token, mail: reopened, now: delayed))
+        assert(MailReminder.act(id: replacement.id, token: replacement.token, action: "snooze", mail: mail, now: delayed))
+        assert(mail.conversation(thread.id)!.snoozedUntil == delayed.addingTimeInterval(3600))
+        assert(!MailReminder.act(id: replacement.id, token: replacement.token, action: "settle", mail: mail, now: delayed))
+        let repeated = reminder()!
+        mail.receiveReply(thread.id)
+        assert(reminder() == nil)
+        assert(!MailReminder.act(id: repeated.id, token: repeated.token, action: "settle", mail: mail, now: repeated.date))
+
+        assert(mail.send(threadID: thread.id, account: mail.account(thread.accountID), to: [thread.correspondent.address],
+                         cc: [], subject: thread.subject, body: "Following up", followUp: due))
+        let followUp = reminder()!
+        assert(followUp.title == "No reply yet" && followUp.conversationID == thread.id)
+        mail.wakeDue(now: due)
+        assert(MailReminder.act(id: followUp.id, token: followUp.token, action: "settle", mail: mail, now: due))
+        assert(mail.conversation(thread.id)!.workflow == .settled)
+        assert(!MailReminder.isActionable(id: followUp.id, token: followUp.token, mail: mail, now: due))
+
+        let scheduled = ComposerDraft(subject: "File report")
+        let undoSend = ComposerDraft(subject: "Already sending")
+        let snoozed = ComposerDraft(subject: "Edit later", snoozedUntil: due)
+        let savedScheduled = await drafts.schedule(scheduled, at: due)
+        let savedUndo = await drafts.schedule(undoSend, at: due, holdingForUndo: true)
+        let savedSnooze = await drafts.save(snoozed)
+        assert(savedScheduled && savedUndo && savedSnooze)
+        let draftPlan = MailReminder.plan(mail: mail, drafts: DraftStore(url: url), now: start)
+        assert(draftPlan.contains { $0.id == "scheduled.\(scheduled.id)" && $0.conversationID == nil })
+        assert(draftPlan.contains { $0.id == "draft.\(snoozed.id)" && $0.date == due })
+        assert(!draftPlan.contains { $0.id == "scheduled.\(undoSend.id)" })
+        let rescheduled = await drafts.schedule(scheduled, at: delayed)
+        assert(rescheduled)
+        assert(MailReminder.plan(mail: mail, drafts: drafts, now: start).first { $0.id == "scheduled.\(scheduled.id)" }?.date == delayed)
+        let canceled = await drafts.unschedule(scheduled.id)
+        assert(canceled)
+        assert(!MailReminder.plan(mail: mail, drafts: drafts, now: start).contains { $0.id == "scheduled.\(scheduled.id)" })
+        let many = (0..<150).map { n in
+            Conversation(accountID: thread.accountID, subject: "Reminder \(n)", workflow: .snoozed,
+                         snoozedUntil: due.addingTimeInterval(Double((149 - n) / 3)), messages: [thread.latest])
+        }
+        try disk.save(MailData(conversations: many))
+        let limited = MailReminder.plan(mail: MailStore(persistence: disk), drafts: DraftStore(url: directory.appending(path: "empty.json")), now: start)
+        let expected = many.sorted { left, right in
+            left.snoozedUntil == right.snoozedUntil ? left.id.uuidString < right.id.uuidString : left.snoozedUntil! < right.snoozedUntil!
+        }
+        assert(limited.compactMap(\.conversationID) == Array(expected.prefix(64)).map(\.id))
+        print("PASS: local reminders replace or cancel on mail changes, survive expiry and reload, reject stale actions, and exclude Undo Send")
     }
 
     @MainActor static func checkOutbox() async throws {

@@ -232,9 +232,11 @@ final class MailStore {
             case .pin(let pinned): updated[i].pinned = pinned
             case .remove(.trash):
                 updated[i].endReminder()
+                updated[i].returnedFromSnoozeAt = nil
                 updated[i].removal = .trash(since: .now)
             case .remove(.junk):
                 updated[i].endReminder()
+                updated[i].returnedFromSnoozeAt = nil
                 updated[i].removal = .junk
             case .restoreRemoved:
                 updated[i].removal = nil
@@ -290,6 +292,7 @@ final class MailStore {
                 updated[i].workflow = old.workflow
                 updated[i].snoozedUntil = old.snoozedUntil
                 updated[i].followUp = old.followUp
+                updated[i].returnedFromSnoozeAt = old.returnedFromSnoozeAt
             case .read: updated[i].unread = old.unread
             case .pin: updated[i].pinned = old.pinned
             case .remove:
@@ -298,6 +301,7 @@ final class MailStore {
                 updated[i].workflow = old.workflow
                 updated[i].snoozedUntil = old.snoozedUntil
                 updated[i].followUp = old.followUp
+                updated[i].returnedFromSnoozeAt = old.returnedFromSnoozeAt
                 updated[i].unread = old.unread
             case .restoreRemoved:
                 updated[i].removal = old.removal
@@ -338,8 +342,10 @@ final class MailStore {
         if !due.isEmpty, nextExpiryRetry.map({ $0 <= now }) ?? true {
             var updated = conversations
             for i in due {
+                let date = updated[i].snoozedUntil
                 let waiting = updated[i].followUp == .waiting
                 updated[i].move(to: .inbox)
+                updated[i].returnedFromSnoozeAt = date
                 if waiting { updated[i].followUp = .noReply }
             }
             if save(replacingConversations: updated, metadataAt: due, reportFailure: nextExpiryRetry == nil) {

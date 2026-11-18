@@ -69,6 +69,8 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     var signature: String?
     /// When scheduled mail goes out. Nil for a draft.
     var sendAt: Date?
+    /// The brief Undo Send hold uses the outbox but does not need a Send Later reminder.
+    var holdingForUndo: Bool?
     /// When to return the sent conversation to Inbox if nobody replied.
     var followUp: Date?
 
@@ -154,7 +156,10 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
 @MainActor @Observable
 final class DraftStore {
     /// Drafts and scheduled mail, as stored.
-    private(set) var all: [ComposerDraft] = []
+    private(set) var all: [ComposerDraft] = [] {
+        didSet { reminderRevision &+= 1 }
+    }
+    private(set) var reminderRevision: UInt64 = 0
     /// Drafts being written. Scheduled mail waits in `outbox` instead.
     var drafts: [ComposerDraft] { all.filter { $0.sendAt == nil } }
     /// Mail waiting to be sent, soonest first. Undo Send holds mail here for its short delay.
@@ -291,9 +296,10 @@ final class DraftStore {
         }
     }
     /// Saves `draft` to go out at `date`.
-    func schedule(_ draft: ComposerDraft, at date: Date) async -> Bool {
+    func schedule(_ draft: ComposerDraft, at date: Date, holdingForUndo: Bool = false) async -> Bool {
         var draft = draft
         draft.sendAt = date
+        draft.holdingForUndo = holdingForUndo ? true : nil
         return await save(draft)
     }
     /// Takes scheduled mail back into Drafts. False when it already went out.
@@ -302,6 +308,7 @@ final class DraftStore {
             guard let i = self.all.firstIndex(where: { $0.id == id && $0.sendAt != nil }) else { return false }
             var updated = self.all
             updated[i].sendAt = nil
+            updated[i].holdingForUndo = nil
             guard await self.persist(updated) else { return false }
             if self.undoable == id { self.undoable = nil }
             return true
@@ -333,6 +340,7 @@ final class DraftStore {
                     updated.removeAll { $0.id == draft.id }
                 } else if let i = updated.firstIndex(where: { $0.id == draft.id }) {
                     updated[i].sendAt = nil
+                    updated[i].holdingForUndo = nil
                     failure = "“\(draft.title)” could not be sent and is back in Drafts. \(store.error ?? "")"
                 }
             }
