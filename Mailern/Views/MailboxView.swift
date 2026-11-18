@@ -215,10 +215,13 @@ struct MailboxView: View {
                     }
                 }
                 .toolbar {
-                    BulkSelectionToolbar(active: selecting, status: status, count: selectedIDs.count,
-                                         hasUnread: selectedConversations.contains { $0.unread },
-                                         allPinned: !selectedIDs.isEmpty && selectedConversations.allSatisfy { $0.pinned },
-                                         apply: applySelection, snooze: { bulkSnooze = true })
+                    if selecting && status == selection {
+                        let candidates = projection(status).selection
+                        BulkSelectionToolbar(status: status, count: selectedIDs.count,
+                                             hasUnread: !selectedIDs.isDisjoint(with: candidates.unread),
+                                             allPinned: !selectedIDs.isEmpty && selectedIDs.isDisjoint(with: candidates.unpinned),
+                                             apply: applySelection, snooze: { bulkSnooze = true })
+                    }
                 }
                 .toolbar(selecting || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
                 .navigationDestination(for: MailboxRoute.self) { route in
@@ -254,8 +257,8 @@ struct MailboxView: View {
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             if selecting {
-                let visibleIDs = Set(projection(status).items.filter { $0.conversation != nil }.map(\.id))
-                let allSelected = !visibleIDs.isEmpty && visibleIDs.isSubset(of: selectedIDs)
+                let visibleIDs = projection(status).selection.eligible
+                let allSelected = !visibleIDs.isEmpty && visibleIDs.count <= selectedIDs.count && visibleIDs.isSubset(of: selectedIDs)
                 Button(allSelected ? "Deselect All" : "Select All") {
                     selectedIDs = allSelected ? [] : visibleIDs
                 }
@@ -557,14 +560,10 @@ struct MailboxView: View {
     ) -> [MailboxSwipeAction] {
         swipeActions(primary: primary, secondary: secondary, tertiary: tertiary).filter { $0 != .read }
     }
-    private var selectedConversations: [Conversation] {
-        guard !selectedIDs.isEmpty else { return [] }
-        return store.conversations.filter { selectedIDs.contains($0.id) }
-    }
     private func endSelection() { selecting = false; selectedIDs = [] }
     private func pruneSelection() {
         guard !selectedIDs.isEmpty else { return }
-        selectedIDs.formIntersection(projection(selection).items.filter { $0.conversation != nil }.map(\.id))
+        selectedIDs.formIntersection(projection(selection).selection.eligible)
     }
     private func applySelection(_ action: ConversationAction) {
         let ids = selectedIDs
@@ -639,7 +638,6 @@ private struct MailboxSearchToolbar: ViewModifier {
 }
 
 struct BulkSelectionToolbar: ToolbarContent {
-    let active: Bool
     let status: Workflow
     let count: Int
     let hasUnread: Bool
@@ -648,33 +646,31 @@ struct BulkSelectionToolbar: ToolbarContent {
     let snooze: () -> Void
 
     var body: some ToolbarContent {
-        if active {
-            ToolbarItemGroup(placement: .bottomBar) {
-                Button(status == .settled ? "Restore" : "Settle", systemImage: status == .settled ? "tray" : "checkmark") {
-                    apply(.move(status == .settled ? .inbox : .settled))
-                }.disabled(count == 0)
-                Spacer()
-                Button("Snooze", systemImage: "clock", action: snooze).disabled(count == 0)
-                Spacer()
-                Button("Move to Trash", systemImage: RemovedMailbox.trash.symbol) { apply(.remove(.trash)) }.disabled(count == 0)
-                Spacer()
-                Menu {
-                    if status != .settled {
-                        Button(hasUnread ? "Mark read" : "Mark unread",
-                               systemImage: hasUnread ? "envelope.open" : "envelope.badge") {
-                            apply(.read(unread: !hasUnread))
-                        }
+        ToolbarItemGroup(placement: .bottomBar) {
+            Button(status == .settled ? "Restore" : "Settle", systemImage: status == .settled ? "tray" : "checkmark") {
+                apply(.move(status == .settled ? .inbox : .settled))
+            }.disabled(count == 0)
+            Spacer()
+            Button("Snooze", systemImage: "clock", action: snooze).disabled(count == 0)
+            Spacer()
+            Button("Move to Trash", systemImage: RemovedMailbox.trash.symbol) { apply(.remove(.trash)) }.disabled(count == 0)
+            Spacer()
+            Menu {
+                if status != .settled {
+                    Button(hasUnread ? "Mark read" : "Mark unread",
+                           systemImage: hasUnread ? "envelope.open" : "envelope.badge") {
+                        apply(.read(unread: !hasUnread))
                     }
-                    if status == .snoozed {
-                        Button("Restore to Inbox", systemImage: "tray") { apply(.move(.inbox)) }
-                    }
-                    Button(allPinned ? "Unpin" : "Pin", systemImage: allPinned ? "pin.slash" : "pin") {
-                        apply(.pin(!allPinned))
-                    }
-                    Button("Move to Junk", systemImage: RemovedMailbox.junk.symbol) { apply(.remove(.junk)) }
-                } label: { Label("Mark", systemImage: "ellipsis.circle") }
-                .disabled(count == 0)
-            }
+                }
+                if status == .snoozed {
+                    Button("Restore to Inbox", systemImage: "tray") { apply(.move(.inbox)) }
+                }
+                Button(allPinned ? "Unpin" : "Pin", systemImage: allPinned ? "pin.slash" : "pin") {
+                    apply(.pin(!allPinned))
+                }
+                Button("Move to Junk", systemImage: RemovedMailbox.junk.symbol) { apply(.remove(.junk)) }
+            } label: { Label("Mark", systemImage: "ellipsis.circle") }
+            .disabled(count == 0)
         }
     }
 }

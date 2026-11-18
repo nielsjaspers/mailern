@@ -67,12 +67,34 @@ extension ComposerDraft {
 /// A tab keeps its latest projection while navigation, search presentation, and scroll geometry change.
 @MainActor
 final class MailboxProjections {
-    struct Entry {
+    struct Selection {
+        var eligible = Set<UUID>()
+        var unread = Set<UUID>()
+        var unpinned = Set<UUID>()
+    }
+
+    final class Entry {
         let query: String
         let filter: MailboxFilter
         let items: [MailboxItem]
         let unread: Int
         let order: [UUID]
+
+        init(query: String, filter: MailboxFilter, items: [MailboxItem]) {
+            self.query = query
+            self.filter = filter
+            self.items = items
+            unread = items.count(where: \.unread)
+            order = items.map(\.id)
+        }
+
+        // Native multi-selection can change once per row during a drag.
+        lazy var selection = items.reduce(into: Selection()) { result, item in
+            guard let conversation = item.conversation else { return }
+            result.eligible.insert(conversation.id)
+            if conversation.unread { result.unread.insert(conversation.id) }
+            if !conversation.pinned { result.unpinned.insert(conversation.id) }
+        }
     }
 
     private var revision: UInt64?
@@ -92,7 +114,7 @@ final class MailboxProjections {
         let search = store.search(query)
         let items = MailboxItem.list(conversations: store.conversations, drafts: drafts, status: status,
                                      search: search, filter: filter)
-        let entry = Entry(query: query, filter: filter, items: items, unread: items.count(where: \.unread), order: items.map(\.id))
+        let entry = Entry(query: query, filter: filter, items: items)
         if search.canCache { entries[status] = entry }
         return entry
     }

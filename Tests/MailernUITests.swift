@@ -594,6 +594,34 @@ final class ThreadFoldsMessagesAndRepliesToEarlierMessageUITests: MailernUITestC
 
 final class BenchmarkMailboxUITests: MailernUITestCase {
     @MainActor
+    func testSettleAndUndoEntireLargeInbox() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["More"].tap()
+        app.buttons["Demo"].tap()
+        app.buttons["benchmark-20000"].tap()
+        waitForAbsence(app.navigationBars["Demo"], timeout: 45)
+        let newest = row("Weekly report · Sample 1,", in: app)
+        XCTAssertTrue(newest.existsOrWait(timeout: 10))
+        func settleAll() {
+            app.buttons["Select"].tap()
+            app.buttons["Select All"].tap()
+            XCTAssertTrue(app.buttons["Deselect All"].exists)
+            app.buttons["Settle"].tap()
+            XCTAssertTrue(app.staticTexts["You're all caught up"].existsOrWait(timeout: 5))
+        }
+        settleAll()
+        app.buttons["Undo"].tap()
+        XCTAssertTrue(newest.existsOrWait(timeout: 5))
+        settleAll()
+        app.launch()
+        XCTAssertTrue(app.staticTexts["You're all caught up"].existsOrWait(timeout: 10))
+        app.tabBars.buttons["Settled"].tap()
+        XCTAssertTrue(newest.existsOrWait(timeout: 5))
+    }
+
+    @MainActor
     func testSwitchAndRelaunchLargeMailboxWithoutReplacingDemoMail() {
         continueAfterFailure = false
         let app = TestApplication()
