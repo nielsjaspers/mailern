@@ -37,8 +37,10 @@ struct HTMLMessageView: View {
                     .padding(.horizontal, margin)
                 }
                 // Mail written only for light backgrounds keeps its white page in dark mode, as it would on paper.
+                // The white backing stays even when the mail's own style clears the page background.
                 HTMLWebView(html: document.html, blocker: remoteContent ? nil : blocker, height: $height)
                     .frame(height: height)
+                    .background(document.adaptsToDarkMode ? Color.clear : .white)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
