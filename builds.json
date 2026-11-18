@@ -49,6 +49,16 @@
       "finished_at": "2026-11-18T01:12:47+00:00",
       "bundle_id": "com.example.mailern",
       "ipa_sha256": "56118a68b65d106b1f2553be3e765de99d806f22c343b4b0c62a4b9d22dbbcac"
+    },
+    {
+      "source_revision": "3ea0e9072eea0f7a2d8f35207c60cc7f785197c1",
+      "branch": "fix/thread-reader-motion",
+      "uncommitted_changes": false,
+      "source_digest": "437e2e6a0bc126f517a6987351412525176a899dc4fe6109f27afa784a1f8abf",
+      "build": 40,
+      "version": "0.6.4",
+      "status": "reserved",
+      "created_at": "2026-11-18T11:37:03+00:00"
     }
   ]
 }
