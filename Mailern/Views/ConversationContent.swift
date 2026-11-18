@@ -349,7 +349,7 @@ private struct MessageRow: View {
                     .accessibilityAddTraits(toggle != nil ? .isButton : [])
                     .accessibilityHint(toggle == nil ? "" : expanded ? "Collapses the message" : "Expands the message")
                     // VoiceOver activates this directly: folded, the touch target is the hidden overlay, not this line.
-                    .accessibilityAction { toggle?() }
+                    .modifier(ToggleAction(toggle: toggle))
                 if expanded {
                     // At accessibility sizes the reply controls get their own line, so the recipients keep the full width.
                     let layout = textSize.isAccessibilitySize
@@ -422,5 +422,14 @@ private struct MessageRow: View {
         }
         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
         .padding(.leading, 48)
+    }
+}
+
+/// The sender line's VoiceOver action. A peek or a single-message thread cannot fold, so it gets none. Whether a row
+/// can fold does not change while it toggles, so this never swaps the view during the animation.
+private struct ToggleAction: ViewModifier {
+    let toggle: (() -> Void)?
+    func body(content: Content) -> some View {
+        if let toggle { content.accessibilityAction { toggle() } } else { content }
     }
 }
