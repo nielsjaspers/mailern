@@ -22,6 +22,9 @@ struct MailernApp: App {
            let id = store.conversations.first(where: { $0.subject == "Dinner on Saturday?" })?.id {
             for _ in 0..<15 { store.receiveReply(id) }
         }
+        if TestStorage.isTestSession, TestStorage.environment["MAILERN_TEST_LARGE_INBOX"] == "1" {
+            for _ in 0..<20 { store.receiveNew() }
+        }
         #endif
         return store
     }

@@ -179,16 +179,14 @@ final class RecipientSearchUITests: MailernUITestCase {
         XCTAssertTrue(recipients.buttons.containing(.staticText, identifier: "Dr. Jordan Lee").firstMatch.exists)
         XCTAssertFalse(recipients.staticTexts["Avery"].exists)
         search.buttons["Clear text"].tap()
-        search.typeText("orders@bookshop")
-        let bookshop = recipients.buttons.containing(.staticText, identifier: "Bookshop").firstMatch
-        XCTAssertTrue(bookshop.exists)
-        XCTAssertFalse(recipients.staticTexts["Dr. Jordan Lee"].exists)
-        search.buttons["Clear text"].tap()
         search.typeText("no-such-recipient")
         XCTAssertTrue(app.staticTexts["No recipients found"].exists)
         search.buttons["Clear text"].tap()
         XCTAssertTrue(recipients.staticTexts["Avery"].exists)
         search.typeText("orders@bookshop")
+        let bookshop = recipients.buttons.containing(.staticText, identifier: "Bookshop").firstMatch
+        XCTAssertTrue(bookshop.exists)
+        XCTAssertFalse(recipients.staticTexts["Dr. Jordan Lee"].exists)
         bookshop.tap()
         XCTAssertFalse(app.navigationBars["Recipients"].exists)
         let to = app.descendants(matching: .any).matching(identifier: "To").firstMatch
@@ -448,10 +446,17 @@ final class UndoSendReopensTheReplyUITests: MailernUITestCase {
         let format = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()
         XCTAssertTrue([chosen, chosen.addingTimeInterval(60)].contains { app.staticTexts[$0.formatted(format)].exists })
         XCTAssertFalse(app.staticTexts["Sending…"].exists)
-        // Cancel Send takes it back as a draft.
+        // The Scheduled mailbox lists it, and Cancel Send there takes it back.
+        app.navigationBars.buttons["Inbox"].tap()
+        app.buttons["More"].tap()
+        let scheduled = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Scheduled")).firstMatch
+        XCTAssertTrue(scheduled.existsOrWait(timeout: 5))
+        scheduled.tap()
+        XCTAssertTrue(app.navigationBars["Scheduled"].existsOrWait(timeout: 5))
+        row(course, in: app).tap()
+        XCTAssertTrue(app.buttons["Cancel Send"].existsOrWait(timeout: 5))
         app.buttons["Cancel Send"].tap()
-        waitForAbsence(card)
-        XCTAssertTrue(app.buttons["Edit draft"].existsOrWait(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No scheduled mail"].existsOrWait(timeout: 5))
     }
 }
 
@@ -575,6 +580,9 @@ final class LongThreadScrollsToLatestMessageUITests: MailernUITestCase {
         // Thread actions replace the mailbox tabs while reading.
         XCTAssertTrue(app.buttons["More actions"].existsOrWait(timeout: 5))
         XCTAssertFalse(app.tabBars.buttons["Inbox"].isHittable)
+        XCTAssertFalse(app.buttons["Compose"].isHittable)
+        XCTAssertTrue(app.buttons["Settle"].isHittable)
+        XCTAssertTrue(app.buttons["Snooze"].isHittable)
         let caseyReplies = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera"))
         XCTAssertTrue(caseyReplies.firstMatch.existsOrWait(timeout: 5))
         // The first message and the last two show. One row holds the fifteen between them.
@@ -602,6 +610,7 @@ final class LongThreadScrollsToLatestMessageUITests: MailernUITestCase {
         XCTAssertTrue(caseyReplies.element(boundBy: caseyReplies.count - 1).isHittable)
         app.navigationBars.buttons["Inbox"].tap()
         XCTAssertTrue(app.tabBars.buttons["Inbox"].isHittable)
+        XCTAssertTrue(app.buttons["Compose"].isHittable)
         row(subject, in: app).tap()
         // A reopened thread folds its middle again and opens on the latest message.
         XCTAssertTrue(app.buttons["16 earlier messages"].existsOrWait(timeout: 5))
@@ -793,47 +802,32 @@ final class SwipeActionSettingsUITests: MailernUITestCase {
 final class PullProgressAndReturnUITests: MailernUITestCase {
     @MainActor
     func testPullProgressAndReturn() {
+        // WorkflowChecks covers the pull threshold. This covers the offsets the list reports while scrolling.
         continueAfterFailure = false
         let app = TestApplication()
+        app.launchEnvironment["MAILERN_TEST_LARGE_INBOX"] = "1"
         app.launch()
-        func setPull(_ title: String) {
-            app.buttons["More"].tap()
-            app.buttons["Settings"].tap()
-            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Inbox pull-down")).firstMatch.tap()
-            app.buttons[title].tap()
-            app.buttons["Done"].tap()
-            waitForAbsence(app.navigationBars["Settings"])
-        }
-        for mode in ["Search", "New email"] {
-            setPull(mode)
-            let anchor = row("Course project feedback", in: app)
-            // The list fills the screen. An app point avoids a slow list lookup for every gesture.
-            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
-            if mode == "New email" {
-                // A short pull returns without composing. WorkflowChecks covers the threshold.
-                start.press(forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 65)), withVelocity: .slow, thenHoldForDuration: 0.7)
-                XCTAssertFalse(app.navigationBars["New Message"].exists)
-                // The navigation bar can expand after the pull, so wait for a stable position.
-                var previousY: CGFloat?
-                let returned = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                    let y = anchor.frame.minY
-                    defer { previousY = y }
-                    return previousY.map { abs(y - $0) < 1 } == true
-                }, object: nil)
-                XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 5), .completed)
-            }
-            start.press(forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 360)), withVelocity: .slow, thenHoldForDuration: 1)
-            if mode == "Search" {
-                // The filter bar case covers what the search finds.
-                XCTAssertTrue(app.buttons["Close"].existsOrWait(timeout: 5))
-                app.buttons["Close"].tap()
-            } else {
-                XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
-                app.buttons["Cancel"].tap()
-                waitForComposerDismissal(in: app)
-                XCTAssertTrue(app.tabBars.buttons["Inbox"].isSelected)
-            }
-        }
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Inbox pull-down")).firstMatch.tap()
+        app.buttons["New email"].tap()
+        app.buttons["Done"].tap()
+        waitForAbsence(app.navigationBars["Settings"])
+        // The list fills the screen. App points avoid a slow list lookup for every gesture.
+        let anchor = row("Course project feedback", in: app)
+        let initialTop = anchor.frame.minY
+        let middle = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+        middle.press(forDuration: 0.01, thenDragTo: middle.withOffset(CGVector(dx: 0, dy: -180)), withVelocity: .slow, thenHoldForDuration: 0.5)
+        XCTAssertLessThan(anchor.frame.minY, initialTop - 50)
+        // A fast return to the top is not a deliberate pull.
+        app.swipeDown(velocity: .fast)
+        XCTAssertFalse(app.navigationBars["New Message"].exists, "Returning to the top must not compose")
+        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+        top.press(forDuration: 0.01, thenDragTo: top.withOffset(CGVector(dx: 0, dy: 360)), withVelocity: .slow, thenHoldForDuration: 1)
+        XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
+        app.buttons["Cancel"].tap()
+        waitForComposerDismissal(in: app)
+        XCTAssertTrue(app.tabBars.buttons["Inbox"].isSelected)
     }
 }
 

@@ -32,23 +32,26 @@ def run_group(*args, timeout, **kwargs):
 
 def stop_group(child):
     """Ask the whole group to exit, then kill whatever outlives the grace period, even if the leader exited."""
-    def alive():
+    def signal_group(sig):
         try:
-            os.killpg(child.pid, 0)
+            os.killpg(child.pid, sig)
             return True
         except ProcessLookupError:
             return False
         except PermissionError:
             return True
-    if alive():
-        os.killpg(child.pid, signal.SIGTERM)
-        deadline = time.monotonic() + 10
-        while alive() and time.monotonic() < deadline:
-            child.poll()
-            time.sleep(0.2)
-        if alive():
-            os.killpg(child.pid, signal.SIGKILL)
-    child.wait()
+    # A second Ctrl-C must not cut cleanup short and leave Xcode processes behind.
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+    try:
+        if signal_group(signal.SIGTERM):
+            deadline = time.monotonic() + 10
+            while signal_group(0) and time.monotonic() < deadline:
+                child.poll()
+                time.sleep(0.2)
+            signal_group(signal.SIGKILL)
+        child.wait()
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def output(*args, timeout=120):
