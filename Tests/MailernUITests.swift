@@ -942,6 +942,9 @@ final class ComposerFileAttachmentUITests: MailernUITestCase {
         local.tap()
         let folder = app.cells["Mailern, Container"]
         let file = app.cells.matching(NSPredicate(format: "label BEGINSWITH %@", "Sample attachment")).firstMatch
+        // The Locations list can remain visible with On My iPhone selected after the first tap.
+        if !folder.waitForExistence(timeout: 2), local.isHittable { local.tap() }
+        XCTAssertTrue(folder.waitForExistence(timeout: 10))
         folder.tap()
         // Files can expose the folder during the navigation transition and ignore the first tap.
         if !file.waitForExistence(timeout: 2), folder.isHittable { folder.tap() }
