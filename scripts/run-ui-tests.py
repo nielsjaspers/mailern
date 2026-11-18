@@ -31,11 +31,14 @@ def state(simulator):
 
 
 def shutdown(simulator):
-    # Finish teardown even if cancellation arrives while the Simulator shuts down.
+    # Finish teardown even if cancellation arrives, but never wait on CoreSimulator forever.
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
     try:
         if state(simulator) not in (None, "Shutdown"):
-            subprocess.run(["xcrun", "simctl", "shutdown", simulator])
+            try:
+                subprocess.run(["xcrun", "simctl", "shutdown", simulator], timeout=60)
+            except subprocess.TimeoutExpired:
+                pass
         if state(simulator) not in (None, "Shutdown"):
             raise RuntimeError(f"Simulator {simulator} is still running. Run scripts/check-ui.sh {simulator} --stop.")
         print("Simulator shut down", flush=True)
@@ -43,8 +46,18 @@ def shutdown(simulator):
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
+def lock(path, resource):
+    held = path.open("a")
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        held.close()
+        raise RuntimeError(f"Another UI run is using the {resource}") from None
+    return held
+
+
 def test_names():
-    """Every test method, so a full run can prove that nothing was skipped or lost."""
+    """Every test method, so each run can prove that it ran exactly the selected tests."""
     names = set()
     for module, path in [("MailernUITests", "Tests/MailernUITests.swift"), ("MailernTests", "Tests/ComposerEditorTests.swift")]:
         cls = None
@@ -54,6 +67,18 @@ def test_names():
             elif match := re.match(r"    func (test\w+)\(", line):
                 names.add((module, cls, match[1]))
     return names
+
+
+def selected(selectors):
+    names = test_names()
+    expected = set()
+    for selector in selectors:
+        parts = tuple(selector.split("/"))
+        matches = {name for name in names if name[:len(parts)] == parts}
+        if not matches:
+            raise RuntimeError(f"No test matches {selector}")
+        expected |= matches
+    return expected
 
 
 def interrupt(signum, frame):
@@ -73,22 +98,20 @@ def main():
     simulator = str(args.simulator).upper()
     if state(simulator) is None:
         parser.error(f"Simulator not found: {simulator}")
+    simulator_lock = Path(tempfile.gettempdir()) / f"mailern-ui-{simulator}.lock"
     if args.stop:
-        shutdown(simulator)
+        with lock(simulator_lock, "Simulator"):
+            shutdown(simulator)
         return 0
+    selectors = args.only_testing or ["MailernUITests", "MailernTests"]
+    expected = selected(selectors)
 
     started = time.monotonic()
     run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
     derived = Path("build/ui-tests")
     derived.mkdir(parents=True, exist_ok=True)
     products = derived / "Build/Products"
-    simulator_lock = Path(tempfile.gettempdir()) / f"mailern-ui-{simulator}.lock"
-    with (derived / ".run.lock").open("a") as build_lock, simulator_lock.open("a") as lock:
-        for held, resource in [(build_lock, "build products"), (lock, "Simulator")]:
-            try:
-                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise RuntimeError(f"Another UI run is using these {resource}") from None
+    with lock(derived / ".run.lock", "build products"), lock(simulator_lock, "Simulator"):
         succeeded = False
         try:
             # Boot while the build runs; bootstatus waits for it later.
@@ -131,27 +154,36 @@ def main():
 
             result = f"build/ui-{run_id}.xcresult"
             log = f"build/ui-{run_id}.log"
-            selectors = args.only_testing or ["MailernUITests", "MailernTests"]
             print(f"Setup: {time.monotonic() - started:.0f}s. Testing, log in {log}", flush=True)
             with open(log, "w") as out:
                 completed = subprocess.run(
                     ["xcodebuild", "-xctestrun", str(patched), "-destination", f"id={simulator}",
                      "-resultBundlePath", result, "test-without-building", "-parallel-testing-enabled", "NO",
+                     # A hung case fails on its own instead of stalling the serial run.
+                     "-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", "120",
+                     "-maximum-test-execution-time-allowance", "180",
                      *(f"-only-testing:{test}" for test in selectors)],
                     stdout=out, stderr=subprocess.STDOUT)
+            if not Path(result).exists():
+                raise RuntimeError(f"xcodebuild failed before testing. See {log}")
             summary = json.loads(output("xcrun", "xcresulttool", "get", "test-results", "summary", "--path", result))
             failed = re.findall(r"Test Case '-\[(\w+\.\w+ \w+)\]' failed", Path(log).read_text())
-            if completed.returncode or summary["failedTests"] or summary["skippedTests"] or not summary["passedTests"]:
+            if completed.returncode or summary["failedTests"] or summary["skippedTests"]:
                 raise RuntimeError(f"Tests failed: {', '.join(failed) or summary}. See {log} and {result}")
-            if not args.only_testing:
-                ran = set(re.findall(r"Test Case '-\[(\w+)\.(\w+) (\w+)\]' started\.", Path(log).read_text()))
-                if ran != test_names() or summary["passedTests"] != len(ran):
-                    raise RuntimeError(f"The run did not execute every test exactly once. See {log}")
+            ran = re.findall(r"Test Case '-\[(\w+)\.(\w+) (\w+)\]' started\.", Path(log).read_text())
+            if sorted(ran) != sorted(expected) or summary["passedTests"] != len(expected):
+                raise RuntimeError(f"The run did not execute each selected test exactly once. See {log}")
             print(f"Passed {summary['passedTests']} tests", flush=True)
             succeeded = True
         finally:
             if not (args.keep_booted and succeeded):
-                shutdown(simulator)
+                try:
+                    shutdown(simulator)
+                except RuntimeError as error:
+                    if succeeded:
+                        raise
+                    # Keep the build or test failure as the reported error.
+                    print(error, file=sys.stderr)
     print(f"UI tests completed in {time.monotonic() - started:.0f}s")
     return 0
 

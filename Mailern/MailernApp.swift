@@ -26,7 +26,18 @@ struct MailernApp: App {
         return store
     }
     private static func makeDrafts() -> DraftStore {
-        DraftStore(url: TestStorage.draftsURL)
+        #if DEBUG
+        // Pending writes must retain the fault settings of their own fixture session.
+        let environment = TestStorage.environment
+        #endif
+        return DraftStore(url: TestStorage.draftsURL, write: { data, url in
+            #if DEBUG
+            if environment["MAILERN_TEST_DRAFT_WRITE_FAILURE"] == "1" {
+                throw CocoaError(.fileWriteOutOfSpace)
+            }
+            #endif
+            try data.write(to: url, options: .atomic)
+        })
     }
     @State private var snoozePreferences = SnoozePreferences(defaults: TestStorage.defaults)
     @Environment(\.scenePhase) private var scenePhase
@@ -69,8 +80,8 @@ private enum TestStorage {
         #if DEBUG
         if let session {
             let defaults = UserDefaults(suiteName: "Mailern.UITests.\(session)")!
-            // UI tests check sent messages at once, without waiting for Undo Send.
-            defaults.register(defaults: [UndoSend.key: 0])
+            // Most cases check sent messages at once. The Undo Send case sets its own delay.
+            defaults.register(defaults: [UndoSend.key: Int(environment["MAILERN_TEST_UNDO_SEND"] ?? "") ?? 0])
             return defaults
         }
         #endif

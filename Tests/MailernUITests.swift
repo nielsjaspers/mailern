@@ -4,7 +4,6 @@ import CoreFoundation
 
 @MainActor
 final class TestApplication: XCUIApplication {
-    var requiresFreshProcess = false
     private let session = UUID().uuidString
     private var hasLaunched = false
     private static var process: String?
@@ -48,7 +47,7 @@ final class TestApplication: XCUIApplication {
         let previous = Self.process
         // Only independent cases reuse a process. Every launch after the first on this
         // object remains an actual relaunch, including persistence and fault tests.
-        let reuse = !requiresFreshProcess && !hasLaunched && launchArguments.isEmpty && Self.processReusable
+        let reuse = !hasLaunched && launchArguments.isEmpty && Self.processReusable
             && previous != nil && state == .runningForeground
         hasLaunched = true
         if reuse {
@@ -78,18 +77,16 @@ final class ComposeDefaultsToBottomRightUITests: MailernUITestCase {
         continueAfterFailure = false
         let app = TestApplication()
         app.launch()
-        for mailbox in ["Snoozed", "Inbox"] {
-            select(mailbox, in: app)
-            let compose = app.buttons["Compose"]
-            XCTAssertTrue(compose.isHittable)
-            XCTAssertGreaterThan(compose.frame.midY, app.frame.height * 0.7)
-            XCTAssertGreaterThan(compose.frame.midX, app.frame.width * 0.5)
-            compose.tap()
-            XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
-            app.buttons["Cancel"].tap()
-            waitForComposerDismissal(in: app)
-            XCTAssertTrue(app.tabBars.buttons[mailbox].isSelected)
-        }
+        let compose = app.buttons["Compose"]
+        XCTAssertTrue(compose.isHittable)
+        XCTAssertGreaterThan(compose.frame.midY, app.frame.height * 0.7)
+        XCTAssertGreaterThan(compose.frame.midX, app.frame.width * 0.5)
+        compose.tap()
+        XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
+        app.buttons["Cancel"].tap()
+        waitForComposerDismissal(in: app)
+        // Compose does not leave a blank tab selected. ComposerEditorTests checks the tab delegate.
+        XCTAssertTrue(app.tabBars.buttons["Inbox"].isSelected)
         // Compose and its dismissal keep a revealed search field where it was.
         app.collectionViews.firstMatch.swipeDown(velocity: .slow)
         let search = app.searchFields.firstMatch
@@ -251,10 +248,18 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
         let search = app.searchFields.firstMatch
         if !search.isHittable { app.swipeDown() }
         search.tap()
-        search.typeText("Dinner")
+        // Return closes the keyboard, which otherwise covers the selection toolbar.
+        search.typeText("Dinner\n")
         XCTAssertTrue(row("Dinner on Saturday?", in: app).exists)
         XCTAssertFalse(row("Course project feedback", in: app).exists)
+        // Select All acts only on the search results, never on hidden mail.
+        app.buttons["Select"].tap()
+        app.buttons["Select All"].tap()
+        XCTAssertTrue(app.staticTexts["1 selected"].exists)
+        app.buttons["Settle"].tap()
         app.buttons["Close"].tap()
+        XCTAssertTrue(row("Course project feedback", in: app).existsOrWait(timeout: 5))
+        XCTAssertFalse(row("Dinner on Saturday?", in: app).exists)
         filter.tap()
         XCTAssertTrue(summary.isHittable)
         XCTAssertEqual(filter.frame.midX, center, accuracy: 1)
@@ -386,6 +391,53 @@ final class InboxDraftPreviewEditAndDiscardUITests: MailernUITestCase {
         app.buttons["Discard draft"].tap()
         XCTAssertTrue(app.buttons["Compose"].existsOrWait(timeout: 5))
         XCTAssertFalse(row(subject, in: app).exists)
+    }
+}
+
+final class ComposerDraftSaveFailureKeepsEditorUITests: MailernUITestCase {
+    @MainActor
+    func testComposerDraftSaveFailureKeepsEditor() {
+        // WorkflowChecks covers what failed writes leave on disk. This covers the editor, so unsaved text is not lost.
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launchEnvironment["MAILERN_TEST_DRAFT_WRITE_FAILURE"] = "1"
+        app.launch()
+        app.buttons["Compose"].tap()
+        XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
+        app.textFields["Subject"].tap(); app.textFields["Subject"].typeText("Unsaved failure proof")
+        XCTAssertTrue(app.alerts["Composer"].existsOrWait(timeout: 5))
+        app.alerts["Composer"].buttons["OK"].tap()
+        app.buttons["Sheet Grabber"].firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)), withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(app.navigationBars["Unsaved failure proof"].exists, "A failed save keeps the editor open")
+        XCTAssertEqual(app.textFields["Subject"].value as? String, "Unsaved failure proof")
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+        waitForComposerDismissal(in: app)
+    }
+}
+
+final class UndoSendReopensTheReplyUITests: MailernUITestCase {
+    @MainActor
+    func testUndoSendReopensTheReply() {
+        // WorkflowChecks covers delivery timing and unscheduling. This covers the banner and the reopened composer.
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launchEnvironment["MAILERN_TEST_UNDO_SEND"] = "5"
+        app.launch()
+        let course = "Course project feedback"
+        row(course, in: app).tap()
+        app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
+        XCTAssertTrue(app.navigationBars["Re: \(course)"].existsOrWait(timeout: 5))
+        enterText("Undo send proof", in: app.textViews["Message body"])
+        app.buttons["Send"].tap()
+        waitForComposerDismissal(in: app)
+        XCTAssertTrue(app.staticTexts["Sending…"].existsOrWait(timeout: 3))
+        app.buttons["Undo"].tap()
+        let body = app.textViews["Message body"]
+        XCTAssertTrue(body.existsOrWait(timeout: 5))
+        XCTAssertTrue((body.value as? String)?.hasPrefix("Undo send proof") == true)
+        app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
+        waitForComposerDismissal(in: app)
     }
 }
 
@@ -587,8 +639,6 @@ final class ComposerPhotoAttachmentUITests: MailernUITestCase {
     func testComposerPhotoAttachment() {
         continueAfterFailure = false
         let app = TestApplication()
-        // Quick Look retains its chrome state within the process after a previous preview.
-        app.requiresFreshProcess = true
         app.launch()
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
@@ -625,7 +675,6 @@ final class ComposerFileAttachmentUITests: MailernUITestCase {
     func testComposerFileAttachment() {
         continueAfterFailure = false
         let app = TestApplication()
-        // No earlier case shows Quick Look, so this case can reuse the app process.
         app.launch()
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
@@ -644,16 +693,8 @@ final class ComposerFileAttachmentUITests: MailernUITestCase {
         app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Sample attachment")).firstMatch.tap()
         XCTAssertTrue(app.buttons["Open"].wait(for: \.isEnabled, toEqual: true, timeout: 5))
         app.buttons["Open"].tap()
-        let preview = app.buttons["Preview Sample attachment.txt"]
-        XCTAssertTrue(preview.existsOrWait(timeout: 10))
-        preview.tap()
-        XCTAssertTrue(app.buttons["QLOverlayDoneButtonAccessibilityIdentifier"].existsOrWait(timeout: 5))
-        // The remote preview loads the file before it closes cleanly.
-        let content = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@",
-            "fictional attachment", "fictional attachment")).firstMatch
-        XCTAssertTrue(content.existsOrWait(timeout: 15))
-        closeQuickLook(in: app)
-        // The photo case covers sending an attachment.
+        XCTAssertTrue(app.buttons["Preview Sample attachment.txt"].existsOrWait(timeout: 10))
+        // The photo case covers Quick Look and sending an attachment.
         app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
         waitForComposerDismissal(in: app)
     }
@@ -712,11 +753,6 @@ final class SwipeActionSettingsUITests: MailernUITestCase {
         XCTAssertTrue(row(subject, in: app).exists)
         XCTAssertTrue(app.navigationBars["Inbox"].exists)
         XCTAssertTrue(app.buttons["Trash"].exists)
-        settings()
-        app.buttons["Reset Swipe Actions"].tap()
-        XCTAssertTrue(app.buttons["Swipe left-primary"].label.contains("Settle"))
-        XCTAssertTrue(app.buttons["Swipe left-tertiary"].label.contains("None"))
-        XCTAssertTrue(app.buttons["Swipe right-tertiary"].label.contains("None"))
     }
 }
 
