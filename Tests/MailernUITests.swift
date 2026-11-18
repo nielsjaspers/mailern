@@ -881,7 +881,10 @@ final class ComposerFileAttachmentUITests: MailernUITestCase {
         if !local.existsOrWait(timeout: 1) { browse.tap() }
         XCTAssertTrue(local.existsOrWait(timeout: 10))
         local.tap()
-        app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND elementType != 2", "Mailern")).firstMatch.tap()
+        // In icon mode the center of the cell can fall below the folder image.
+        let folder = app.cells["Mailern, Container"]
+        let icon = folder.images.firstMatch
+        if icon.exists { icon.tap() } else { folder.tap() }
         app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Sample attachment")).firstMatch.tap()
         XCTAssertTrue(app.buttons["Open"].wait(for: \.isEnabled, toEqual: true, timeout: 5))
         app.buttons["Open"].tap()
