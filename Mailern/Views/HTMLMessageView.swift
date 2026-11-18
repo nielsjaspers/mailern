@@ -4,30 +4,43 @@ import WebKit
 /// Shows an HTML email. The web view runs no scripts and loads nothing from the network until the reader taps
 /// Load images. Remote images are blocked by default because senders use them to track when mail is opened.
 struct HTMLMessageView: View {
-    @Environment(\.colorScheme) private var colorScheme
     let html: String
     /// Shown instead when the content blocker cannot be compiled. The message never loads without it.
     let fallback: String
+    /// The reader's side margin. The page gets the same margin inside, so a light page spans the full width.
+    var margin: CGFloat = 20
+    /// A peek takes no touches, so it states that images are hidden without offering to load them.
+    var isPreview = false
     @State private var blocker: WKContentRuleList?
     @State private var blockerFailed = false
     @State private var remoteContent = false
     @State private var height: CGFloat = 1
-    private var document: HTMLDocument { HTMLDocument(html, remoteContent: remoteContent) }
+    private var document: HTMLDocument { HTMLDocument(html, remoteContent: remoteContent, margin: margin) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             if blockerFailed {
                 Text(MessageLinks.linked(fallback)).font(.body).lineSpacing(5).textSelection(.enabled)
+                    .padding(.horizontal, margin)
             } else if let blocker {
                 if document.hasRemoteContent && !remoteContent {
-                    Button("Load images", systemImage: "photo") { remoteContent = true }
-                        .font(.subheadline).buttonStyle(.bordered)
+                    HStack(spacing: 6) {
+                        Image(systemName: "eye.slash").accessibilityHidden(true)
+                        Text("Remote images are hidden")
+                        Spacer(minLength: 8)
+                        if !isPreview {
+                            Button("Load images") { remoteContent = true }
+                                .fontWeight(.semibold).buttonStyle(.borderless)
+                        }
+                    }
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .padding(.horizontal, margin)
                 }
+                // Mail written only for light backgrounds keeps its white page in dark mode, as it would on paper.
+                // The white backing stays even when the mail's own style clears the page background.
                 HTMLWebView(html: document.html, blocker: remoteContent ? nil : blocker, height: $height)
                     .frame(height: height)
-                    // Mail written only for light backgrounds keeps a white page in dark mode, as it would on paper.
-                    .padding(colorScheme == .dark && !document.adaptsToDarkMode ? 12 : 0)
-                    .background(document.adaptsToDarkMode ? .clear : .white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(document.adaptsToDarkMode ? Color.clear : .white)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

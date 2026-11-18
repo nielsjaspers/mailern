@@ -27,6 +27,86 @@ enum RichText {
         }
         return unchanged
     }
+    /// What a reader sees of one character's formatting. Sizes count as stored, so a quote compares with the message it
+    /// copies, not with today's text size.
+    private struct Look: Equatable {
+        var font: String, size: CGFloat, color: [CGFloat], background: [CGFloat]?, underline: Int, strikethrough: Int, link: String?
+        var kern: CGFloat, baselineOffset: CGFloat
+        var alignment: Int, direction: Int, head: CGFloat, firstLine: CGFloat, tail: CGFloat, lineSpacing: CGFloat
+        var before: CGFloat, after: CGFloat, lineHeightMultiple: CGFloat, minimumLineHeight: CGFloat, maximumLineHeight: CGFloat
+        var tabInterval: CGFloat, tabs: [CGFloat], lists: [String], quoted: Bool
+    }
+    /// A color in light and dark appearance, so an adaptive color differs from a fixed one that matches it in one of them.
+    private static func components(_ color: UIColor) -> [CGFloat] {
+        [UIUserInterfaceStyle.light, .dark].flatMap { style in
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            color.resolvedColor(with: UITraitCollection(userInterfaceStyle: style)).getRed(&r, green: &g, blue: &b, alpha: &a)
+            return [r, g, b, a].map { ($0 * 255).rounded() }
+        }
+    }
+    private static func looks(_ text: NSAttributedString) -> [Look] {
+        var result: [Look] = []
+        text.enumerateAttributes(in: NSRange(location: 0, length: text.length)) { attributes, span, _ in
+            let font = attributes[.font] as? UIFont ?? UIFont.preferredFont(forTextStyle: .body)
+            let paragraph = attributes[.paragraphStyle] as? NSParagraphStyle ?? .default
+            // Storage writes natural alignment as left, and leaves out a fixed black, its default color. Decoding restores
+            // the adaptive label color explicitly, so text without a color is fixed black.
+            let alignment = paragraph.alignment == .natural ? NSTextAlignment.left : paragraph.alignment
+            let look = Look(
+                font: font.fontName, size: font.pointSize, color: components(attributes[.foregroundColor] as? UIColor ?? .black),
+                background: (attributes[.backgroundColor] as? UIColor).map { components($0) },
+                underline: attributes[.underlineStyle] as? Int ?? 0, strikethrough: attributes[.strikethroughStyle] as? Int ?? 0,
+                link: attributes[.link].map { "\($0)" }, kern: attributes[.kern] as? CGFloat ?? 0,
+                baselineOffset: attributes[.baselineOffset] as? CGFloat ?? 0, alignment: alignment.rawValue, direction: paragraph.baseWritingDirection.rawValue,
+                head: paragraph.headIndent, firstLine: paragraph.firstLineHeadIndent, tail: paragraph.tailIndent,
+                lineSpacing: paragraph.lineSpacing, before: paragraph.paragraphSpacingBefore, after: paragraph.paragraphSpacing,
+                lineHeightMultiple: paragraph.lineHeightMultiple, minimumLineHeight: paragraph.minimumLineHeight,
+                maximumLineHeight: paragraph.maximumLineHeight, tabInterval: paragraph.defaultTabInterval,
+                tabs: paragraph.tabStops.map(\.location),
+                lists: paragraph.textLists.map { "\($0.markerFormat.rawValue) \($0.startingItemNumber)" }, quoted: attributes[quote] as? Bool == true)
+            result += Array(repeating: look, count: span.length)
+        }
+        return result
+    }
+    /// Formats the quote the composer adds to a reply: the attribution line from `start` to `body` turns purple, and the
+    /// whole quote from `start` to the end is indented by 10 points and marked as a quote.
+    static func markQuote(in text: NSMutableAttributedString, from start: Int, body: Int) {
+        let quote = NSRange(location: start, length: text.length - start)
+        text.addAttribute(.foregroundColor, value: UIColor.systemPurple, range: NSRange(location: start, length: body - start))
+        text.addAttribute(Self.quote, value: true, range: quote)
+        text.enumerateAttribute(.paragraphStyle, in: quote) { value, range, _ in
+            let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            style.headIndent += 10
+            style.firstLineHeadIndent += 10
+            text.addAttribute(.paragraphStyle, value: style, range: range)
+        }
+    }
+    /// Whether the quote at the end of `reply`, from its attribution line at `start`, still looks exactly as the composer
+    /// stored it from `original`. It rebuilds that reply with the composer's own formatting and storage, so anything else
+    /// in the quote, such as bold, a color, or centering, was changed by the writer.
+    static func isUnchangedQuote(_ reply: NSAttributedString, from start: Int, attributionLength: Int,
+                                 quoting original: NSAttributedString) -> Bool {
+        let body = start + attributionLength + 1
+        guard start >= 0, body + original.length == reply.length else { return false }
+        let rebuilt = NSMutableAttributedString(attributedString: reply.attributedSubstring(from: NSRange(location: 0, length: start)))
+        rebuilt.append(plain(reply.attributedSubstring(from: NSRange(location: start, length: attributionLength + 1)).string))
+        rebuilt.append(original)
+        markQuote(in: rebuilt, from: start, body: body)
+        guard let data = try? encode(rebuilt) else { return false }
+        let quote = NSRange(location: start, length: reply.length - start)
+        let stored = looks(reply.attributedSubstring(from: quote))
+        let expected = looks(decode(data, fallback: "").attributedSubstring(from: quote))
+        // Storage keeps the attribution's purple as a fixed color in the appearance it was saved in.
+        let purples = [UIUserInterfaceStyle.light, .dark].map { components(UIColor.systemPurple.resolvedColor(with: UITraitCollection(userInterfaceStyle: $0))) }
+        // The composer colors the whole line at once, so one color must cover all of it.
+        guard stored.count == expected.count, Set(stored[...attributionLength].map(\.color)).count == 1 else { return false }
+        return zip(stored.indices, zip(stored, expected)).allSatisfy { index, pair in
+            var (look, wanted) = pair
+            if index <= attributionLength, purples.contains(look.color), purples.contains(wanted.color) { look.color = wanted.color }
+            return look == wanted
+        }
+    }
+
     static func decode(_ data: Data?, fallback: String) -> NSAttributedString {
         guard let data, let document = try? JSONDecoder().decode(Document.self, from: data),
               let result = try? NSMutableAttributedString(data: document.data, options: [.documentType: NSAttributedString.DocumentType.rtfd], documentAttributes: nil)

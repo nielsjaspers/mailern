@@ -310,6 +310,14 @@ final class HTMLMailUITests: MailernUITestCase {
         continueAfterFailure = false
         let app = TestApplication()
         app.launch()
+        // A peek takes no touches, so it says that images are hidden without an inert button.
+        peek("A little less, but better", in: app)
+        XCTAssertTrue(app.staticTexts["Remote images are hidden"].existsOrWait(timeout: 10))
+        XCTAssertFalse(app.buttons["Load images"].exists)
+        XCTAssertTrue(app.webViews.firstMatch.staticTexts["A little less, but better"].existsOrWait(timeout: 10))
+        capture("HTML newsletter in a peek", in: app)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.5)).tap()
+        waitForAbsence(preview(in: app))
         row("A little less, but better", in: app).tap()
         let page = app.webViews.firstMatch
         XCTAssertTrue(page.staticTexts["A little less, but better"].existsOrWait(timeout: 10))
@@ -974,7 +982,18 @@ final class ThreadFoldsMessagesAndRepliesToEarlierMessageUITests: MailernUITestC
         waitForAbsence(app.navigationBars["Re: \(subject)"])
         waitForAbsence(app.buttons.matching(identifier: "Edit draft").element(boundBy: 1))
         XCTAssertTrue(app.buttons["Edit draft"].exists)
-        XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value BEGINSWITH %@", "Earlier reply draft")).firstMatch.existsOrWait(timeout: 5))
+        let sent = app.textViews.matching(NSPredicate(format: "value BEGINSWITH %@", "Earlier reply draft")).firstMatch
+        XCTAssertTrue(sent.existsOrWait(timeout: 5))
+        // The quote under the sent reply folds behind a button.
+        XCTAssertFalse((sent.value as? String ?? "").contains("wrote:"))
+        // The quote opens below its button.
+        let revealed = app.textViews.matching(NSPredicate(format: "value BEGINSWITH %@ AND value CONTAINS %@", "On ", "Are you free on Saturday?")).firstMatch
+        app.buttons["Show quoted text"].tap()
+        XCTAssertTrue(revealed.existsOrWait(timeout: 5))
+        XCTAssertLessThan(app.buttons["Hide quoted text"].frame.maxY, revealed.frame.minY + 1)
+        capture("Sent reply with its quote shown", in: app)
+        app.buttons["Hide quoted text"].tap()
+        waitForAbsence(revealed)
         app.buttons["Reply"].tap(); app.buttons["Reply All"].tap()
         XCTAssertTrue(app.navigationBars["Re: \(subject)"].existsOrWait(timeout: 5))
         XCTAssertTrue((app.textViews["Message body"].value as? String ?? "").hasPrefix("One reply draft"))
@@ -991,8 +1010,10 @@ final class ThreadFoldsMessagesAndRepliesToEarlierMessageUITests: MailernUITestC
         app.buttons["Simulate incoming reply"].tap()
         XCTAssertTrue(incoming.firstMatch.existsOrWait(timeout: 5))
         XCTAssertEqual(caseyReplies.count, 2)
+        // Five messages: the two between the first and the last two hide behind one row.
+        XCTAssertTrue(app.buttons["2 earlier messages"].exists)
         capture("Thread after an incoming reply", in: app)
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera")).element(boundBy: 2).tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera")).element(boundBy: 1).tap()
         waitForAbsence(caseyReplies.element(boundBy: 1))
         app.buttons["More actions"].tap()
         app.buttons["Simulate incoming reply"].tap()
@@ -1012,18 +1033,26 @@ final class LongThreadScrollsToLatestMessageUITests: MailernUITestCase {
         row(subject, in: app).tap()
         let caseyReplies = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera"))
         XCTAssertTrue(caseyReplies.firstMatch.existsOrWait(timeout: 5))
+        // The first message and the last two show. One row holds the fifteen between them.
+        let headers = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera"))
+        // The Inbox row also starts with the sender until the push transition ends.
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 3"), object: headers)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 5), .completed)
+        capture("Long thread with its middle folded", in: app)
+        app.buttons["15 earlier messages"].tap()
+        XCTAssertTrue(headers.element(boundBy: 16).existsOrWait(timeout: 5))
 
         // Receive a reply while scrolled away, so visibility requires the arrival scroll.
-        let headers = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera"))
-        let previousLatest = headers.element(boundBy: 12)
+        let previousLatest = headers.element(boundBy: 16)
+        for _ in 0..<16 where !previousLatest.isHittable { app.swipeUp() }
         XCTAssertTrue(previousLatest.isHittable)
         app.swipeDown(); app.swipeDown()
         XCTAssertLessThan(headers.element(boundBy: 0).frame.minY, app.frame.height)
         XCTAssertGreaterThan(previousLatest.frame.minY, app.frame.height)
         app.buttons["More actions"].tap()
         app.buttons["Simulate incoming reply"].tap()
-        XCTAssertTrue(headers.element(boundBy: 13).existsOrWait(timeout: 5))
-        let newest = headers.element(boundBy: 13)
+        XCTAssertTrue(headers.element(boundBy: 17).existsOrWait(timeout: 5))
+        let newest = headers.element(boundBy: 17)
         XCTAssertGreaterThan(newest.frame.minY - headers.element(boundBy: 0).frame.minY, app.frame.height)
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: newest)
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
@@ -1031,9 +1060,11 @@ final class LongThreadScrollsToLatestMessageUITests: MailernUITestCase {
         capture("Long thread after an incoming reply", in: app)
         app.navigationBars.buttons["Inbox"].tap()
         row(subject, in: app).tap()
-        XCTAssertTrue(newest.existsOrWait(timeout: 5))
-        XCTAssertGreaterThan(newest.frame.minY - headers.element(boundBy: 0).frame.minY, app.frame.height)
-        XCTAssertTrue(newest.isHittable)
+        // A reopened thread folds its middle again and opens on the latest message.
+        XCTAssertTrue(app.buttons["16 earlier messages"].existsOrWait(timeout: 5))
+        let refolded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 3"), object: headers)
+        XCTAssertEqual(XCTWaiter.wait(for: [refolded], timeout: 5), .completed)
+        XCTAssertTrue(headers.element(boundBy: 2).isHittable)
         XCTAssertEqual(caseyReplies.count, 1)
         XCTAssertTrue(caseyReplies.firstMatch.isHittable)
         capture("Long thread opens on the latest message", in: app)

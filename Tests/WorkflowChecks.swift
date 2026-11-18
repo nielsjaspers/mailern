@@ -21,6 +21,7 @@ import SQLite3
         try checkThreadingHeaders()
         checkMessageLinks()
         checkHTMLDocument()
+        checkQuotedText()
         try checkMute()
         try checkFollowUp()
         try await checkOutbox()
@@ -361,6 +362,52 @@ import SQLite3
         legacyStore.receiveReply(conversation.id)
         assert(legacyStore.conversations.count == 1 && legacyStore.conversation(conversation.id)!.latest.inReplyTo == old.threadingID)
         print("PASS: Message-ID headers on demo and sent mail, threading by In-Reply-To and References within one account, legacy mail")
+    }
+
+    static func checkQuotedText() {
+        let casey = MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [], date: .now,
+                                body: "Hey! Are you free on Saturday? I was thinking we could cook at my place.\n\nCasey")
+        func visible(_ body: String, _ answered: MailMessage? = casey) -> String? {
+            QuotedText.start(in: body, answering: answered).map { String((body as NSString).substring(to: $0)) }
+        }
+        // Mailern's composer quotes the answered body under its attribution line, without `>`.
+        let attribution = QuotedText.attribution(for: casey)
+        let reply = "Sure, 7 works.\n\nMorgan\n\n\(attribution)\n\(casey.body)"
+        assert(visible(reply) == "Sure, 7 works.\n\nMorgan\n\n")
+        // Text written below the quote, an edited quote, or a different attribution keeps the whole message visible.
+        assert(visible(reply + "\n\nP.S. I'll bring wine.") == nil, "Text below a quote never folds")
+        assert(visible(reply + "\n") == nil && visible(reply + "\t") == nil, "Even whitespace added below the quote is not proven")
+        assert(visible(reply.replacingOccurrences(of: "Saturday", with: "Sunday")) == nil, "An edited quote is not proven")
+        assert(visible("Yes.\n\nOn the sign at check-in, Casey Rivera <casey@example.com> wrote:\n\(casey.body)") == nil,
+               "Only the composer's own attribution counts")
+        assert(visible(reply, nil) == nil, "A message that answers nothing quotes nothing")
+        assert(visible(reply, MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [], date: casey.date, body: " ")) == nil,
+               "An empty answered body proves nothing")
+        // Quotes from other clients are not recognized yet, so `>` lines always show.
+        let marked = "> Hey! Are you free on Saturday? I was thinking we could cook at my place.\n>\n> Casey"
+        assert(visible("Yes.\n\nOn Monday, Casey <casey@example.com> wrote:\n" + marked) == nil)
+        assert(visible("Set the cutoff to\n> 0", MailMessage(sender: "Avery", address: "avery@example.com", to: [], date: .now, body: "0")) == nil)
+        assert(visible("\n\n\(attribution)\n\(casey.body)") == nil, "A message never folds to nothing")
+        assert(visible(reply.replacingOccurrences(of: "\nHey!", with: "\n  Hey!")) == nil, "Changed indentation is not proven")
+        // A quote that only looks the same, here a decomposed é, is not proven and cannot shift the fold.
+        let cafe = MailMessage(sender: "Casey Rivera", address: "casey@example.com", to: [], date: casey.date, body: "Caf\u{E9}?")
+        assert(visible("Yes.\n\n\(QuotedText.attribution(for: cafe))\nCafe\u{301}?", cafe) == nil)
+        assert(visible("Yes.\n\n\(QuotedText.attribution(for: cafe))\nCaf\u{E9}?", cafe) == "Yes.\n\n")
+        // Forwarded mail is the point of a forward and does not fold.
+        assert(visible("FYI\n\nBegin forwarded message:\n\nFrom: Casey Rivera <casey@example.com>\n\n\(casey.body)") == nil)
+
+        // In a conversation, In-Reply-To names the answered message, and the composer writes the quote this check expects.
+        var thread = DemoData.conversations().first { $0.subject == "Dinner on Saturday?" }!
+        let first = thread.messages[0]
+        let draft = ComposerDraft.make(mode: .reply(thread.id), conversation: thread, message: first.id, accounts: MailAccount.demo)
+        var answer = MailMessage(sender: "Morgan", address: "morgan@personal.example.com", to: ["casey@example.com"], date: .now,
+                                 body: "Sure." + draft.text, outgoing: true)
+        answer.answer(first)
+        thread.messages.append(answer)
+        assert(thread.quoteStart(of: answer) != nil && thread.quoteStart(of: first) == nil)
+        answer.answer(thread.messages[2])
+        thread.messages[thread.messages.count - 1] = answer
+        assert(thread.quoteStart(of: answer) == nil, "A quote of another message than the answered one stays visible")
     }
 
     static func checkHTMLDocument() {
