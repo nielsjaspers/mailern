@@ -43,6 +43,7 @@ struct SettingsView: View {
         Form {
             Section {
                 NavigationLink("Accounts") { AccountsSettingsView() }
+                NavigationLink("Blocked Senders") { BlockedSendersView() }
                 NavigationLink("Snooze settings") { SnoozeSettingsView() }
                 NavigationLink("Swipe actions") { SwipeSettingsView() }
                 Picker("Undo send", selection: $undoDelay) {

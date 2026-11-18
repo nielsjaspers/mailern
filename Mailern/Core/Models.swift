@@ -109,6 +109,8 @@ struct Conversation: Codable, Identifiable, Equatable {
     /// Replies to a muted conversation join it without moving it or marking it unread.
     var muted: Bool?
     var followUp: FollowUp?
+    /// Connects a group of blocked replies in Junk to the conversation they answered.
+    var blockedReplySourceID: UUID?
     var messages: [MailMessage]
     var latest: MailMessage { messages[messages.count - 1] }
     var effectiveSubject: String { subject(at: latest) }
@@ -117,8 +119,6 @@ struct Conversation: Codable, Identifiable, Equatable {
         let index = messages.firstIndex { $0.id == message.id } ?? messages.count - 1
         return messages[...index].last(where: { $0.subject != nil })?.subject ?? subject
     }
-    /// Lowercased addresses of everyone else who wrote in the thread.
-    var senderAddresses: Set<String> { Set(messages.filter { !$0.outgoing }.map { $0.address.lowercased() }) }
     var correspondent: MailMessage { messages.last(where: { !$0.outgoing }) ?? latest }
     /// Everyone who wrote in the thread, in order of first appearance. Sent-only threads show their recipients.
     var participants: String {
@@ -131,8 +131,6 @@ struct Conversation: Codable, Identifiable, Equatable {
     var avatarName: String {
         messages.contains(where: { !$0.outgoing }) ? correspondent.sender : latest.to.first ?? latest.sender
     }
-    /// True when one of the messages has a Message-ID in `ids`.
-    func contains(messageIDs ids: Set<String>) -> Bool { messages.contains { ids.contains($0.threadingID) } }
     /// The message a reply or forward targets. Falls back to the latest message.
     func message(_ id: UUID?) -> MailMessage { messages.first { $0.id == id } ?? latest }
 
@@ -155,7 +153,7 @@ struct Conversation: Codable, Identifiable, Equatable {
         guard muted != true else { endReminder(); return }
         move(to: .inbox)
         unread = true
-        // A reply rescues a thread from Trash. Junk keeps it until the sender is unblocked.
+        // A reply rescues a thread from Trash. A conversation in Junk must be restored by hand.
         if removal?.mailbox == .trash { removal = nil }
     }
 }

@@ -584,6 +584,68 @@ final class ThreadFoldsMessagesAndRepliesToEarlierMessageUITests: MailernUITestC
     }
 }
 
+final class SenderBlockingUITests: MailernUITestCase {
+    @MainActor
+    func testBlockFromMessageAndUnblockFromSettings() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let subject = "Dinner on Saturday?"
+        let messageActions = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Message actions, Casey Rivera")).firstMatch
+        row(subject, in: app).tap()
+        XCTAssertTrue(messageActions.existsOrWait(timeout: 5))
+        messageActions.tap()
+        XCTAssertTrue(app.buttons["Block Sender"].existsOrWait(timeout: 5))
+        capture("message-menu")
+        app.buttons["Block Sender"].tap()
+
+        messageActions.tap()
+        app.buttons["Sender History"].tap()
+        XCTAssertTrue(app.navigationBars["Casey Rivera"].existsOrWait(timeout: 5))
+        XCTAssertTrue(app.staticTexts["casey@example.com"].exists)
+        XCTAssertTrue(app.buttons["Unblock Sender"].exists)
+        capture("sender-history")
+        app.buttons["Unblock Sender"].tap()
+        XCTAssertTrue(app.buttons["Block Sender"].existsOrWait(timeout: 5))
+        app.buttons["Block Sender"].tap()
+        let historyRow = app.staticTexts[subject].firstMatch
+        XCTAssertTrue(historyRow.existsOrWait(timeout: 5))
+        historyRow.tap()
+        XCTAssertTrue(messageActions.existsOrWait(timeout: 5))
+        app.buttons["More actions"].tap()
+        app.buttons["Move to Junk"].tap()
+        XCTAssertTrue(app.navigationBars["Casey Rivera"].existsOrWait(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Junk"].exists)
+        // XCTest can find Undo before the closing native menu stops intercepting taps.
+        RunLoop.current.run(until: .now.addingTimeInterval(1))
+        app.buttons["Undo"].tap()
+        XCTAssertTrue(app.staticTexts["Inbox"].existsOrWait(timeout: 5))
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(messageActions.existsOrWait(timeout: 5))
+        app.navigationBars.buttons.firstMatch.tap()
+
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].existsOrWait(timeout: 5))
+        capture("settings")
+        app.buttons["Blocked Senders"].tap()
+        let unblock = app.buttons["Unblock casey@example.com"]
+        XCTAssertTrue(unblock.existsOrWait(timeout: 5))
+        capture("blocked-senders")
+        unblock.tap()
+        XCTAssertTrue(app.staticTexts["No Blocked Senders"].existsOrWait(timeout: 5))
+        app.navigationBars.buttons.firstMatch.tap()
+        app.buttons["Done"].tap()
+    }
+
+    private func capture(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}
+
 final class LongThreadScrollsToLatestMessageUITests: MailernUITestCase {
     @MainActor
     func testLongThreadScrollsToLatestMessage() {

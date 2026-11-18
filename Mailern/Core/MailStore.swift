@@ -39,7 +39,6 @@ final class MailStore {
     private(set) var actionCount = 0
     private var undoSnapshot: [Conversation] = []
     private var undoAction: ConversationAction?
-    private var undoBlockedSenders: Set<String> = []
     @ObservationIgnored private var noticeExpiryTask: Task<Void, Never>?
     private let persistence: any ConversationPersistence
     private var loadFailure: String?
@@ -105,6 +104,30 @@ final class MailStore {
             return $0.id.uuidString < $1.id.uuidString
         }
     }
+    func conversations(with address: String) -> [Conversation] {
+        let address = address.lowercased()
+        return conversations.filter { conversation in
+            conversation.messages.contains { message in
+                message.address.lowercased() == address ||
+                (message.to + message.cc + (message.bcc ?? [])).contains { $0.lowercased() == address }
+            }
+        }.sorted {
+            if $0.latest.date != $1.latest.date { return $0.latest.date > $1.latest.date }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+    func isSenderBlocked(_ address: String) -> Bool { blockedSenders.contains(address.lowercased()) }
+
+    @discardableResult func setSenderBlocked(_ blocked: Bool, address: String) -> Bool {
+        let address = address.lowercased()
+        guard canWrite() else { return false }
+        guard blocked != blockedSenders.contains(address) else { return true }
+        let before = blockedSenders
+        if blocked { blockedSenders.insert(address) } else { blockedSenders.remove(address) }
+        guard save() else { blockedSenders = before; return false }
+        return true
+    }
+
     private var data: MailData { MailData(conversations: conversations, accounts: accounts, blockedSenders: blockedSenders) }
     @discardableResult private func save() -> Bool {
         guard canWrite() else { return false }
@@ -165,7 +188,6 @@ final class MailStore {
         actionCount += 1
         undoSnapshot = before
         undoAction = action
-        undoBlockedSenders = blockedSenders
         let affectedIDs = Set(before.map(\.id))
         for i in conversations.indices where affectedIDs.contains(conversations[i].id) {
             switch action {
@@ -178,10 +200,9 @@ final class MailStore {
             case .remove(.junk):
                 conversations[i].endReminder()
                 conversations[i].removal = .junk
-                blockedSenders.formUnion(conversations[i].senderAddresses)
             case .restoreRemoved:
-                if conversations[i].removal == .junk { blockedSenders.subtract(conversations[i].senderAddresses) }
                 conversations[i].removal = nil
+                conversations[i].blockedReplySourceID = nil
             }
         }
         let message: String
@@ -224,10 +245,11 @@ final class MailStore {
                 conversations[i].snoozedUntil = old.snoozedUntil
                 conversations[i].followUp = old.followUp
                 conversations[i].unread = old.unread
-            case .restoreRemoved: conversations[i].removal = old.removal
+            case .restoreRemoved:
+                conversations[i].removal = old.removal
+                conversations[i].blockedReplySourceID = old.blockedReplySourceID
             }
         }
-        blockedSenders = undoBlockedSenders
         save()
         clearNotice()
     }
@@ -237,7 +259,6 @@ final class MailStore {
         notice = nil
         undoSnapshot = []
         undoAction = nil
-        undoBlockedSenders = []
     }
     /// A new reply draft must not ride a stale Undo back into Trash, Junk, or another section.
     func clearWorkflowUndo(involving ids: Set<UUID>) {
@@ -328,16 +349,48 @@ final class MailStore {
     func receive(_ message: MailMessage, accountID: String, junk: Bool = false) {
         guard canWrite() else { return }
         clearNotice()
-        let junk = junk || blockedSenders.contains(message.address.lowercased())
-        let answered = Set([message.inReplyTo].compactMap { $0 } + (message.references ?? []))
-        if !answered.isEmpty, let i = conversations.firstIndex(where: { $0.accountID == accountID && $0.contains(messageIDs: answered) }) {
+        let blocked = isSenderBlocked(message.address)
+        let junk = junk || blocked
+        var target = replyTarget(for: message, in: accountID)
+        var blockedReplySourceID: UUID?
+        if let index = target {
+            let parent = conversations[index]
+            if blocked {
+                let split = conversations.firstIndex { $0.blockedReplySourceID == parent.id && $0.removal == .junk }
+                if split != nil || parent.removal != .junk {
+                    blockedReplySourceID = parent.id
+                    target = split
+                }
+            } else if !junk, parent.removal == .junk, let sourceID = parent.blockedReplySourceID {
+                // A regular reply to a blocked message goes back to the original while the split is in Junk.
+                target = conversations.firstIndex { $0.id == sourceID } ?? index
+            }
+        }
+        if let i = target {
             conversations[i].receive(message)
             if junk { conversations[i].removal = .junk }
         } else {
             conversations.insert(Conversation(accountID: accountID, subject: message.subject ?? "(No Subject)",
-                                              removal: junk ? .junk : nil, messages: [message]), at: 0)
+                                              removal: junk ? .junk : nil, blockedReplySourceID: blockedReplySourceID,
+                                              messages: [message]), at: 0)
         }
         save()
+    }
+
+    private func replyTarget(for message: MailMessage, in accountID: String) -> Int? {
+        // References are oldest first. A known In-Reply-To outranks them all.
+        let parents = (message.references ?? []) + (message.inReplyTo.map { [$0] } ?? [])
+        guard !parents.isEmpty else { return nil }
+        let priorities = Dictionary(parents.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: max)
+        var closest: (index: Int, priority: Int)?
+        for (index, conversation) in conversations.enumerated() where conversation.accountID == accountID {
+            for parent in conversation.messages {
+                guard let priority = priorities[parent.threadingID] else { continue }
+                if priority == parents.count - 1 { return index }
+                if priority > (closest?.priority ?? -1) { closest = (index, priority) }
+            }
+        }
+        return closest?.index
     }
     func receiveReply(_ id: UUID) {
         guard let c = conversation(id) else { return }
