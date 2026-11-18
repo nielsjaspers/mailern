@@ -94,7 +94,11 @@ final class MailNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
                 let base = prefix + box.scope + "/"
                 guard identifier.hasPrefix(base) else { continue }
                 if box.mail.needsReload { return true }
-                return box.drafts.needsReload && !identifier.hasPrefix(base + "conversation.")
+                guard !box.drafts.hasReadableManifest, !identifier.hasPrefix(base + "conversation.") else { return false }
+                let key = identifier.dropFirst(base.count).split(separator: ".", maxSplits: 1)
+                guard key.count == 2, let id = UUID(uuidString: String(key[1])) else { return false }
+                if key[0] == "scheduled" { return box.mail.unsentDraftIDs([id]).contains(id) }
+                return !box.mail.discardedDraftIDs.contains(id)
             }
             return false
         }
@@ -190,9 +194,10 @@ final class MailNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
         if id.hasPrefix("scheduled.") { return [] }
         if request.content.categoryIdentifier == Self.category,
            !MailReminder.isActionable(id: id, token: token, mail: box.mail) { return [] }
+        guard !box.mail.needsReload else { return [] }
         if id.hasPrefix("draft.") {
-            guard let draft = box.drafts.all.first(where: { "draft." + $0.id.uuidString == id }),
-                  draft.sendAt == nil, let date = draft.snoozedUntil,
+            guard box.drafts.hasReadableManifest, let draft = box.drafts.all.first(where: { "draft." + $0.id.uuidString == id }),
+                  !box.mail.discardedDraftIDs.contains(draft.id), draft.sendAt == nil, let date = draft.snoozedUntil,
                   String(date.timeIntervalSinceReferenceDate.bitPattern) == token else { return [] }
         }
         return [.banner, .sound]

@@ -134,7 +134,7 @@ struct MailernApp: App {
                 .onChange(of: sessions.reminderBoxes.map {
                     ReminderRevision(session: sessions.id, scope: $0.scope, mail: $0.mail.mailboxRevision,
                                      drafts: $0.drafts.reminderRevision, mailReady: !$0.mail.needsReload,
-                                     draftsReady: !$0.drafts.needsReload)
+                                     draftsReady: $0.drafts.hasReadableManifest)
                 }, initial: true) { _, _ in refreshReminders(sessions) }
                 .onReceive(NotificationCenter.default.publisher(for: Notification.Name("MailernReminderAuthorizationChanged"))) { _ in
                     refreshReminders(sessions, checkPermission: true)
@@ -186,7 +186,13 @@ private enum TestStorage {
         #endif
         return nil
     }
-    static var reminderNamespace: String { "mailern/" + (suite ?? "local") + "/" }
+    // iOS shares one queue for every fixture of this test app. A reset replaces its old requests.
+    static var reminderNamespace: String {
+        #if DEBUG
+        if isTestSession { return "mailern/Mailern.UITests." }
+        #endif
+        return "mailern/local/"
+    }
     private static var defaultPreferences: UserDefaults {
         suite.map { UserDefaults(suiteName: $0)! } ?? .standard
     }
