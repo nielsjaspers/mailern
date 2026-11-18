@@ -281,13 +281,18 @@ private struct MessageSection: View {
         .padding(.vertical, 14)
     }
 
-    /// True when rich text holds exactly the body's characters, and its quote of a plain-text message is still plain.
-    /// The composer only indents a quote and marks it as one. A writer can bold, strike through, or color quoted words
-    /// to point at them, and those must stay visible. A quote of a rich-text message never folds.
+    /// True when rich text holds exactly the body's characters, and its quote still looks as the composer wrote it.
+    /// A writer can bold, strike through, or center quoted words to point at them, and those must stay visible.
+    /// The answered message must be plain itself, or the composer copied formatting this check cannot tell apart.
     private func quoteIsUnchanged(_ text: NSAttributedString) -> Bool {
-        guard let quoteStart, let answered, answered.richText == nil, text.string.utf16.elementsEqual(message.body.utf16) else { return false }
-        let bodyStart = quoteStart + QuotedText.attribution(for: answered).utf16.count + 1
-        return RichText.isUnchangedQuote(text, in: NSRange(location: bodyStart, length: (answered.body as NSString).length))
+        guard let quoteStart, let answered, text.string.utf16.elementsEqual(message.body.utf16) else { return false }
+        if answered.richText != nil {
+            let original = RichText.decode(answered.richText, fallback: answered.body)
+            guard RichText.isPlain(original, in: NSRange(location: 0, length: original.length)) else { return false }
+        }
+        let attribution = QuotedText.attribution(for: answered).utf16.count
+        let length = attribution + 1 + (answered.body as NSString).length
+        return RichText.isUnchangedQuote(text, in: NSRange(location: quoteStart, length: length), attributionLength: attribution)
     }
     /// The UTF-16 length of the text above the quote, without the blank lines that separated them.
     private var visibleLength: Int? {

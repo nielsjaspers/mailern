@@ -27,14 +27,31 @@ enum RichText {
         }
         return unchanged
     }
-    /// Whether a reply's quote in `range` still looks like the plain text it quotes. The composer indents a quote and
-    /// marks it as one; any other formatting there was added by the writer.
-    static func isUnchangedQuote(_ text: NSAttributedString, in range: NSRange) -> Bool {
-        guard NSMaxRange(range) <= text.length else { return false }
+    /// Whether a reply's quote in `range`, from its attribution line to its end, still looks as the composer wrote it
+    /// for a plain message. The composer indents the quote by 10 points, marks it as a quote, and colors the attribution
+    /// line and its line break purple. Any other formatting there, such as bold or centering, was added by the writer.
+    static func isUnchangedQuote(_ text: NSAttributedString, in range: NSRange, attributionLength: Int) -> Bool {
+        guard NSMaxRange(range) <= text.length, attributionLength + 1 <= range.length else { return false }
         let copy = NSMutableAttributedString(attributedString: text)
-        copy.removeAttribute(.paragraphStyle, range: range)
+        var composed = true
+        copy.enumerateAttribute(.paragraphStyle, in: range) { value, span, stop in
+            guard let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle,
+                  style.headIndent == 10, style.firstLineHeadIndent == 10 else { composed = false; stop.pointee = true; return }
+            style.headIndent = 0
+            style.firstLineHeadIndent = 0
+            copy.addAttribute(.paragraphStyle, value: style, range: span)
+        }
+        let line = NSRange(location: range.location, length: attributionLength + 1)
+        copy.enumerateAttribute(.foregroundColor, in: line) { value, span, stop in
+            // RTFD stores the purple as a fixed color, so it is compared in both appearances.
+            guard let color = value as? UIColor, [UITraitCollection(userInterfaceStyle: .light), UITraitCollection(userInterfaceStyle: .dark)]
+                .contains(where: { color.resolvedColor(with: $0) == UIColor.systemPurple.resolvedColor(with: $0) }) else {
+                composed = false; stop.pointee = true; return
+            }
+            copy.addAttribute(.foregroundColor, value: UIColor.label, range: span)
+        }
         copy.removeAttribute(quote, range: range)
-        return isPlain(copy, in: range)
+        return composed && isPlain(copy, in: range)
     }
     static func decode(_ data: Data?, fallback: String) -> NSAttributedString {
         guard let data, let document = try? JSONDecoder().decode(Document.self, from: data),

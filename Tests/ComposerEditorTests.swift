@@ -20,17 +20,29 @@ import SwiftUI
     }
 
     func testQuoteWithWriterFormattingDoesNotFold() throws {
-        // A sent reply: text, then an indented quote, as the composer writes it and as it comes back from storage.
-        let text = NSMutableAttributedString(attributedString: RichText.plain("Sure.\n\nAround 7?"))
-        let quote = NSRange(location: 7, length: 9)
-        let indent = NSMutableParagraphStyle()
-        indent.headIndent = 10; indent.firstLineHeadIndent = 10
-        text.addAttributes([.paragraphStyle: indent, RichText.quote: true], range: quote)
-        XCTAssertTrue(RichText.isUnchangedQuote(RichText.decode(try RichText.encode(text), fallback: ""), in: quote))
-        // Bolding a quoted word points at it, so the quote stays visible.
-        let bold = UIFont.preferredFont(forTextStyle: .body).fontDescriptor.withSymbolicTraits(.traitBold)!
-        text.addAttribute(.font, value: UIFont(descriptor: bold, size: 0), range: NSRange(location: 7, length: 6))
-        XCTAssertFalse(RichText.isUnchangedQuote(RichText.decode(try RichText.encode(text), fallback: ""), in: quote))
+        // A sent reply: text, then the attribution and quote as the composer writes them, back from storage.
+        func reply(_ edit: (NSMutableAttributedString) -> Void = { _ in }) throws -> NSAttributedString {
+            let text = NSMutableAttributedString(attributedString: RichText.plain("Sure.\n\nOn Monday, Casey wrote:\nAround 7?"))
+            let indent = NSMutableParagraphStyle()
+            indent.headIndent = 10; indent.firstLineHeadIndent = 10
+            text.addAttributes([.paragraphStyle: indent, RichText.quote: true], range: NSRange(location: 7, length: 33))
+            text.addAttribute(.foregroundColor, value: UIColor.systemPurple, range: NSRange(location: 7, length: 24))
+            edit(text)
+            return RichText.decode(try RichText.encode(text), fallback: "")
+        }
+        func folds(_ text: NSAttributedString) -> Bool {
+            RichText.isUnchangedQuote(text, in: NSRange(location: 7, length: 33), attributionLength: 23)
+        }
+        XCTAssertTrue(folds(try reply()))
+        // Bold, centering, or a bold attribution point at quoted words, so the quote stays visible.
+        let bold = UIFont(descriptor: UIFont.preferredFont(forTextStyle: .body).fontDescriptor.withSymbolicTraits(.traitBold)!, size: 0)
+        XCTAssertFalse(folds(try reply { $0.addAttribute(.font, value: bold, range: NSRange(location: 31, length: 6)) }))
+        XCTAssertFalse(folds(try reply { $0.addAttribute(.font, value: bold, range: NSRange(location: 7, length: 9)) }))
+        XCTAssertFalse(folds(try reply { text in
+            let centered = NSMutableParagraphStyle()
+            centered.headIndent = 10; centered.firstLineHeadIndent = 10; centered.alignment = .center
+            text.addAttribute(.paragraphStyle, value: centered, range: NSRange(location: 31, length: 9))
+        }))
     }
 
     func testReplyActionsResumePlainSavedDraftAfterIncomingMail() async throws {
