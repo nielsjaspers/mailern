@@ -39,7 +39,7 @@ enum BenchmarkMailbox: Int, CaseIterable, Identifiable {
                 var message = MailMessage(sender: sender, address: address, to: [account.address],
                                           date: latest.addingTimeInterval(Double((index - messageCount + 1) * 120)),
                                           body: body, subject: index == 0 ? subject : "Re: \(subject)")
-                if (number / 3 + index).isMultiple(of: 4) {
+                if (number / 11 + index).isMultiple(of: 4) {
                     let html = lines.map { "<p>\($0)</p>" }.joined()
                     message.html = "<article style='max-width:650px;font:16px system-ui'><h1>\(subject)</h1>\(html)</article>"
                 }

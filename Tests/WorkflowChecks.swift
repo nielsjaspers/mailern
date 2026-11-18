@@ -669,6 +669,11 @@ import SQLite3
             assert(Set(conversations.map(\.accountID)) == Set(mail.accounts.map(\.id)))
             assert(conversations.contains { $0.workflow == .inbox && $0.messages.count == 16 && $0.latest.html != nil })
             assert(conversations.contains { $0.workflow == .settled && $0.messages.count == 16 && $0.latest.html != nil })
+            for length in [1, 3, 6, 16] {
+                let paragraphCounts = Set(conversations.lazy.filter { $0.messages.count == length }.flatMap(\.messages)
+                    .filter { $0.html != nil }.map { $0.body.components(separatedBy: "\n\n").count })
+                assert(Set(2...5).isSubset(of: paragraphCounts))
+            }
             assert(conversations.filter { $0.workflow == .inbox }.count == size.rawValue - size.rawValue / 7)
             assert(conversations.filter { $0.searchText.contains("larchdelta") }.count == 1)
             let bodyHits = conversations.filter { $0.searchText.contains("handover notes") }.count
