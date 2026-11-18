@@ -1035,7 +1035,9 @@ final class LongThreadScrollsToLatestMessageUITests: MailernUITestCase {
         XCTAssertTrue(caseyReplies.firstMatch.existsOrWait(timeout: 5))
         // The first message and the last two show. One row holds the fifteen between them.
         let headers = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Casey Rivera"))
-        XCTAssertEqual(headers.count, 3)
+        // The Inbox row also starts with the sender until the push transition ends.
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 3"), object: headers)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 5), .completed)
         capture("Long thread with its middle folded", in: app)
         app.buttons["15 earlier messages"].tap()
         XCTAssertTrue(headers.element(boundBy: 16).existsOrWait(timeout: 5))
@@ -1060,7 +1062,8 @@ final class LongThreadScrollsToLatestMessageUITests: MailernUITestCase {
         row(subject, in: app).tap()
         // A reopened thread folds its middle again and opens on the latest message.
         XCTAssertTrue(app.buttons["16 earlier messages"].existsOrWait(timeout: 5))
-        XCTAssertEqual(headers.count, 3)
+        let refolded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 3"), object: headers)
+        XCTAssertEqual(XCTWaiter.wait(for: [refolded], timeout: 5), .completed)
         XCTAssertTrue(headers.element(boundBy: 2).isHittable)
         XCTAssertEqual(caseyReplies.count, 1)
         XCTAssertTrue(caseyReplies.firstMatch.isHittable)
