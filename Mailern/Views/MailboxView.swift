@@ -144,6 +144,14 @@ struct MailboxView: View {
             switch self { case .section: "This section"; case .allMail: "All mail" }
         }
     }
+    /// The scope choice sits in the content, not in `.searchScopes`. With the large title kept visible during search,
+    /// the native scope bar resizes the navigation bar mid-transition and the title jumps over the search field.
+    private var scopePicker: some View {
+        Picker("Search scope", selection: $searchScope) {
+            ForEach(SearchScope.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+    }
     /// True when `status` shows search results from Inbox, Snoozed, and Settled together.
     private func allMail(_ status: Workflow) -> Bool { status == selection && searching && searchScope == .allMail }
 
@@ -196,9 +204,6 @@ struct MailboxView: View {
                     get: { searching && selection == status },
                     set: { if selection == status { searching = $0 } }
                 ), prompt: allMail(status) ? "Search all mail" : "Search \(status.title)")
-                .searchScopes($searchScope, activation: .onSearchPresentation) {
-                    ForEach(SearchScope.allCases) { Text($0.title).tag($0) }
-                }
                 .modifier(MailboxSearchToolbar())
                 .toolbar { mailboxToolbar(status) }
                 .toolbar {
@@ -314,74 +319,87 @@ struct MailboxView: View {
         return true
     }
 
-    @ViewBuilder private func mailbox(_ status: Workflow) -> some View {
+    private func empty(_ status: Workflow) -> some View {
+        let filtered = filters[status].enabled && !allMail(status)
+        return ContentUnavailableView(
+            filtered ? "No matching mail" : search.isEmpty
+                ? (status == .inbox ? "You're all caught up" : "No \(status.rawValue) mail") : "No results",
+            systemImage: filtered ? "line.3.horizontal.decrease.circle" : search.isEmpty ? status.symbol : "magnifyingglass",
+            description: Text(filtered ? "Change your filters or turn filtering off." : search.isEmpty ? "" : allMail(status) ? "Try another search." : "Try another search in this section.")
+        )
+    }
+
+    private func mailbox(_ status: Workflow) -> some View {
         let projection = projection(status)
         let items = projection.items
-        if items.isEmpty {
-            let filtered = filters[status].enabled && !allMail(status)
-            let empty = ContentUnavailableView(
-                filtered ? "No matching mail" : search.isEmpty
-                    ? (status == .inbox ? "You're all caught up" : "No \(status.rawValue) mail") : "No results",
-                systemImage: filtered ? "line.3.horizontal.decrease.circle" : search.isEmpty ? status.symbol : "magnifyingglass",
-                description: Text(filtered ? "Change your filters or turn filtering off." : search.isEmpty ? "" : allMail(status) ? "Try another search." : "Try another search in this section.")
-            )
-            if status == .inbox && pullAction != .off && search.isEmpty && !selecting {
-                ScrollView {
-                    empty
-                        .background(PullScrollObserver(interaction: pull, action: performPull))
-                        .frame(maxWidth: .infinity).padding(.top, 80)
+        let pulls = status == .inbox && pullAction != .off && !selecting
+        let pullsEmpty = items.isEmpty && pulls && search.isEmpty
+        let searchingHere = searching && status == selection
+        // One list for every state: swapping in another scroll view while search opens or closes fades the large title.
+        // An empty message is a row when it must scroll: below the scope picker, or in a pullable Inbox. Otherwise it
+        // is centered in an overlay, because a full-height list row loops the list's layout.
+        return List(selection: selecting ? $selectedIDs : nil) {
+            if searchingHere {
+                scopePicker
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+            if items.isEmpty {
+                if pullsEmpty || searchingHere {
+                    empty(status)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, searchingHere ? 40 : 80)
+                        .background { if pullsEmpty { PullScrollObserver(interaction: pull, action: performPull) } }
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                 }
-                .scrollBounceBehavior(.always)
-                .modifier(InboxPullModifier(mode: pullAction, interaction: pull))
+            } else if allMail(status) {
+                // Results keep their own mailbox, so each one gets a section that names it.
+                ForEach(Workflow.allCases) { mailbox in
+                    let found = items.filter { $0.workflow == mailbox }
+                    if !found.isEmpty {
+                        Section {
+                            ForEach(found) { row($0, status: status, order: projection.order) }
+                        } header: {
+                            Label("\(mailbox.title) · \(found.count)", systemImage: mailbox.symbol).textCase(nil)
+                        }
+                    }
+                }
             } else {
-                empty.frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        } else {
-            List(selection: selecting ? $selectedIDs : nil) {
-                if allMail(status) {
-                    // Results keep their own mailbox, so each one gets a section that names it.
-                    ForEach(Workflow.allCases) { mailbox in
-                        let found = items.filter { $0.workflow == mailbox }
-                        if !found.isEmpty {
-                            Section {
-                                ForEach(found) { row($0, status: status, order: projection.order) }
-                            } header: {
-                                Label("\(mailbox.title) · \(found.count)", systemImage: mailbox.symbol).textCase(nil)
-                            }
+                Section {
+                    ForEach(items) { row($0, status: status, order: projection.order) }
+                } header: {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if selecting {
+                            Text("\(selectedIDs.count) selected").textCase(nil)
+                        } else if status == .inbox {
+                            let unreadCount = projection.unread
+                            Text(unreadCount > 0 ? "\(unreadCount) unread" : "All read").textCase(nil)
+                        } else {
+                            Text(items.count == 1 ? "1 item" : "\(items.count) items").textCase(nil)
                         }
+                        Color.clear.frame(height: 0)
                     }
-                } else {
-                    Section {
-                        ForEach(items) { row($0, status: status, order: projection.order) }
-                    } header: {
-                        VStack(alignment: .leading, spacing: 0) {
-                            if selecting {
-                                Text("\(selectedIDs.count) selected").textCase(nil)
-                            } else if status == .inbox {
-                                let unreadCount = projection.unread
-                                Text(unreadCount > 0 ? "\(unreadCount) unread" : "All read").textCase(nil)
-                            } else {
-                                Text(items.count == 1 ? "1 item" : "\(items.count) items").textCase(nil)
-                            }
-                            Color.clear.frame(height: 0)
-                        }
-                        .background {
-                            if status == .inbox && pullAction != .off && !selecting {
-                                PullScrollObserver(interaction: pull, action: performPull)
-                            }
+                    .background {
+                        if pulls {
+                            PullScrollObserver(interaction: pull, action: performPull)
                         }
                     }
                 }
             }
-            .listStyle(.plain)
-            .environment(\.editMode, .constant(selecting ? .active : .inactive))
-            .modifier(InboxPullModifier(mode: status == .inbox && !selecting ? pullAction : .off, interaction: pull))
         }
+        .listStyle(.plain)
+        .overlay {
+            if items.isEmpty && !pullsEmpty && !searchingHere { empty(status).allowsHitTesting(false) }
+        }
+        .environment(\.editMode, .constant(selecting ? .active : .inactive))
+        .modifier(InboxPullModifier(mode: status == .inbox && !selecting ? pullAction : .off, interaction: pull))
     }
     @ViewBuilder private func row(_ item: MailboxItem, status: Workflow, order: [UUID]) -> some View {
         let isThread = item.conversation != nil
         let acceptsRead = isThread && item.workflow != .settled
-        let background: Color = item.hasDraft ? .orange : item.unread ? .blue : .clear
+        let background: Color = item.hasDraft ? .orange.opacity(0.07) : item.unread ? ConversationRow.unreadBackground : .clear
         // One button per ID lets List discover offscreen rows without constructing their gestures and menus.
         Button {
             if !isThread { paths[status, default: []].append(.conversation(item.id)) }
@@ -401,7 +419,7 @@ struct MailboxView: View {
         .buttonStyle(.plain)
         .disabled(selecting && !isThread)
         .selectionDisabled(!isThread)
-        .listRowBackground(background.opacity(0.07))
+        .listRowBackground(background)
         .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
         .swipeActions(edge: .trailing, allowsFullSwipe: leftPrimary != .none && (leftPrimary != .read || acceptsRead)) {
             rowActions(item, primary: leftPrimary, secondary: leftSecondary, tertiary: leftTertiary)

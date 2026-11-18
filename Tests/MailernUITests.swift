@@ -1233,3 +1233,65 @@ private extension XCUIElement {
         exists || waitForExistence(timeout: timeout)
     }
 }
+
+final class MailboxSearchScopeUITests: MailernUITestCase {
+    @MainActor
+    func testScopesKeepTheToolbarAndResetOnClose() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Inbox pull-down")).firstMatch.tap()
+        app.buttons["Search"].tap()
+        app.buttons["Done"].tap()
+        waitForAbsence(app.navigationBars["Settings"])
+
+        let title = app.navigationBars.staticTexts["Inbox"]
+        XCTAssertTrue(title.existsOrWait(timeout: 5))
+        let resting = title.frame
+        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+        top.press(forDuration: 0.01, thenDragTo: top.withOffset(CGVector(dx: 0, dy: 360)),
+                  withVelocity: .slow, thenHoldForDuration: 0.5)
+        let close = app.buttons["Close"]
+        XCTAssertTrue(close.existsOrWait(timeout: 5))
+        let search = app.searchFields.firstMatch
+        let thisSection = app.buttons["This section"]
+        let allMail = app.buttons["All mail"]
+        XCTAssertTrue(thisSection.isSelected)
+        XCTAssertTrue(allMail.isHittable, "Both scopes are available before typing")
+        XCTAssertGreaterThanOrEqual(allMail.frame.minY, search.frame.maxY)
+        XCTAssertEqual(title.frame.minY, resting.minY, accuracy: 1)
+        close.tap()
+        waitForAbsence(close)
+        XCTAssertFalse(allMail.exists)
+        XCTAssertEqual(title.frame.minY, resting.minY, accuracy: 1)
+
+        // Search keeps the section's toolbar, so results can be selected.
+        search.tap()
+        XCTAssertTrue(app.buttons["Filter"].isHittable)
+        app.buttons["Select"].tap()
+        XCTAssertTrue(app.staticTexts["0 selected"].existsOrWait(timeout: 5))
+        app.buttons["Cancel"].tap()
+
+        allMail.tap()
+        XCTAssertTrue(allMail.isSelected)
+        // Scrolled results pin each mailbox heading below the search field.
+        let results = app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.55))
+        results.press(forDuration: 0.01, thenDragTo: results.withOffset(CGVector(dx: 0, dy: -240)))
+        let settled = row("The photos from our trip", in: app)
+        XCTAssertTrue(settled.existsOrWait(timeout: 5), "All mail includes Settled before typing")
+        let heading = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Inbox · ")).firstMatch
+        XCTAssertTrue(heading.isHittable)
+        XCTAssertGreaterThanOrEqual(heading.frame.minY, search.frame.maxY)
+
+        close.tap()
+        waitForAbsence(close)
+        if !search.isHittable { app.swipeDown() }
+        search.tap()
+        XCTAssertTrue(thisSection.existsOrWait(timeout: 5))
+        XCTAssertTrue(thisSection.isSelected, "Closing search resets the scope")
+        XCTAssertFalse(settled.exists)
+        close.tap()
+    }
+}

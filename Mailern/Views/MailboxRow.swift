@@ -130,6 +130,10 @@ extension AccountColor {
 }
 
 struct ConversationRow: View {
+    static let unreadBackground = Color(uiColor: UIColor { traits in
+        UIColor.systemBlue.resolvedColor(with: traits).withAlphaComponent(traits.userInterfaceStyle == .dark ? 0.22 : 0.07)
+    })
+
     @Environment(MailStore.self) private var store
     let conversation: Conversation
     var hasDraft = false
