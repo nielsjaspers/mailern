@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Run duration-balanced UI batches on a dedicated disposable Simulator pool."""
+import argparse
 import concurrent.futures
 import copy
 import fcntl
 import json
+import os
 from pathlib import Path
 import plistlib
 import re
@@ -14,7 +16,10 @@ import sys
 import tempfile
 import threading
 import time
+from uuid import UUID
 
+
+WORKER_NAME = re.compile(r"Mailern UI ([A-F0-9-]{36}) worker [1-9][0-9]*", re.IGNORECASE)
 
 _children = set()
 _child_lock = threading.RLock()
@@ -26,12 +31,11 @@ def interrupt(signum, frame):
     with _child_lock:
         for child in list(_children):
             child.terminate()
-    raise KeyboardInterrupt
 
 
 def run(*args, **kwargs):
     if _stopping.is_set():
-        raise InterruptedError("UI run stopped")
+        raise KeyboardInterrupt
     with subprocess.Popen(args, text=True, **kwargs) as child:
         with _child_lock:
             _children.add(child)
@@ -39,6 +43,8 @@ def run(*args, **kwargs):
                 child.terminate()
         try:
             stdout, stderr = child.communicate()
+            if _stopping.is_set():
+                raise KeyboardInterrupt
             if child.returncode:
                 raise subprocess.CalledProcessError(child.returncode, args, stdout, stderr)
             return subprocess.CompletedProcess(args, child.returncode, stdout, stderr)
@@ -57,7 +63,12 @@ def output(*args):
 
 
 def devices():
-    return [{**device, "runtime": runtime} for runtime, group in json.loads(output("xcrun", "simctl", "list", "devices", "-j"))["devices"].items() for device in group]
+    listing = subprocess.check_output(["xcrun", "simctl", "list", "devices", "-j"], text=True)
+    return [
+        {**device, "runtime": runtime}
+        for runtime, group in json.loads(listing)["devices"].items()
+        for device in group
+    ]
 
 
 def timings(log):
@@ -69,37 +80,70 @@ def timings(log):
     return result
 
 
+def worker_fixture(device):
+    match = WORKER_NAME.fullmatch(device["name"])
+    return match[1].upper() if match else None
+
+
+def stop_simulators(simulator, include_workers):
+
+    def active_devices():
+        return [
+            device for device in devices()
+            if device["state"] != "Shutdown" and (
+                device["udid"] == simulator or (include_workers and worker_fixture(device) == simulator)
+            )
+        ]
+
+    # Finish teardown if cancellation arrives while the pool is shutting down.
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+    try:
+        for device in active_devices():
+            subprocess.run(["xcrun", "simctl", "shutdown", device["udid"]])
+        remaining = active_devices()
+        if remaining:
+            names = ", ".join(device["name"] for device in remaining)
+            raise RuntimeError(f"Simulators still running: {names}. Run scripts/check-ui.sh {simulator} --stop.")
+        print("Simulator cleanup complete", flush=True)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
 def main():
+    parser = argparse.ArgumentParser(prog="scripts/check-ui.sh")
+    parser.add_argument("simulator", type=UUID, metavar="DISPOSABLE_SIMULATOR_ID")
+    parser.add_argument("workers", type=int, choices=range(1, 11), nargs="?", metavar="WORKERS")
+    parser.add_argument("--only-testing", action="append", metavar="XCTEST_IDENTIFIER")
+    parser.add_argument("--keep-booted", action="store_true")
+    parser.add_argument("--stop", action="store_true")
+    args = parser.parse_args()
+    if args.stop and (args.workers or args.only_testing or args.keep_booted):
+        parser.error("--stop must be used on its own")
+    if args.workers and args.only_testing:
+        parser.error("WORKERS applies to the full suite only")
+
     signal.signal(signal.SIGINT, interrupt)
     signal.signal(signal.SIGTERM, interrupt)
-    simulator = sys.argv[1]
+    simulator = str(args.simulator).upper()
+    fixture = next((device for device in devices() if device["udid"] == simulator), None)
+    if fixture is None and not args.stop:
+        parser.error(f"Simulator not found: {simulator}")
+    if fixture is not None and (parent := worker_fixture(fixture)):
+        parser.error(f"{fixture['name']} is a managed worker. Use its fixture ID {parent}.")
+
     pool_lock_path = Path(tempfile.gettempdir()) / f"mailern-ui-{simulator}.lock"
-    if sys.argv[2] == "--stop":
+    if args.stop:
         with pool_lock_path.open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            selected = [d for d in devices() if d["udid"] == simulator or re.fullmatch(rf"Mailern UI {re.escape(simulator)} worker [1-9][0-9]*", d["name"])]
-            for device in selected:
-                if device["state"] != "Shutdown":
-                    run("xcrun", "simctl", "shutdown", device["udid"])
-            print(f"Stopped the disposable pool for {simulator}")
+            stop_simulators(simulator, include_workers=True)
         return 0
-    simulator, workers, derived_data, run_id = sys.argv[1:]
+
     started = time.monotonic()
-    workers = int(workers)
-    derived = Path(derived_data)
+    run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
+    workers = args.workers or 4
+    derived = Path("build/ui-tests")
     derived.mkdir(parents=True, exist_ok=True)
     products = derived / "Build/Products"
-    source = Path("Tests/MailernUITests.swift").read_text()
-    classes = re.findall(r"^final class (\w+): MailernUITestCase \{", source, re.M)
-    if not classes or len(classes) != len(re.findall(r"^    func test\w+\(", source, re.M)):
-        raise RuntimeError("Each UI test must have its own class")
-    methods = re.findall(r"^    func (test\w+)\(", source, re.M)
-    ui_cases = dict(zip(classes, methods))
-    pickers = ["ComposerFileAttachmentUITests", "ComposerPhotoAttachmentUITests"]
-    if not set(pickers) <= set(classes):
-        raise RuntimeError("Native picker test classes are missing")
-    editor_methods = re.findall(r"^    func (test\w+)\(", Path("Tests/ComposerEditorTests.swift").read_text(), re.M)
-    editor_count = len(editor_methods)
     with (derived / ".run.lock").open("a") as build_lock, pool_lock_path.open("a") as pool_lock:
         for lock, resource in [(build_lock, "build products"), (pool_lock, "Simulator pool")]:
             try:
@@ -107,19 +151,16 @@ def main():
             except BlockingIOError:
                 raise RuntimeError(f"Another UI run is using these {resource}") from None
         pool = []
-        prepared = False
+        succeeded = False
         try:
             run("xcodebuild", "-project", "Mailern.xcodeproj", "-scheme", "Mailern", "-destination", f"id={simulator}",
-                "-derivedDataPath", derived_data, "ONLY_ACTIVE_ARCH=YES", "build-for-testing")
+                "-derivedDataPath", derived, "ONLY_ACTIVE_ARCH=YES", "build-for-testing")
             test_runs = list(products.glob("Mailern_*.xctestrun"))
             if not test_runs:
                 raise RuntimeError(f"No test run in {products}")
             # Active-architecture builds can leave older test runs for other architectures.
-            plan = plistlib.loads(max(test_runs, key=lambda path: path.stat().st_mtime_ns).read_bytes())
-            for name in ["MailernUITests", "MailernTests"]:
-                plan[name]["PreferredScreenCaptureFormat"] = "screenshots"
-                plan[name]["SystemAttachmentLifetime"] = "keepNever"
-            plan["MailernUITests"].setdefault("UITargetAppEnvironmentVariables", {})["OS_ACTIVITY_MODE"] = "disable"
+            test_run = max(test_runs, key=lambda path: path.stat().st_mtime_ns)
+            plan = plistlib.loads(test_run.read_bytes())
             app = Path(plan["MailernUITests"]["UITargetAppPath"].replace("__TESTROOT__", str(products)))
             app_id = plistlib.loads((app / "Info.plist").read_bytes())["CFBundleIdentifier"]
             run("xcrun", "simctl", "bootstatus", simulator, "-b")
@@ -127,6 +168,34 @@ def main():
             documents = Path(output("xcrun", "simctl", "get_app_container", simulator, app_id, "data")) / "Documents"
             documents.mkdir(parents=True, exist_ok=True)
             shutil.copyfile("Tests/Fixtures/Sample attachment.txt", documents / "Sample attachment.txt")
+            if args.only_testing:
+                run("xcrun", "simctl", "addmedia", simulator, "Tests/Fixtures/Sample photo.png")
+                result = f"build/ui-{run_id}-focused.xcresult"
+                run("xcodebuild", "-xctestrun", str(test_run), "-destination", f"id={simulator}",
+                    "-resultBundlePath", result, "test-without-building", "-parallel-testing-enabled", "NO",
+                    *(f"-only-testing:{test}" for test in args.only_testing))
+                summary = json.loads(output("xcrun", "xcresulttool", "get", "test-results", "summary", "--path", result))
+                if not summary["passedTests"] or summary["failedTests"]:
+                    raise RuntimeError(f"No tests passed or some tests failed: {result}")
+                succeeded = True
+                return 0
+
+            source = Path("Tests/MailernUITests.swift").read_text()
+            classes = re.findall(r"^final class (\w+): MailernUITestCase \{", source, re.M)
+            if not classes or len(classes) != len(re.findall(r"^    func test\w+\(", source, re.M)):
+                raise RuntimeError("Each UI test must have its own class")
+            methods = re.findall(r"^    func (test\w+)\(", source, re.M)
+            ui_cases = dict(zip(classes, methods))
+            pickers = ["ComposerFileAttachmentUITests", "ComposerPhotoAttachmentUITests"]
+            if not set(pickers) <= set(classes):
+                raise RuntimeError("Native picker test classes are missing")
+            editor_methods = re.findall(r"^    func (test\w+)\(", Path("Tests/ComposerEditorTests.swift").read_text(), re.M)
+            editor_count = len(editor_methods)
+
+            for name in ["MailernUITests", "MailernTests"]:
+                plan[name]["PreferredScreenCaptureFormat"] = "screenshots"
+                plan[name]["SystemAttachmentLifetime"] = "keepNever"
+            plan["MailernUITests"].setdefault("UITargetAppEnvironmentVariables", {})["OS_ACTIVITY_MODE"] = "disable"
             available = devices()
             template = next(device for device in available if device["udid"] == simulator)
             names = [f"Mailern UI {simulator} worker {i + 1}" for i in range(workers)]
@@ -169,7 +238,6 @@ def main():
                 for future in concurrent.futures.as_completed(futures):
                     future.result()
             run("xcrun", "simctl", "addmedia", simulator, "Tests/Fixtures/Sample photo.png")
-            prepared = True
             print(f"Pool preparation: {time.monotonic() - started:.1f}s", flush=True)
             cache = derived / "test-durations.json"
             costs = json.loads(cache.read_text()) if cache.exists() else {}
@@ -262,18 +330,21 @@ def main():
             if summary["passedTests"] != len(classes) + editor_count or summary["failedTests"] or summary["skippedTests"]:
                 raise RuntimeError(f"Merged suite has incomplete coverage: {summary}")
             print(f"Passed {len(classes)} UI tests and {editor_count} editor tests", flush=True)
-            return 0
+            succeeded = True
         finally:
-            # Prepared workers stay ready for reruns. Interrupted setup must not leak active devices.
-            if not prepared or _stopping.is_set():
-                for device in [simulator, *pool]:
-                    if device:
-                        subprocess.run(["xcrun", "simctl", "shutdown", device], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if not (args.keep_booted and succeeded and not _stopping.is_set()):
+                stop_simulators(simulator, include_workers=not args.only_testing)
+
+    print(f"Full UI suite completed in {time.monotonic() - started:.0f}s")
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        result = main()
+        if _stopping.is_set():
+            raise KeyboardInterrupt
+        sys.exit(result)
     except KeyboardInterrupt:
         print("UI test run interrupted", file=sys.stderr)
         sys.exit(130)
