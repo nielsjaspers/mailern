@@ -96,10 +96,6 @@ struct ConversationContent: View {
             ? messages.map(Item.message)
             : [.message(messages[0]), .middle(count: messages.count - 3)] + messages.suffix(2).map(Item.message)
     }
-    private func isFolded(_ item: Item) -> Bool {
-        if case .message(let message) = item { return !isExpanded(message) }
-        return true
-    }
     private func toggle(_ message: MailMessage) {
         withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) { _ = toggled.formSymmetricDifference([message.id]) }
     }
@@ -109,10 +105,10 @@ struct ConversationContent: View {
     private var thread: some View {
         VStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                let folded = isFolded(item)
                 Group {
                     switch item {
                     case .message(let message):
+                        let folded = !isExpanded(message)
                         MessageRow(
                             message: message, conversationID: conversation.id, threadSubject: conversation.subject,
                             // A folded row shows only its first line, so it needs no quote.
