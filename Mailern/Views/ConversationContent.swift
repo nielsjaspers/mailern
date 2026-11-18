@@ -104,17 +104,12 @@ struct ConversationContent: View {
         withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) { _ = toggled.formSymmetricDifference([message.id]) }
     }
 
-    /// Every message keeps one view, folded or open, so a toggle animates in place. Folded rows draw their part of one
-    /// rounded group: a row rounds its corners only where its neighbor is open. An open message sits on the page itself,
-    /// so its HTML can use the full width.
+    /// Every message keeps one view, folded or open, so a toggle animates in place. All rows sit on the page itself,
+    /// with a hairline between them, so an open message's HTML can use the full width.
     private var thread: some View {
-        let items = items
-        return VStack(spacing: 0) {
+        VStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 let folded = isFolded(item)
-                let joinsAbove = folded && index > 0 && isFolded(items[index - 1])
-                let joinsBelow = folded && index < items.count - 1 && isFolded(items[index + 1])
-                let follows = index > 0 && !joinsAbove
                 Group {
                     switch item {
                     case .message(let message):
@@ -141,18 +136,8 @@ struct ConversationContent: View {
                 // A row reveals its content as it grows, so new text never shows over the rows still moving below it.
                 .clipped()
                 .overlay(alignment: .top) {
-                    if joinsAbove { Divider().padding(.leading, 60) }
-                    // Two open messages in a row get a hairline between them instead of a group.
-                    else if !folded, index > 0, !isFolded(items[index - 1]) { Divider().padding(.horizontal, margin) }
+                    if index > 0 { Divider().padding(.horizontal, margin) }
                 }
-                .background(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: joinsAbove ? 0 : 20, bottomLeadingRadius: joinsBelow ? 0 : 20,
-                        bottomTrailingRadius: joinsBelow ? 0 : 20, topTrailingRadius: joinsAbove ? 0 : 20, style: .continuous
-                    ).fill(Color(uiColor: .secondarySystemBackground).opacity(folded ? 1 : 0))
-                )
-                .padding(.horizontal, folded ? 16 : 0)
-                .padding(.top, follows ? 12 : 0)
                 .id(item.anchor)
             }
         }
@@ -214,7 +199,7 @@ private struct MessageRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            header.padding(.horizontal, expanded ? margin : 16)
+            header.padding(.horizontal, margin)
             if expanded { content.transition(.opacity) }
         }
         .padding(.vertical, expanded ? 14 : 12)
@@ -335,7 +320,7 @@ private struct MessageRow: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
             // The avatar folds an open message too. It is a plain tap: VoiceOver has the sender line's button.
-            SenderAvatar(message: message, size: expanded ? 36 : 32)
+            SenderAvatar(message: message, size: 36)
                 .onTapGesture { toggle?() }
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: expanded ? 4 : 2) {
