@@ -133,12 +133,10 @@ struct MailernApp: App {
                     refreshReminders(sessions)
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active {
-                        refreshReminders(sessions)
-                        Task { await sessions.processDue() }
-                    }
+                    if phase == .active { refreshReminders(sessions) }
                 }
-                .task(id: sessions.id) {
+                .task(id: scenePhase == .active ? sessions.id : nil) {
+                    guard scenePhase == .active else { return }
                     while !Task.isCancelled {
                         await sessions.processDue()
                         try? await Task.sleep(for: .seconds(1))
