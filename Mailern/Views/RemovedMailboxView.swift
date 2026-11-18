@@ -101,7 +101,7 @@ struct RemovedMailboxView: View {
                                 }
                             }
                         }
-                        .listRowBackground(conversation.unread ? Color.blue.opacity(0.07) : Color.clear)
+                        .listRowBackground(conversation.unread ? ConversationRow.unreadBackground : Color.clear)
                         .tag(conversation.id)
                         .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
