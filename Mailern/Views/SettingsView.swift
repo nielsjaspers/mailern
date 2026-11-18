@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 enum InboxPullAction: String, CaseIterable, Identifiable {
     case off, search, compose
@@ -42,6 +43,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
+                NavigationLink("Notifications") { MailNotificationSettingsView() }
                 NavigationLink("Accounts") { AccountsSettingsView() }
                 NavigationLink("Blocked Senders") { BlockedSendersView() }
                 NavigationLink("Snooze settings") { SnoozeSettingsView() }
@@ -66,6 +68,63 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+    }
+}
+
+private struct MailNotificationSettingsView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
+    @State private var settings: UNNotificationSettings?
+    @State private var requesting = false
+    @State private var permissionError: String?
+
+    var body: some View {
+        Form {
+            Section {
+                if let settings {
+                    if settings.authorizationStatus == .notDetermined {
+                        Button("Enable notifications") {
+                            Task { await requestAuthorization() }
+                        }
+                        .disabled(requesting)
+                    } else {
+                        LabeledContent("Alerts", value: settings.alertSetting == .enabled ? "On" : "Off")
+                        LabeledContent("App icon badge", value: settings.badgeSetting == .enabled ? "On" : "Off")
+                        Button("Open notification settings") {
+                            if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
+                        }
+                    }
+                } else {
+                    ProgressView("Checking notification settings")
+                }
+            } footer: {
+                Text("Get a reminder when snoozed mail returns, a reply is overdue, or scheduled mail is due. The app icon badge counts unread Inbox conversations across all accounts.")
+            }
+            if let permissionError {
+                Text(permissionError).foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("Notifications")
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: scenePhase) {
+            settings = await UNUserNotificationCenter.current().notificationSettings()
+        }
+    }
+
+    private func requestAuthorization() async {
+        guard !requesting else { return }
+        requesting = true
+        defer { requesting = false }
+        permissionError = nil
+        let center = UNUserNotificationCenter.current()
+        do {
+            if try await center.requestAuthorization(options: [.alert, .sound, .badge]) {
+                NotificationCenter.default.post(name: Notification.Name("MailernReminderAuthorizationChanged"), object: nil)
+            }
+        } catch {
+            permissionError = error.localizedDescription
+        }
+        settings = await center.notificationSettings()
     }
 }
 
