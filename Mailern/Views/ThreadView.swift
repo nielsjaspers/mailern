@@ -21,6 +21,7 @@ struct ThreadView: View {
     @State private var deleting = false
     @State private var settling: DraftDiscard?
     @State private var deletingConversation = false
+    @State private var confirmedMailbox = RemovedMailbox.trash
     private var scheduled: [ComposerDraft] { drafts.outbox.filter { $0.mode.replyID == id } }
     private var attachedDrafts: [ComposerDraft] { drafts.drafts.filter { $0.mode.replyID == id }.sorted { $0.updatedAt < $1.updatedAt } }
     private func compose(_ mode: ComposeMode, message: UUID? = nil) {
@@ -78,7 +79,10 @@ struct ThreadView: View {
                                 if store.apply(ids: [id], action: .restoreRemoved) { dismiss() }
                             }
                             Spacer()
-                            Button("Delete Permanently", systemImage: "trash") { deletingConversation = true }
+                            Button("Delete Permanently", systemImage: "trash") {
+                                confirmedMailbox = mailbox
+                                deletingConversation = true
+                            }
                         } else {
                             Button(c.workflow == .settled ? "Restore" : "Settle", systemImage: c.workflow == .settled ? "tray" : "checkmark") {
                                 if c.workflow == .settled {
@@ -122,7 +126,7 @@ struct ThreadView: View {
         .confirmationDialog("Delete this conversation permanently?", isPresented: $deletingConversation, titleVisibility: .visible) {
             Button("Delete Permanently", role: .destructive) {
                 Task {
-                    let committed = await drafts.discardDrafts(for: [id], scheduled: true) { store.deletePermanently([id], discarding: $0) }
+                    let committed = await drafts.discardDrafts(for: [id], scheduled: true) { store.deletePermanently([id], from: confirmedMailbox, discarding: $0) }
                     if committed { dismiss() }
                 }
             }

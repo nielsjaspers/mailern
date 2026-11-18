@@ -4,7 +4,7 @@ import SQLite3
 @main struct WorkflowChecks {
     @MainActor static func main() async throws {
         try await checkUndoExpiry()
-        try mailboxLoadFailurePreservesStoredMail()
+        try await mailboxLoadFailurePreservesStoredMail()
         try await checkComposerData()
         try await checkDraftWriteOrdering()
         try await checkInboxDrafts()
@@ -948,7 +948,7 @@ import SQLite3
         print("PASS: persisted drafts stay with their conversation, standalone new/forward/orphan drafts, draft search, discard preserves section, and sent drafts settle")
     }
 
-    @MainActor static func mailboxLoadFailurePreservesStoredMail() throws {
+    @MainActor static func mailboxLoadFailurePreservesStoredMail() async throws {
         let directory = URL.temporaryDirectory.appending(path: "mail-load-failure-\(UUID())")
         let url = directory.appending(path: "mail.sqlite")
         let file = MailAttachment(name: "Keep.txt", data: Data("Keep this attachment".utf8), contentType: "public.plain-text")
@@ -958,7 +958,13 @@ import SQLite3
         let payload = AttachmentJSON.directory(for: url).appending(path: file.id.uuidString)
         let withheld = directory.appending(path: "withheld-payload")
         try FileManager.default.moveItem(at: payload, to: withheld)
+        let draftURL = directory.appending(path: "drafts.json")
+        let queued = ComposerDraft(text: "Saved during a previous session")
+        try AttachmentJSON.save([queued], to: draftURL)
         let store = MailStore(persistence: SQLitePersistence(url: url))
+        let drafts = DraftStore(url: draftURL, mail: store)
+        await drafts.recoverAfterMailLoad()
+        assert(drafts.needsReload && drafts.all.isEmpty)
         assert(store.error != nil && store.conversations.isEmpty)
         store.error = nil
         assert(!store.send(threadID: nil, account: MailAccount.demo[0], to: ["recipient@example.com"], cc: [], subject: "New", body: "New"))
@@ -969,6 +975,8 @@ import SQLite3
         try FileManager.default.moveItem(at: withheld, to: payload)
         // An exact match proves that none of the blocked actions wrote to the database.
         assert(store.reload() && store.conversations == original && store.accounts == MailAccount.demo)
+        await drafts.recoverAfterMailLoad()
+        assert(!drafts.needsReload && drafts.all == [queued])
         assert(store.send(threadID: nil, account: MailAccount.demo[0], to: ["recipient@example.com"], cc: [], subject: "Recovered", body: "Recovered"))
         assert(Set(original.map(\.id)).isSubset(of: Set(MailStore(persistence: SQLitePersistence(url: url)).conversations.map(\.id))))
         print("PASS: failed mailbox load preserves metadata and attachments despite new-mail actions")
@@ -1302,8 +1310,13 @@ import SQLite3
         later.id = UUID()
         let scheduled = await drafts.schedule(later, at: .now.addingTimeInterval(3600))
         assert(saved && scheduled)
+        store.apply(ids: ids, action: .remove(.trash))
+        store.apply(ids: [first], action: .restoreRemoved)
+        let stale = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, from: .trash, discarding: $0) }
+        assert(!stale && drafts.all.count == 2 && ids.allSatisfy { store.conversation($0) != nil })
+        store.apply(ids: [first], action: .remove(.trash))
         assert(sqlite3_exec(db, "CREATE TRIGGER reject_delete BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT, 'injected failure'); END", nil, nil, nil) == SQLITE_OK)
-        let refused = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, discarding: $0) }
+        let refused = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, from: .trash, discarding: $0) }
         let reopenedDrafts = DraftStore(url: draftURL)
         assert(!refused && reopenedDrafts.all == drafts.all && reopenedDrafts.outbox.count == 1)
         assert(reopenedDrafts.drafts.first?.attachments.first?.data == bytes)
@@ -1311,13 +1324,13 @@ import SQLite3
         assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
         assert(sqlite3_exec(db, "DROP TRIGGER reject_delete", nil, nil, nil) == SQLITE_OK)
         let fullDisk = DraftStore(url: draftURL, mail: store, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
-        let deleted = await fullDisk.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, discarding: $0) }
+        let deleted = await fullDisk.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, from: .trash, discarding: $0) }
         assert(deleted && fullDisk.all.isEmpty && fullDisk.error != nil)
         assert(DraftStore(url: draftURL).all.count == 2 && store.discardedDraftIDs == [reply.id, later.id])
         let reopenedMail = MailStore(persistence: SQLitePersistence(url: url))
         let recovered = DraftStore(url: draftURL, mail: reopenedMail)
         assert(recovered.all.isEmpty && recovered.outbox.isEmpty)
-        await recovered.recoverDiscardedDrafts()
+        await recovered.recoverAfterMailLoad()
         assert(reopenedMail.discardedDraftIDs.isEmpty && DraftStore(url: draftURL).all.isEmpty)
         assert(ids.allSatisfy { store.conversation($0) == nil })
         assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)

@@ -171,7 +171,7 @@ final class DraftStore {
     private let write: @Sendable (Data, URL) throws -> Void
     private var loadFailure: String?
     var needsReload: Bool { loadFailure != nil || mail?.discardedDraftIDs.isEmpty == false }
-    private var needsDiscardCleanupOnLaunch = false
+    private var needsMailRecovery = false
     @ObservationIgnored private var pending: Task<Bool, Never>?
 
     init(url: URL = URL.applicationSupportDirectory.appending(path: "Mailern/drafts-v1.json"), mail: MailStore? = nil,
@@ -179,10 +179,14 @@ final class DraftStore {
         self.url = url
         self.mail = mail
         self.write = write
-        if let mail, mail.needsReload { loadFailure = mail.error; return }
+        if let mail, mail.needsReload {
+            loadFailure = mail.error
+            needsMailRecovery = true
+            return
+        }
         do {
             all = try Self.read(url).filter { mail?.discardedDraftIDs.contains($0.id) != true }
-            needsDiscardCleanupOnLaunch = mail?.discardedDraftIDs.isEmpty == false
+            needsMailRecovery = mail?.discardedDraftIDs.isEmpty == false
         }
         catch { failedToLoad(error) }
     }
@@ -346,9 +350,9 @@ final class DraftStore {
             return await self.persist(updated)
         }
     }
-    func recoverDiscardedDrafts() async {
-        guard needsDiscardCleanupOnLaunch else { return }
-        needsDiscardCleanupOnLaunch = false
+    func recoverAfterMailLoad() async {
+        guard needsMailRecovery, mail?.needsReload != true else { return }
+        needsMailRecovery = false
         await reload()
     }
 

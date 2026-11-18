@@ -65,7 +65,7 @@ struct RemovedMailboxView: View {
                     deleting = []
                     Task {
                         // Some conversations in Junk still have scheduled or saved replies.
-                        let committed = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, discarding: $0) }
+                        let committed = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, from: mailbox, discarding: $0) }
                         if committed { endSelection() }
                     }
                 }

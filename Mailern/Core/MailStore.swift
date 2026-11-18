@@ -354,9 +354,17 @@ final class MailStore {
         if !expired.isEmpty { deletePermanently(expired) }
     }
     /// Deletes conversations without Undo. Callers confirm first; expired Trash needs no confirmation.
-    @discardableResult func deletePermanently(_ ids: Set<UUID>, discarding drafts: Set<UUID> = []) -> Bool {
-        guard canWrite(), conversations.contains(where: { ids.contains($0.id) }) else { return false }
+    @discardableResult func deletePermanently(_ ids: Set<UUID>, from confirmedMailbox: RemovedMailbox? = nil, discarding drafts: Set<UUID> = []) -> Bool {
+        guard canWrite(), !ids.isEmpty else { return false }
+        if let confirmedMailbox {
+            let stillInMailbox = conversations.count { ids.contains($0.id) && $0.removal?.mailbox == confirmedMailbox }
+            guard stillInMailbox == ids.count else {
+                error = "The mailbox changed. Review the selection before deleting."
+                return false
+            }
+        }
         let remaining = conversations.filter { !ids.contains($0.id) }
+        guard remaining.count != conversations.count else { return false }
         guard save(replacingConversations: remaining, draftDiscards: drafts.isEmpty ? nil : discardedDraftIDs.union(drafts)) else { return false }
         if undoSnapshot.contains(where: { ids.contains($0.id) }) { clearNotice() }
         conversations = remaining

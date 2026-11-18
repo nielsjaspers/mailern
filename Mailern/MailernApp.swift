@@ -97,7 +97,7 @@ struct MailernApp: App {
             let sessions = [demo] + (fixture.map { [$0] } ?? [])
             let work = Task {
                 for session in sessions {
-                    await session.drafts.recoverDiscardedDrafts()
+                    await session.drafts.recoverAfterMailLoad()
                     session.store.wakeDue()
                     await session.drafts.wakeDue()
                     await session.drafts.sendDue(through: session.store)
