@@ -2,7 +2,8 @@ import UIKit
 
 @MainActor
 enum NotificationSettleConfirmation {
-    static func handle(id: String, token: String, box: ReminderMailbox, isCurrent: @escaping @MainActor () -> Bool = { true }) async {
+    static func handle(id: String, token: String, box: ReminderMailbox,
+                       isCurrent: @escaping @MainActor () -> Bool = { true }) async {
         await box.drafts.finishPendingWrites()
         guard isCurrent(), MailReminder.isActionable(id: id, token: token, mail: box.mail),
               let uuid = UUID(uuidString: String(id.dropFirst("conversation.".count))) else { return }
@@ -35,7 +36,10 @@ enum NotificationSettleConfirmation {
                 }
             }
         })
-        await present(alert, isCurrent: isCurrent)
+        await present(alert) {
+            isCurrent() && MailReminder.isActionable(id: id, token: token, mail: box.mail)
+                && savedReplies(to: uuid, in: box.drafts) == replies
+        }
     }
 
     private static func savedReplies(to id: UUID, in drafts: DraftStore) -> [ComposerDraft] {
