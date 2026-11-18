@@ -9,6 +9,10 @@ struct MailernApp: App {
     @State private var drafts = makeDrafts()
     #if DEBUG
     @State private var fixtureSession = TestStorage.session
+
+    init() {
+        TestStorage.applyAnimationSetting()
+    }
     #endif
 
     private static func makeStore() -> MailStore {
@@ -39,12 +43,6 @@ struct MailernApp: App {
                let next = try? AttachmentJSON.decoder(for: url).decode([ComposerDraft].self, from: data), next.count < previous.count {
                 throw CocoaError(.fileWriteOutOfSpace)
             }
-            if let subject = environment["MAILERN_TEST_DRAFT_REVERT_SUBJECT"],
-               let previous = try? AttachmentJSON.decoder(for: url).decode([ComposerDraft].self, from: Data(contentsOf: url)),
-               let next = try? AttachmentJSON.decoder(for: url).decode([ComposerDraft].self, from: data),
-               next.contains(where: { draft in draft.subject == subject && previous.contains { $0.id == draft.id && $0.subject != subject } }) {
-                throw CocoaError(.fileWriteOutOfSpace)
-            }
             #endif
             try data.write(to: url, options: .atomic)
         })
@@ -59,14 +57,6 @@ struct MailernApp: App {
                     if phase == .active { store.wakeDue(); Task { await drafts.wakeDue(); await drafts.sendDue(through: store) } }
                 }
                 .task {
-                    #if DEBUG
-                    if let subject = TestStorage.environment["MAILERN_TEST_EXPIRING_DRAFT"],
-                       !drafts.drafts.contains(where: { $0.subject == subject }) {
-                        var draft = ComposerDraft(subject: subject, text: "Expiry proof")
-                        draft.snoozedUntil = .now.addingTimeInterval(20)
-                        await drafts.save(draft)
-                    }
-                    #endif
                     while !Task.isCancelled {
                         store.wakeDue()
                         await drafts.wakeDue()
@@ -78,6 +68,7 @@ struct MailernApp: App {
                 .onAppear {
                     TestStorage.observeReset { environment in
                         TestStorage.environment = environment
+                        TestStorage.applyAnimationSetting()
                         store = Self.makeStore()
                         drafts = Self.makeDrafts()
                         snoozePreferences = SnoozePreferences(defaults: TestStorage.defaults)
@@ -97,7 +88,7 @@ private enum TestStorage {
         #if DEBUG
         if let session {
             let defaults = UserDefaults(suiteName: "Mailern.UITests.\(session)")!
-            // Most cases check the sent message at once. Undo Send cases set their own delay.
+            // Most cases check sent messages at once. The Undo Send case sets its own delay.
             defaults.register(defaults: [UndoSend.key: Int(environment["MAILERN_TEST_UNDO_SEND"] ?? "") ?? 0])
             return defaults
         }
@@ -105,16 +96,7 @@ private enum TestStorage {
         return .standard
     }
     static var draftsURL: URL { directory.appending(path: "drafts-v1.json") }
-    static var mail: SQLitePersistence {
-        let persistence = SQLitePersistence(url: directory.appending(path: "mail.sqlite"))
-        #if DEBUG
-        if session != nil, TestStorage.environment["MAILERN_TEST_RESET_MAIL"] == "1" {
-            do { try persistence.save(MailData(conversations: DemoData.conversations())) }
-            catch { fatalError("Could not reset UI test mail: \(error)") }
-        }
-        #endif
-        return persistence
-    }
+    static var mail: SQLitePersistence { SQLitePersistence(url: directory.appending(path: "mail.sqlite")) }
     private static var directory: URL {
         #if DEBUG
         if let session { return URL.applicationSupportDirectory.appending(path: "Mailern/UITests/\(session)") }
@@ -161,6 +143,12 @@ private enum TestStorage {
     }
 
     static var isTestSession: Bool { session != nil }
+
+    /// XCTest waits for the app to settle after every action, which roughly halves UI test
+    /// time when transitions are instant. Timers keep their real durations.
+    static func applyAnimationSetting() {
+        UIView.setAnimationsEnabled(!(isTestSession && environment["MAILERN_TEST_ANIMATIONS"] == "off"))
+    }
     static var session: String? {
         guard let value = TestStorage.environment["MAILERN_TEST_SESSION"],
               let id = UUID(uuidString: value) else { return nil }
