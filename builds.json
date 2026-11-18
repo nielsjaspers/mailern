@@ -161,6 +161,16 @@
       "finished_at": "2026-11-18T22:40:44+00:00",
       "bundle_id": "com.example.mailern",
       "ipa_sha256": "4eef2b44190c9166338f9456eff7696cf0263e96e6b774fb653857815938b863"
+    },
+    {
+      "source_revision": "54953b805bfe39aedb37eaf3d58a3eee4c2a7a9a",
+      "branch": "feat/large-mailbox-benchmark",
+      "uncommitted_changes": false,
+      "source_digest": "a7d4b732d4a01c66c7e9f9b7cce457d2ad878ba1982dd5a5ba39e9c8b06a016a",
+      "build": 48,
+      "version": "0.6.9",
+      "status": "reserved",
+      "created_at": "2026-11-18T22:54:25+00:00"
     }
   ]
 }
