@@ -1225,12 +1225,30 @@ import SQLite3
     }
 
     @MainActor static func checkBulkActions() throws {
-        let disk = SQLitePersistence(url: URL.temporaryDirectory.appending(path: "mailern-bulk-\(UUID())/mail.sqlite"))
+        let url = URL.temporaryDirectory.appending(path: "mailern-bulk-\(UUID())/mail.sqlite")
+        let disk = SQLitePersistence(url: url)
         let store = MailStore(persistence: disk)
         let ids = Set(store.list(.inbox).prefix(2).map(\.id))
         let first = ids.first!
         store.markRead(first)
         let before = store.conversations.filter { ids.contains($0.id) }
+        var db: OpaquePointer?
+        assert(sqlite3_open(url.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let rejectSecond = """
+            CREATE TRIGGER reject_second BEFORE UPDATE ON conversations WHEN OLD.id = '\(before[1].id.uuidString)'
+            BEGIN SELECT RAISE(ABORT, 'injected failure'); END
+            """
+        assert(sqlite3_exec(db, rejectSecond, nil, nil, nil) == SQLITE_OK)
+        store.apply(ids: ids, action: .move(.settled))
+        let afterFailure = MailStore(persistence: SQLitePersistence(url: url))
+        assert(store.error != nil && afterFailure.conversations.filter { ids.contains($0.id) } == before)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_second", nil, nil, nil) == SQLITE_OK)
+        store.apply(ids: ids, action: .pin(true))
+        assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
+        store.undo()
+        store.apply(ids: ids, action: .move(.inbox))
+        for original in before { store.markRead(original.id, unread: original.unread) }
         store.apply(ids: ids, action: .move(.settled))
         assert(ids.allSatisfy { store.conversation($0)!.workflow == .settled })
         store.undo()

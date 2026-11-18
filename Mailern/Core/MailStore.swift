@@ -11,14 +11,14 @@ struct MailData: Equatable {
 protocol ConversationPersistence {
     func load() throws -> MailData?
     func save(_ data: MailData) throws
-    /// The last save succeeded and only this conversation’s unread flag changed.
-    func saveReadChange(in data: MailData, at index: Int) throws
+    /// These rows changed only local metadata. Searchable fields and attachment references are unchanged.
+    func saveMetadata(in data: MailData, at indices: [Int]) throws
     /// IDs of conversations whose stored text contains `text`, or nil when the store has no index for it.
     func search(_ text: String) throws -> Set<UUID>?
 }
 
 extension ConversationPersistence {
-    func saveReadChange(in data: MailData, at index: Int) throws { try save(data) }
+    func saveMetadata(in data: MailData, at indices: [Int]) throws { try save(data) }
     func search(_ text: String) throws -> Set<UUID>? { nil }
 }
 
@@ -151,10 +151,10 @@ final class MailStore {
     }
 
     private var data: MailData { MailData(conversations: conversations, accounts: accounts, blockedSenders: blockedSenders) }
-    @discardableResult private func save(readChangeAt index: Int? = nil) -> Bool {
+    @discardableResult private func save(metadataAt indices: [Int]? = nil) -> Bool {
         guard canWrite() else { return false }
         do {
-            if let index, indexCurrent { try persistence.saveReadChange(in: data, at: index) }
+            if let indices, indexCurrent { try persistence.saveMetadata(in: data, at: indices) }
             else { try persistence.save(data) }
             indexCurrent = true
             return true
@@ -178,7 +178,7 @@ final class MailStore {
         if case .read = undoAction { clearNotice() }
         guard conversations[index].unread != unread || !indexCurrent else { return }
         conversations[index].unread = unread
-        save(readChangeAt: index)
+        save(metadataAt: [index])
     }
     func togglePin(_ id: UUID) {
         guard conversation(id) != nil else { return }
@@ -200,36 +200,38 @@ final class MailStore {
     }
     func apply(ids: Set<UUID>, action: ConversationAction) {
         if case .move(.snoozed, let until) = action, (until ?? .distantPast) <= .now { return }
-        let before = conversations.filter {
-            guard ids.contains($0.id) else { return false }
+        let indices = conversations.indices.filter { index in
+            let conversation = conversations[index]
+            guard ids.contains(conversation.id) else { return false }
             switch action {
-            case .read: return $0.workflow != .settled
-            case .remove(let mailbox): return $0.removal?.mailbox != mailbox
-            case .restoreRemoved: return $0.removal != nil
+            case .read: return conversation.workflow != .settled
+            case .remove(let mailbox): return conversation.removal?.mailbox != mailbox
+            case .restoreRemoved: return conversation.removal != nil
             case .move, .pin: return true
             }
         }
-        guard !before.isEmpty else { return }
+        guard !indices.isEmpty else { return }
         actionCount += 1
-        undoSnapshot = before
+        undoSnapshot = indices.map { conversations[$0] }
         undoAction = action
-        let affectedIDs = Set(before.map(\.id))
-        for i in conversations.indices where affectedIDs.contains(conversations[i].id) {
+        var updated = conversations
+        for i in indices {
             switch action {
-            case .move(let status, let until): conversations[i].move(to: status, until: until)
-            case .read(let unread): conversations[i].unread = unread
-            case .pin(let pinned): conversations[i].pinned = pinned
+            case .move(let status, let until): updated[i].move(to: status, until: until)
+            case .read(let unread): updated[i].unread = unread
+            case .pin(let pinned): updated[i].pinned = pinned
             case .remove(.trash):
-                conversations[i].endReminder()
-                conversations[i].removal = .trash(since: .now)
+                updated[i].endReminder()
+                updated[i].removal = .trash(since: .now)
             case .remove(.junk):
-                conversations[i].endReminder()
-                conversations[i].removal = .junk
+                updated[i].endReminder()
+                updated[i].removal = .junk
             case .restoreRemoved:
-                conversations[i].removal = nil
-                conversations[i].blockedReplySourceID = nil
+                updated[i].removal = nil
+                updated[i].blockedReplySourceID = nil
             }
         }
+        conversations = updated
         let message: String
         switch action {
         case .move(let status, _):
@@ -239,43 +241,51 @@ final class MailStore {
         case .remove(let mailbox): message = "Moved to \(mailbox.title)"
         case .restoreRemoved: message = "Restored"
         }
-        notice = before.count > 1 ? "\(before.count) conversations: \(message)" : message
+        notice = indices.count > 1 ? "\(indices.count) conversations: \(message)" : message
         noticeExpiryTask?.cancel()
         noticeExpiryTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(5)) }
             catch { return }
             self?.clearNotice()
         }
-        save()
+        save(metadataAt: indices)
     }
     func undo() {
         guard let action = undoAction, !undoSnapshot.isEmpty else { return }
         // Incoming messages invalidate undo so a stale action cannot hide new mail.
-        guard undoSnapshot.allSatisfy({ conversation($0.id)?.messages == $0.messages }) else { clearNotice(); return }
-        for old in undoSnapshot {
-            guard let i = conversations.firstIndex(where: { $0.id == old.id }) else { continue }
+        let originals = Dictionary(uniqueKeysWithValues: undoSnapshot.map { ($0.id, $0) })
+        let indices = conversations.indices.filter { originals[conversations[$0].id] != nil }
+        guard indices.count == originals.count,
+              indices.allSatisfy({ originals[conversations[$0].id]?.messages == conversations[$0].messages }) else {
+            clearNotice()
+            return
+        }
+        var updated = conversations
+        for i in indices {
+            let old = originals[updated[i].id]!
             switch action {
             case .move(let status, _):
-                if status == .settled { conversations[i].unread = old.unread }
-                if old.workflow == .settled { conversations[i].unread = false }
-                conversations[i].workflow = old.workflow
-                conversations[i].snoozedUntil = old.snoozedUntil
-                conversations[i].followUp = old.followUp
-            case .read: conversations[i].unread = old.unread
-            case .pin: conversations[i].pinned = old.pinned
+                if status == .settled { updated[i].unread = old.unread }
+                if old.workflow == .settled { updated[i].unread = false }
+                updated[i].workflow = old.workflow
+                updated[i].snoozedUntil = old.snoozedUntil
+                updated[i].followUp = old.followUp
+            case .read: updated[i].unread = old.unread
+            case .pin: updated[i].pinned = old.pinned
             case .remove:
                 // Removal can end a reminder, which settles the conversation.
-                conversations[i].removal = old.removal
-                conversations[i].workflow = old.workflow
-                conversations[i].snoozedUntil = old.snoozedUntil
-                conversations[i].followUp = old.followUp
-                conversations[i].unread = old.unread
+                updated[i].removal = old.removal
+                updated[i].workflow = old.workflow
+                updated[i].snoozedUntil = old.snoozedUntil
+                updated[i].followUp = old.followUp
+                updated[i].unread = old.unread
             case .restoreRemoved:
-                conversations[i].removal = old.removal
-                conversations[i].blockedReplySourceID = old.blockedReplySourceID
+                updated[i].removal = old.removal
+                updated[i].blockedReplySourceID = old.blockedReplySourceID
             }
         }
-        save()
+        conversations = updated
+        save(metadataAt: indices)
         clearNotice()
     }
     func clearNotice() {
@@ -295,16 +305,21 @@ final class MailStore {
         clearNotice()
     }
     func wakeDue(now: Date = .now) {
-        var changed = false
-        for i in conversations.indices where conversations[i].workflow == .snoozed {
-            if let date = conversations[i].snoozedUntil, date <= now {
-                let waiting = conversations[i].followUp == .waiting
-                conversations[i].move(to: .inbox)
-                if waiting { conversations[i].followUp = .noReply }
-                changed = true
-            }
+        let due = conversations.indices.filter { index in
+            let conversation = conversations[index]
+            return conversation.workflow == .snoozed && conversation.snoozedUntil.map { $0 <= now } == true
         }
-        if changed { clearNotice(); save() }
+        if !due.isEmpty {
+            var updated = conversations
+            for i in due {
+                let waiting = updated[i].followUp == .waiting
+                updated[i].move(to: .inbox)
+                if waiting { updated[i].followUp = .noReply }
+            }
+            conversations = updated
+            clearNotice()
+            save(metadataAt: due)
+        }
         let expired = Set(conversations.filter {
             if case .trash(let since) = $0.removal { return since <= now.addingTimeInterval(-Self.trashRetention) }
             return false

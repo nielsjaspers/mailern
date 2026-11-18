@@ -62,13 +62,31 @@ final class SQLitePersistence: ConversationPersistence {
         return data
     }
 
-    func saveReadChange(in data: MailData, at index: Int) throws {
-        let conversation = data.conversations[index]
-        guard stored != nil, positions[conversation.id] != nil else { return try save(data) }
+    func saveMetadata(in data: MailData, at indices: [Int]) throws {
+        guard stored != nil else { return try save(data) }
         let db = try open()
-        let payload = try AttachmentJSON.encoder(for: url).encode(conversation)
-        try run(db, "UPDATE conversations SET payload = ? WHERE id = ?", [.blob(payload), .text(conversation.id.uuidString)])
-        guard sqlite3_changes(db) == 1 else { throw Failure(message: "The conversation could not be marked read or unread.") }
+        let encoder = AttachmentJSON.encoder(for: url)
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "UPDATE conversations SET payload = ? WHERE id = ?", -1, &statement, nil) == SQLITE_OK,
+              let statement else { throw Failure(message: String(cString: sqlite3_errmsg(db))) }
+        defer { sqlite3_finalize(statement) }
+        try exec(db, "BEGIN IMMEDIATE")
+        do {
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for index in indices {
+                let conversation = data.conversations[index]
+                let payload = try encoder.encode(conversation)
+                guard payload.withUnsafeBytes({ sqlite3_bind_blob(statement, 1, $0.baseAddress, Int32($0.count), transient) }) == SQLITE_OK,
+                      sqlite3_bind_text(statement, 2, conversation.id.uuidString, -1, transient) == SQLITE_OK,
+                      sqlite3_step(statement) == SQLITE_DONE else { throw Failure(message: String(cString: sqlite3_errmsg(db))) }
+                guard sqlite3_changes(db) == 1 else { throw Failure(message: "The conversation could not be updated.") }
+                sqlite3_reset(statement)
+            }
+            try exec(db, "COMMIT")
+        } catch {
+            try? exec(db, "ROLLBACK")
+            throw error
+        }
         stored = data
     }
 
@@ -89,19 +107,24 @@ final class SQLitePersistence: ConversationPersistence {
             if previous == nil {
                 try exec(db, "DELETE FROM conversations; DELETE FROM search; DELETE FROM settings")
             }
-            for id in removed {
-                try run(db, "DELETE FROM conversations WHERE id = ?", [.text(id.uuidString)])
-                try run(db, "DELETE FROM search WHERE id = ?", [.text(id.uuidString)])
+            let changed = data.conversations.filter { old[$0.id] != $0 }
+            func needsIndex(_ conversation: Conversation) -> Bool {
+                guard let prior = old[conversation.id] else { return true }
+                return prior.subject != conversation.subject || prior.messages != conversation.messages
             }
-            for conversation in data.conversations where old[conversation.id] != conversation {
+            // The FTS ID column is unindexed. Delete the entire batch in a single scan.
+            let replaced = changed.lazy.filter { old[$0.id] != nil && needsIndex($0) }.map(\.id)
+            try deleteRows(db, table: "search", ids: removed.union(replaced))
+            try deleteRows(db, table: "conversations", ids: removed)
+            for conversation in changed {
                 let id = SQLValue.text(conversation.id.uuidString)
                 try run(db, """
                     INSERT INTO conversations (id, position, payload) VALUES (?, ?, ?)
                     ON CONFLICT (id) DO UPDATE SET payload = excluded.payload
                     """, [id, .integer(positions[conversation.id]!), .blob(encoder.encode(conversation))])
-                // FTS does not index the ID column. Scan it only when replacing an existing entry.
-                if old[conversation.id] != nil { try run(db, "DELETE FROM search WHERE id = ?", [id]) }
-                try run(db, "INSERT INTO search (id, content) VALUES (?, ?)", [id, .text(Self.folded(conversation.searchText))])
+                if needsIndex(conversation) {
+                    try run(db, "INSERT INTO search (id, content) VALUES (?, ?)", [id, .text(Self.folded(conversation.searchText))])
+                }
             }
             if previous?.accounts != data.accounts {
                 try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('accounts', ?)", [.blob(encoder.encode(data.accounts))])
@@ -119,6 +142,12 @@ final class SQLitePersistence: ConversationPersistence {
         if previous == nil || !removed.isEmpty {
             AttachmentJSON.removePayloads(for: url, keeping: Set(data.conversations.flatMap { $0.messages.flatMap { $0.attachments ?? [] } }.map(\.id)))
         }
+    }
+
+    private func deleteRows(_ db: OpaquePointer, table: String, ids: Set<UUID>) throws {
+        guard !ids.isEmpty else { return }
+        let json = String(decoding: try JSONEncoder().encode(ids), as: UTF8.self)
+        try run(db, "DELETE FROM \(table) WHERE id IN (SELECT value FROM json_each(?))", [.text(json)])
     }
 
     func search(_ text: String) throws -> Set<UUID>? {
