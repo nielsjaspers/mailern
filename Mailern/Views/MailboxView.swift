@@ -71,7 +71,7 @@ struct MailboxView: View {
                     onDismiss: { peeking = nil },
                     onOpen: {
                         peeking = nil
-                        open(id, in: selection)
+                        paths[selection, default: []].append(.conversation(id))
                     },
                     onCompose: { mode in
                         peeking = nil
@@ -344,7 +344,7 @@ struct MailboxView: View {
                         let found = items.filter { $0.workflow == mailbox }
                         if !found.isEmpty {
                             Section {
-                                ForEach(found) { row($0, status: status) }
+                                ForEach(found) { row($0, status: status, order: projection.order) }
                             } header: {
                                 Label("\(mailbox.title) · \(found.count)", systemImage: mailbox.symbol).textCase(nil)
                             }
@@ -352,7 +352,7 @@ struct MailboxView: View {
                     }
                 } else {
                     Section {
-                        ForEach(items) { row($0, status: status) }
+                        ForEach(items) { row($0, status: status, order: projection.order) }
                     } header: {
                         VStack(alignment: .leading, spacing: 0) {
                             if selecting {
@@ -378,7 +378,7 @@ struct MailboxView: View {
             .modifier(InboxPullModifier(mode: status == .inbox && !selecting ? pullAction : .off, interaction: pull))
         }
     }
-    @ViewBuilder private func row(_ item: MailboxItem, status: Workflow) -> some View {
+    @ViewBuilder private func row(_ item: MailboxItem, status: Workflow, order: [UUID]) -> some View {
         let isThread = item.conversation != nil
         let acceptsRead = isThread && item.workflow != .settled
         let background: Color = item.hasDraft ? .orange : item.unread ? .blue : .clear
@@ -388,7 +388,10 @@ struct MailboxView: View {
             else if selecting {
                 if selectedIDs.contains(item.id) { selectedIDs.remove(item.id) }
                 else { selectedIDs.insert(item.id) }
-            } else if peeking == nil { open(item.id, in: status) }
+            } else if peeking == nil {
+                openedOrder[status] = order
+                paths[status, default: []].append(.conversation(item.id))
+            }
         } label: {
             switch item {
             case .thread(let conversation, let replies): ConversationRow(conversation: conversation, hasDraft: !replies.isEmpty)
@@ -413,12 +416,12 @@ struct MailboxView: View {
         .simultaneousGesture(LongPressGesture().onEnded { _ in
             guard isThread, !selecting else { return }
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            peeking = item.id
+            peek(item.id, in: status, order: order)
         }, isEnabled: isThread)
         .accessibilityActions {
             switch item {
             case .thread(let conversation, _):
-                Button("Peek") { if !selecting { peeking = conversation.id } }
+                Button("Peek") { if !selecting { peek(conversation.id, in: status, order: order) } }
                 Button("Move to Trash") { if !selecting { trash(conversation.id, hasDraft: item.hasDraft) } }
             case .draft(let draft):
                 Button(draft.pinned == true ? "Unpin" : "Pin") { Task { await drafts.togglePin(draft.id) } }
@@ -565,9 +568,9 @@ struct MailboxView: View {
         if pullAction == .search { withTransaction(transaction) { searching = true } }
         if pullAction == .compose { openComposer(.new) }
     }
-    private func open(_ id: UUID, in status: Workflow) {
-        openedOrder[status] = projection(status).order
-        paths[status, default: []].append(.conversation(id))
+    private func peek(_ id: UUID, in status: Workflow, order: [UUID]) {
+        openedOrder[status] = order
+        peeking = id
     }
     private func openComposer(_ mode: ComposeMode) {
         composer = mode
