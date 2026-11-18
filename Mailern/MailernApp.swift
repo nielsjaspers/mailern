@@ -5,6 +5,7 @@ import CoreFoundation
 
 @main
 struct MailernApp: App {
+    @UIApplicationDelegateAdaptor(MailNotifications.self) private var notifications
     @State private var mailboxes = MailboxSessions()
 
     #if DEBUG
@@ -68,6 +69,12 @@ struct MailernApp: App {
         @ObservationIgnored private var switching = false
         var active: MailboxSession { fixture ?? demo }
 
+        var reminderBoxes: [ReminderMailbox] {
+            ([demo] + (fixture.map { [$0] } ?? [])).map {
+                ReminderMailbox(scope: $0.benchmark.map { String($0.id) } ?? "demo", mail: $0.store, drafts: $0.drafts)
+            }
+        }
+
         func select(_ benchmark: BenchmarkMailbox?) async throws {
             guard !selecting, benchmark != active.benchmark else { return }
             selecting = true
@@ -118,8 +125,18 @@ struct MailernApp: App {
                 .environment(session.store).environment(session.drafts).environment(session.snoozePreferences).tint(.teal)
                 .defaultAppStorage(session.defaults)
                 .id(session.id)
+                .onChange(of: sessions.reminderBoxes.map {
+                    ReminderRevision(session: sessions.id, scope: $0.scope, mail: $0.mail.mailboxRevision,
+                                     drafts: $0.drafts.reminderRevision, ready: !$0.mail.needsReload && !$0.drafts.needsReload)
+                }, initial: true) { _, _ in refreshReminders(sessions) }
+                .onReceive(NotificationCenter.default.publisher(for: Notification.Name("MailernReminderAuthorizationChanged"))) { _ in
+                    refreshReminders(sessions)
+                }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { Task { await sessions.processDue() } }
+                    if phase == .active {
+                        refreshReminders(sessions)
+                        Task { await sessions.processDue() }
+                    }
                 }
                 .task(id: sessions.id) {
                     while !Task.isCancelled {
@@ -139,6 +156,17 @@ struct MailernApp: App {
                 #endif
         }
     }
+    private struct ReminderRevision: Equatable {
+        let session: UUID
+        let scope: String
+        let mail: UInt64
+        let drafts: UInt64
+        let ready: Bool
+    }
+
+    private func refreshReminders(_ sessions: MailboxSessions) {
+        notifications.refresh(namespace: TestStorage.reminderNamespace, mailboxes: sessions.reminderBoxes)
+    }
 }
 
 // Each UI test uses its own persisted files and preferences, including across relaunches.
@@ -151,6 +179,7 @@ private enum TestStorage {
         #endif
         return nil
     }
+    static var reminderNamespace: String { "mailern/" + (suite ?? "local") + "/" }
     private static var defaultPreferences: UserDefaults {
         suite.map { UserDefaults(suiteName: $0)! } ?? .standard
     }
