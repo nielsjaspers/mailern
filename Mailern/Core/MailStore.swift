@@ -43,6 +43,16 @@ final class MailStore {
     private(set) var notice: String?
     /// Counts the moves a person makes, such as Settle, Snooze, Pin, or Move to Trash. The mailbox plays a haptic on each change.
     private(set) var actionCount = 0
+    @ObservationIgnored private let projections = MailboxProjections()
+
+    func mailbox(drafts: [ComposerDraft], status: Workflow?, query: String, filter: MailboxFilter) -> MailboxProjections.Entry {
+        projections.list(store: self, drafts: drafts, status: status, query: query, filter: filter)
+    }
+
+    var inboxUnreadCount: Int { projections.inboxUnread(store: self) }
+
+    func endAllMailSearch() { projections.endAllMailSearch() }
+
     private var undoSnapshot: [Conversation] = []
     private var undoAction: ConversationAction?
     @ObservationIgnored private var noticeExpiryTask: Task<Void, Never>?
@@ -90,8 +100,12 @@ final class MailStore {
     func account(_ id: String) -> MailAccount { accounts.first { $0.id == id } ?? .removed(id) }
     /// Matches conversations against `text`. Queries the stored full-text index when it is current.
     func search(_ text: String) -> MailSearch {
-        let indexed = text.isEmpty || !indexCurrent ? nil : (try? persistence.search(text)) ?? nil
-        return MailSearch(text: text, accounts: accounts, indexed: indexed)
+        var result = MailSearch(text: text, accounts: accounts)
+        if !text.isEmpty && indexCurrent {
+            do { result.indexed = try persistence.search(text) }
+            catch { result.canCache = false }
+        }
+        return result
     }
     func list(_ status: Workflow, search: String = "") -> [Conversation] {
         let search = self.search(search)
@@ -499,6 +513,7 @@ struct MailSearch {
     var text = ""
     var accounts = MailAccount.demo
     var indexed: Set<UUID>?
+    var canCache = true
 
     private func accountName(_ id: String) -> String { accounts.first { $0.id == id }?.name ?? "" }
     private func contains(_ fields: [String]) -> Bool { fields.contains { $0.localizedCaseInsensitiveContains(text) } }

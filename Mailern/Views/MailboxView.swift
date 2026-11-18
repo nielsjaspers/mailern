@@ -13,7 +13,6 @@ struct MailboxView: View {
     @Namespace private var composeTransition
     @Environment(DraftStore.self) private var drafts
     @State private var selecting = false
-    @State private var projections = MailboxProjections()
     @State private var selectedIDs: Set<UUID> = []
     @State private var bulkSnooze = false
     @State private var settings = false
@@ -87,7 +86,11 @@ struct MailboxView: View {
         .onChange(of: selection) { _, _ in peeking = nil; searching = false; endSelection() }
         .onChange(of: searching) { _, active in if !active { searchScope = .section } }
         // Bulk actions and filters belong to one section, so All mail leaves selection.
-        .onChange(of: searchScope) { _, _ in peeking = nil; endSelection() }
+        .onChange(of: searchScope) { _, scope in
+            if scope == .section { store.endAllMailSearch() }
+            peeking = nil
+            endSelection()
+        }
         .onChange(of: search) { _, _ in pruneSelection() }
         .onChange(of: filterData) { _, _ in peeking = nil; pruneSelection() }
         .onChange(of: drafts.drafts) { _, saved in
@@ -160,7 +163,7 @@ struct MailboxView: View {
                     Tab(status.title, systemImage: status.symbol, value: MailboxTab.workflow(status)) {
                         section(status)
                     }
-                    .badge(status == .inbox ? inboxUnreadCount : 0)
+                    .badge(status == .inbox ? store.inboxUnreadCount : 0)
                 }
                 Tab(value: MailboxTab.compose, role: .prominent) {
                     Color.clear
@@ -176,7 +179,7 @@ struct MailboxView: View {
                     section(status)
                         .tabItem { Label(status.title, systemImage: status.symbol) }
                         .tag(status)
-                        .badge(status == .inbox ? inboxUnreadCount : 0)
+                        .badge(status == .inbox ? store.inboxUnreadCount : 0)
                 }
             }
         }
@@ -496,7 +499,7 @@ struct MailboxView: View {
     /// What `status` lists now: its own items, or all mail while that search scope is active.
     private func projection(_ status: Workflow) -> MailboxProjections.Entry {
         let scope: Workflow? = allMail(status) ? nil : status
-        return projections.list(store: store, drafts: drafts.drafts, status: scope, query: search,
+        return store.mailbox(drafts: drafts.drafts, status: scope, query: search,
                                 filter: scope.map { filters[$0] } ?? MailboxFilter())
     }
     private var filters: MailboxFilters {
@@ -508,9 +511,6 @@ struct MailboxView: View {
             updated[status] = value
             if let data = try? JSONEncoder().encode(updated) { filterData = data }
         })
-    }
-    private var inboxUnreadCount: Int {
-        projections.inboxUnread(store: store)
     }
     @ViewBuilder private func draftSwipeButtons(primary: MailboxSwipeAction, secondary: MailboxSwipeAction, tertiary: MailboxSwipeAction, draft: ComposerDraft) -> some View {
         if !selecting {
@@ -566,7 +566,7 @@ struct MailboxView: View {
         if pullAction == .compose { openComposer(.new) }
     }
     private func open(_ id: UUID, in status: Workflow) {
-        openedOrder[status] = projection(status).items.map(\.id)
+        openedOrder[status] = projection(status).order
         paths[status, default: []].append(.conversation(id))
     }
     private func openComposer(_ mode: ComposeMode) {

@@ -1263,8 +1263,16 @@ import SQLite3
     }
 
     @MainActor static func checkInboxOrder() throws {
-        struct FixturePersistence: ConversationPersistence {
+        final class FixturePersistence: ConversationPersistence {
             let items: [Conversation]
+            var failNextSearch = false
+            var searches = 0
+            init(items: [Conversation]) { self.items = items }
+            func search(_ text: String) throws -> Set<UUID>? {
+                searches += 1
+                if failNextSearch { failNextSearch = false; throw CocoaError(.fileReadUnknown) }
+                return nil
+            }
             func load() throws -> MailData? { MailData(conversations: items) }
             func save(_ data: MailData) throws {}
         }
@@ -1273,29 +1281,33 @@ import SQLite3
             Conversation(accountID: "icloud", subject: subject, workflow: workflow, unread: unread, pinned: pinned,
                          messages: [MailMessage(sender: "Sender", address: "sender@example.com", to: ["reader@example.com"], date: now.addingTimeInterval(-minutes * 60), body: "Example message")])
         }
-        let store = MailStore(persistence: FixturePersistence(items: [
+        let disk = FixturePersistence(items: [
             item("Read newest", minutes: 1, unread: false),
             item("Unread older", minutes: 20, unread: true),
             item("Read pinned", minutes: 30, unread: false, pinned: true),
             item("Unread newer", minutes: 10, unread: true),
             item("Settled read", minutes: 1, unread: false, workflow: .settled),
             item("Settled unread", minutes: 20, unread: true, workflow: .settled)
-        ]))
+        ])
+        let store = MailStore(persistence: disk)
         assert(store.list(.inbox).map(\.subject) == ["Read pinned", "Read newest", "Unread newer", "Unread older"])
         assert(store.list(.inbox, search: "older").map(\.subject) == ["Unread older"])
         let newer = store.list(.inbox).first { $0.subject == "Unread newer" }!
-        let projections = MailboxProjections()
         func inbox(_ query: String = "", drafts: [ComposerDraft] = [], filter: MailboxFilter = MailboxFilter()) -> MailboxProjections.Entry {
-            projections.list(store: store, drafts: drafts, status: .inbox, query: query, filter: filter)
+            store.mailbox(drafts: drafts, status: .inbox, query: query, filter: filter)
         }
+        disk.failNextSearch = true
+        let searches = disk.searches
+        for _ in 0..<3 { assert(inbox("older").items.count == 1) }
+        assert(disk.searches == searches + 2)
         let unread = MailboxFilter(enabled: true, readStatus: .unread)
-        assert(inbox(filter: unread).unread == 2 && projections.inboxUnread(store: store) == 2)
+        assert(inbox(filter: unread).unread == 2 && store.inboxUnreadCount == 2)
         assert(inbox("older").items.map(\.id) == [store.list(.inbox, search: "older")[0].id])
         let draft = ComposerDraft(subject: "Unfinished message")
         assert(inbox("unfinished", drafts: [draft]).items.map(\.id) == [draft.id])
         assert(inbox("unfinished").items.isEmpty)
         store.markRead(newer.id)
-        assert(inbox(filter: unread).unread == 1 && projections.inboxUnread(store: store) == 1)
+        assert(inbox(filter: unread).unread == 1 && store.inboxUnreadCount == 1)
         let revision = store.mailboxRevision
         store.markRead(newer.id)
         assert(store.mailboxRevision == revision)

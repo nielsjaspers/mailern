@@ -72,6 +72,7 @@ final class MailboxProjections {
         let filter: MailboxFilter
         let items: [MailboxItem]
         let unread: Int
+        let order: [UUID]
     }
 
     private var revision: UInt64?
@@ -88,12 +89,15 @@ final class MailboxProjections {
             self.drafts = drafts
         }
         if let current = entries[status], current.query == query, current.filter == filter { return current }
+        let search = store.search(query)
         let items = MailboxItem.list(conversations: store.conversations, drafts: drafts, status: status,
-                                     search: store.search(query), filter: filter)
-        let entry = Entry(query: query, filter: filter, items: items, unread: items.count(where: \.unread))
-        entries[status] = entry
+                                     search: search, filter: filter)
+        let entry = Entry(query: query, filter: filter, items: items, unread: items.count(where: \.unread), order: items.map(\.id))
+        if search.canCache { entries[status] = entry }
         return entry
     }
+
+    func endAllMailSearch() { entries.removeValue(forKey: nil) }
 
     func inboxUnread(store: MailStore) -> Int {
         if let badge, badge.revision == store.mailboxRevision { return badge.count }
