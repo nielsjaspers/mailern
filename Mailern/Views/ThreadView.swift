@@ -122,7 +122,7 @@ struct ThreadView: View {
         .confirmationDialog("Delete this conversation permanently?", isPresented: $deletingConversation, titleVisibility: .visible) {
             Button("Delete Permanently", role: .destructive) {
                 Task {
-                    let committed = await drafts.discardDrafts(for: [id], scheduled: true) { store.deletePermanently([id]) }
+                    let committed = await drafts.discardDrafts(for: [id], scheduled: true) { store.deletePermanently([id], discarding: $0) }
                     if committed { dismiss() }
                 }
             }

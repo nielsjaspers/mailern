@@ -51,6 +51,9 @@ final class SQLitePersistence: ConversationPersistence {
         if let blocked = try setting(db, "blockedSenders") {
             data.blockedSenders = try decoder.decode(Set<String>.self, from: blocked)
         }
+        if let discarded = try setting(db, "discardedDraftIDs") {
+            data.discardedDraftIDs = try decoder.decode(Set<UUID>.self, from: discarded)
+        }
         var loaded: [UUID: Int] = [:]
         try query(db, "SELECT position, payload FROM conversations ORDER BY position") { row in
             let conversation = try decoder.decode(Conversation.self, from: Self.blob(row, 1))
@@ -82,6 +85,7 @@ final class SQLitePersistence: ConversationPersistence {
                 guard sqlite3_changes(db) == 1 else { throw Failure(message: "The conversation could not be updated.") }
                 sqlite3_reset(statement)
             }
+            try saveDraftDiscards(db, data.discardedDraftIDs)
             try exec(db, "COMMIT")
         } catch {
             try? exec(db, "ROLLBACK")
@@ -132,6 +136,7 @@ final class SQLitePersistence: ConversationPersistence {
             if previous?.blockedSenders != data.blockedSenders {
                 try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('blockedSenders', ?)", [.blob(encoder.encode(data.blockedSenders))])
             }
+            try saveDraftDiscards(db, data.discardedDraftIDs)
             try exec(db, "COMMIT")
         } catch {
             try? exec(db, "ROLLBACK")
@@ -142,6 +147,13 @@ final class SQLitePersistence: ConversationPersistence {
         if previous == nil || !removed.isEmpty {
             AttachmentJSON.removePayloads(for: url, keeping: Set(data.conversations.flatMap { $0.messages.flatMap { $0.attachments ?? [] } }.map(\.id)))
         }
+    }
+
+    // A committed mail move must keep its discarded replies out of the separate draft file on recovery.
+    private func saveDraftDiscards(_ db: OpaquePointer, _ ids: Set<UUID>) throws {
+        guard ids != (stored?.discardedDraftIDs ?? []) else { return }
+        try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('discardedDraftIDs', ?)",
+                [.blob(try JSONEncoder().encode(ids))])
     }
 
     private func deleteRows(_ db: OpaquePointer, table: String, ids: Set<UUID>) throws {

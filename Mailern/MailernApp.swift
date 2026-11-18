@@ -26,7 +26,7 @@ struct MailernApp: App {
             defaults = TestStorage.preferences(for: benchmark)
             snoozePreferences = SnoozePreferences(defaults: defaults)
             store = MailStore(persistence: SQLitePersistence(url: TestStorage.mailURL(for: benchmark), requiresSeed: benchmark != nil))
-            drafts = makeDrafts(url: TestStorage.directory(for: benchmark).appending(path: "drafts-v1.json"))
+            drafts = makeDrafts(mail: store, url: TestStorage.directory(for: benchmark).appending(path: "drafts-v1.json"))
             #if DEBUG
             if benchmark == nil, TestStorage.isTestSession {
                 if TestStorage.environment["MAILERN_TEST_LONG_THREAD"] == "1",
@@ -40,12 +40,12 @@ struct MailernApp: App {
             #endif
         }
     }
-    private static func makeDrafts(url: URL) -> DraftStore {
+    private static func makeDrafts(mail: MailStore, url: URL) -> DraftStore {
         #if DEBUG
         // Pending writes must retain the fault settings of their own fixture session.
         let environment = TestStorage.environment
         #endif
-        return DraftStore(url: url, write: { data, url in
+        return DraftStore(url: url, mail: mail, write: { data, url in
             #if DEBUG
             if environment["MAILERN_TEST_DRAFT_WRITE_FAILURE"] == "1" {
                 throw CocoaError(.fileWriteOutOfSpace)
@@ -97,6 +97,7 @@ struct MailernApp: App {
             let sessions = [demo] + (fixture.map { [$0] } ?? [])
             let work = Task {
                 for session in sessions {
+                    await session.drafts.recoverDiscardedDrafts()
                     session.store.wakeDue()
                     await session.drafts.wakeDue()
                     await session.drafts.sendDue(through: session.store)

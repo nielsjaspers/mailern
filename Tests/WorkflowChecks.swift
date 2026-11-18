@@ -1293,7 +1293,7 @@ import SQLite3
         assert(store.conversation(first)!.workflow == .inbox && store.conversation(first)!.unread)
         assert(MailStore(persistence: disk).conversations == store.conversations)
         let draftURL = url.deletingLastPathComponent().appending(path: "drafts.json")
-        let drafts = DraftStore(url: draftURL)
+        let drafts = DraftStore(url: draftURL, mail: store)
         var reply = ComposerDraft.make(mode: .reply(first), conversation: store.conversation(first), accounts: store.accounts)
         let bytes = Data("Draft attachment".utf8)
         reply.attachments = [MailAttachment(name: "sample.txt", data: bytes, contentType: "public.plain-text")]
@@ -1303,15 +1303,22 @@ import SQLite3
         let scheduled = await drafts.schedule(later, at: .now.addingTimeInterval(3600))
         assert(saved && scheduled)
         assert(sqlite3_exec(db, "CREATE TRIGGER reject_delete BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT, 'injected failure'); END", nil, nil, nil) == SQLITE_OK)
-        let refused = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids) }
+        let refused = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, discarding: $0) }
         let reopenedDrafts = DraftStore(url: draftURL)
         assert(!refused && reopenedDrafts.all == drafts.all && reopenedDrafts.outbox.count == 1)
         assert(reopenedDrafts.drafts.first?.attachments.first?.data == bytes)
         assert(ids.allSatisfy { store.conversation($0) != nil })
         assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
         assert(sqlite3_exec(db, "DROP TRIGGER reject_delete", nil, nil, nil) == SQLITE_OK)
-        let deleted = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids) }
-        assert(deleted && drafts.all.isEmpty && DraftStore(url: draftURL).all.isEmpty)
+        let fullDisk = DraftStore(url: draftURL, mail: store, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let deleted = await fullDisk.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, discarding: $0) }
+        assert(deleted && fullDisk.all.isEmpty && fullDisk.error != nil)
+        assert(DraftStore(url: draftURL).all.count == 2 && store.discardedDraftIDs == [reply.id, later.id])
+        let reopenedMail = MailStore(persistence: SQLitePersistence(url: url))
+        let recovered = DraftStore(url: draftURL, mail: reopenedMail)
+        assert(recovered.all.isEmpty && recovered.outbox.isEmpty)
+        await recovered.recoverDiscardedDrafts()
+        assert(reopenedMail.discardedDraftIDs.isEmpty && DraftStore(url: draftURL).all.isEmpty)
         assert(ids.allSatisfy { store.conversation($0) == nil })
         assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
         print("PASS: batch move/read/pin/snooze/restore, whole-batch field-specific Undo, incoming precedence and persistence")

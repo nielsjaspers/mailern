@@ -6,6 +6,7 @@ struct MailData: Equatable {
     var conversations: [Conversation]
     var accounts = MailAccount.demo
     var blockedSenders: Set<String> = []
+    var discardedDraftIDs: Set<UUID> = []
 }
 
 protocol ConversationPersistence {
@@ -36,6 +37,8 @@ final class MailStore {
         didSet { mailboxRevision &+= 1 }
     }
     private(set) var mailboxRevision: UInt64 = 0
+    private(set) var discardedDraftIDs: Set<UUID> = []
+    private var nextExpiryRetry: Date?
     private(set) var blockedSenders: Set<String> = []
     private(set) var accounts = MailAccount.demo
     static let trashRetention: TimeInterval = 30 * 24 * 60 * 60
@@ -79,6 +82,7 @@ final class MailStore {
                 if normalized.workflow == .settled { normalized.unread = false }
                 return normalized
             }
+            discardedDraftIDs = data.discardedDraftIDs
             blockedSenders = data.blockedSenders
             accounts = data.accounts
             loadFailure = nil
@@ -150,22 +154,29 @@ final class MailStore {
         return true
     }
 
-    private var data: MailData { MailData(conversations: conversations, accounts: accounts, blockedSenders: blockedSenders) }
-    @discardableResult private func save(replacingConversations updated: [Conversation]? = nil, metadataAt indices: [Int]? = nil) -> Bool {
+    private var data: MailData { MailData(conversations: conversations, accounts: accounts, blockedSenders: blockedSenders, discardedDraftIDs: discardedDraftIDs) }
+    @discardableResult private func save(replacingConversations updated: [Conversation]? = nil, metadataAt indices: [Int]? = nil, draftDiscards: Set<UUID>? = nil, reportFailure: Bool = true) -> Bool {
         guard canWrite() else { return false }
         var data = self.data
         if let updated { data.conversations = updated }
+        if let draftDiscards { data.discardedDraftIDs = draftDiscards }
         do {
             if let indices, indexCurrent { try persistence.saveMetadata(in: data, at: indices) }
             else { try persistence.save(data) }
+            if let draftDiscards { discardedDraftIDs = draftDiscards }
             indexCurrent = true
             return true
         } catch {
             if updated == nil { indexCurrent = false }
-            self.error = "Changes could not be saved. \(error.localizedDescription)"
+            if reportFailure { self.error = "Changes could not be saved. \(error.localizedDescription)" }
             return false
         }
     }
+    func finishDraftDiscards() {
+        guard !discardedDraftIDs.isEmpty else { return }
+        save(replacingConversations: conversations, metadataAt: [], draftDiscards: [])
+    }
+
     private func canWrite() -> Bool {
         guard let loadFailure else { return true }
         error = loadFailure
@@ -200,7 +211,7 @@ final class MailStore {
     @discardableResult func move(_ id: UUID, to status: Workflow, until: Date? = nil) -> Bool {
         apply(ids: [id], action: .move(status, until: until))
     }
-    @discardableResult func apply(ids: Set<UUID>, action: ConversationAction) -> Bool {
+    @discardableResult func apply(ids: Set<UUID>, action: ConversationAction, discarding drafts: Set<UUID> = []) -> Bool {
         if case .move(.snoozed, let until) = action, (until ?? .distantPast) <= .now { return false }
         let indices = conversations.indices.filter { index in
             let conversation = conversations[index]
@@ -231,7 +242,7 @@ final class MailStore {
             }
         }
         let changed = indices.filter { conversations[$0] != updated[$0] }
-        guard commitBatch(updated, changed: changed) else { return false }
+        guard commitBatch(updated, changed: changed, discarding: drafts) else { return false }
         actionCount += 1
         undoSnapshot = indices.map { conversations[$0] }
         undoAction = action
@@ -254,9 +265,9 @@ final class MailStore {
         }
         return true
     }
-    private func commitBatch(_ updated: [Conversation], changed: [Int]) -> Bool {
-        if changed.isEmpty && indexCurrent { return true }
-        return save(replacingConversations: updated, metadataAt: changed)
+    private func commitBatch(_ updated: [Conversation], changed: [Int], discarding drafts: Set<UUID> = []) -> Bool {
+        if changed.isEmpty && drafts.isEmpty && indexCurrent { return true }
+        return save(replacingConversations: updated, metadataAt: changed, draftDiscards: drafts.isEmpty ? nil : discardedDraftIDs.union(drafts))
     }
 
     func undo() {
@@ -323,17 +334,18 @@ final class MailStore {
             let conversation = conversations[index]
             return conversation.workflow == .snoozed && conversation.snoozedUntil.map { $0 <= now } == true
         }
-        if !due.isEmpty {
+        if !due.isEmpty, nextExpiryRetry.map({ $0 <= now }) ?? true {
             var updated = conversations
             for i in due {
                 let waiting = updated[i].followUp == .waiting
                 updated[i].move(to: .inbox)
                 if waiting { updated[i].followUp = .noReply }
             }
-            if save(replacingConversations: updated, metadataAt: due) {
+            if save(replacingConversations: updated, metadataAt: due, reportFailure: nextExpiryRetry == nil) {
+                nextExpiryRetry = nil
                 conversations = updated
                 clearNotice()
-            }
+            } else { nextExpiryRetry = now.addingTimeInterval(60) }
         }
         let expired = Set(conversations.filter {
             if case .trash(let since) = $0.removal { return since <= now.addingTimeInterval(-Self.trashRetention) }
@@ -342,10 +354,10 @@ final class MailStore {
         if !expired.isEmpty { deletePermanently(expired) }
     }
     /// Deletes conversations without Undo. Callers confirm first; expired Trash needs no confirmation.
-    @discardableResult func deletePermanently(_ ids: Set<UUID>) -> Bool {
+    @discardableResult func deletePermanently(_ ids: Set<UUID>, discarding drafts: Set<UUID> = []) -> Bool {
         guard canWrite(), conversations.contains(where: { ids.contains($0.id) }) else { return false }
         let remaining = conversations.filter { !ids.contains($0.id) }
-        guard save(replacingConversations: remaining) else { return false }
+        guard save(replacingConversations: remaining, draftDiscards: drafts.isEmpty ? nil : discardedDraftIDs.union(drafts)) else { return false }
         if undoSnapshot.contains(where: { ids.contains($0.id) }) { clearNotice() }
         conversations = remaining
         return true
@@ -526,7 +538,7 @@ final class MailStore {
                     followUp: draft.followUp, id: id)
     }
     func reset() {
-        let replacement = MailData(conversations: DemoData.conversations())
+        let replacement = MailData(conversations: DemoData.conversations(), discardedDraftIDs: discardedDraftIDs)
         do {
             try persistence.save(replacement)
             conversations = replacement.conversations
