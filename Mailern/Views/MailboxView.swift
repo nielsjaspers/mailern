@@ -13,6 +13,7 @@ struct MailboxView: View {
     @Namespace private var composeTransition
     @Environment(DraftStore.self) private var drafts
     @State private var selecting = false
+    @State private var projections = MailboxProjections()
     @State private var selectedIDs: Set<UUID> = []
     @State private var bulkSnooze = false
     @State private var settings = false
@@ -93,9 +94,9 @@ struct MailboxView: View {
             store.clearWorkflowUndo(involving: Set(saved.compactMap { $0.mode.replyID }))
             pruneSelection()
         }
-        .onChange(of: store.conversations) { _, conversations in
+        .onChange(of: store.mailboxRevision) { _, _ in
             pruneSelection()
-            if let id = peeking, !conversations.contains(where: { $0.id == id && $0.workflow == selection }) {
+            if let id = peeking, store.conversation(id)?.workflow != selection {
                 peeking = nil
             }
         }
@@ -221,7 +222,7 @@ struct MailboxView: View {
                                     let order = store.conversations(with: sender.address).map(\.id)
                                     return MailboxItem.conversation(after: id, in: order, available: Set(order))
                                 }
-                                let available = Set(items(status).compactMap { $0.conversation?.id })
+                                let available = Set(projection(status).items.compactMap { $0.conversation?.id })
                                 return MailboxItem.conversation(after: id, in: openedOrder[status] ?? [], available: available)
                             }, open: { next in
                                 guard paths[status]?.last == .conversation(id) else { return }
@@ -245,7 +246,7 @@ struct MailboxView: View {
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             if selecting {
-                let visibleIDs = Set(items(status).filter { $0.conversation != nil }.map(\.id))
+                let visibleIDs = Set(projection(status).items.filter { $0.conversation != nil }.map(\.id))
                 let allSelected = !visibleIDs.isEmpty && visibleIDs.isSubset(of: selectedIDs)
                 Button(allSelected ? "Deselect All" : "Select All") {
                     selectedIDs = allSelected ? [] : visibleIDs
@@ -311,7 +312,8 @@ struct MailboxView: View {
     }
 
     @ViewBuilder private func mailbox(_ status: Workflow) -> some View {
-        let items = items(status)
+        let projection = projection(status)
+        let items = projection.items
         if items.isEmpty {
             let filtered = filters[status].enabled && !allMail(status)
             let empty = ContentUnavailableView(
@@ -353,7 +355,7 @@ struct MailboxView: View {
                             if selecting {
                                 Text("\(selectedIDs.count) selected").textCase(nil)
                             } else if status == .inbox {
-                                let unreadCount = items.filter(\.unread).count
+                                let unreadCount = projection.unread
                                 Text(unreadCount > 0 ? "\(unreadCount) unread" : "All read").textCase(nil)
                             } else {
                                 Text(items.count == 1 ? "1 item" : "\(items.count) items").textCase(nil)
@@ -488,10 +490,10 @@ struct MailboxView: View {
     }
 
     /// What `status` lists now: its own items, or all mail while that search scope is active.
-    private func items(_ status: Workflow) -> [MailboxItem] {
+    private func projection(_ status: Workflow) -> MailboxProjections.Entry {
         let scope: Workflow? = allMail(status) ? nil : status
-        return MailboxItem.list(conversations: store.conversations, drafts: drafts.drafts, status: scope,
-                                search: store.search(search), filter: scope.map { filters[$0] } ?? MailboxFilter())
+        return projections.list(store: store, drafts: drafts.drafts, status: scope, query: search,
+                                filter: scope.map { filters[$0] } ?? MailboxFilter())
     }
     private var filters: MailboxFilters {
         (try? JSONDecoder().decode(MailboxFilters.self, from: filterData)) ?? MailboxFilters()
@@ -504,7 +506,7 @@ struct MailboxView: View {
         })
     }
     private var inboxUnreadCount: Int {
-        MailboxItem.list(conversations: store.conversations, drafts: drafts.drafts, status: .inbox).filter(\.unread).count
+        projections.inboxUnread(store: store)
     }
     @ViewBuilder private func draftSwipeButtons(primary: MailboxSwipeAction, secondary: MailboxSwipeAction, tertiary: MailboxSwipeAction, draft: ComposerDraft) -> some View {
         if !selecting {
@@ -531,11 +533,13 @@ struct MailboxView: View {
         swipeActions(primary: primary, secondary: secondary, tertiary: tertiary).filter { $0 != .read }
     }
     private var selectedConversations: [Conversation] {
-        store.conversations.filter { selectedIDs.contains($0.id) }
+        guard !selectedIDs.isEmpty else { return [] }
+        return store.conversations.filter { selectedIDs.contains($0.id) }
     }
     private func endSelection() { selecting = false; selectedIDs = [] }
     private func pruneSelection() {
-        selectedIDs.formIntersection(items(selection).filter { $0.conversation != nil }.map(\.id))
+        guard !selectedIDs.isEmpty else { return }
+        selectedIDs.formIntersection(projection(selection).items.filter { $0.conversation != nil }.map(\.id))
     }
     private func applySelection(_ action: ConversationAction) {
         let ids = selectedIDs
@@ -558,7 +562,7 @@ struct MailboxView: View {
         if pullAction == .compose { openComposer(.new) }
     }
     private func open(_ id: UUID, in status: Workflow) {
-        openedOrder[status] = items(status).map(\.id)
+        openedOrder[status] = projection(status).items.map(\.id)
         paths[status, default: []].append(.conversation(id))
     }
     private func openComposer(_ mode: ComposeMode) {

@@ -1276,7 +1276,21 @@ import SQLite3
         assert(store.list(.inbox).map(\.subject) == ["Read pinned", "Read newest", "Unread newer", "Unread older"])
         assert(store.list(.inbox, search: "older").map(\.subject) == ["Unread older"])
         let newer = store.list(.inbox).first { $0.subject == "Unread newer" }!
+        let projections = MailboxProjections()
+        func inbox(_ query: String = "", drafts: [ComposerDraft] = [], filter: MailboxFilter = MailboxFilter()) -> MailboxProjections.Entry {
+            projections.list(store: store, drafts: drafts, status: .inbox, query: query, filter: filter)
+        }
+        let unread = MailboxFilter(enabled: true, readStatus: .unread)
+        assert(inbox(filter: unread).unread == 2 && projections.inboxUnread(store: store) == 2)
+        assert(inbox("older").items.map(\.id) == [store.list(.inbox, search: "older")[0].id])
+        let draft = ComposerDraft(subject: "Unfinished message")
+        assert(inbox("unfinished", drafts: [draft]).items.map(\.id) == [draft.id])
+        assert(inbox("unfinished").items.isEmpty)
         store.markRead(newer.id)
+        assert(inbox(filter: unread).unread == 1 && projections.inboxUnread(store: store) == 1)
+        let revision = store.mailboxRevision
+        store.markRead(newer.id)
+        assert(store.mailboxRevision == revision)
         assert(store.list(.inbox).map(\.subject) == ["Read pinned", "Read newest", "Unread newer", "Unread older"])
         assert(store.conversation(newer.id)!.workflow == .inbox)
         assert(store.list(.settled).map(\.subject) == ["Settled read", "Settled unread"])

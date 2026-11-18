@@ -63,3 +63,42 @@ enum MailboxItem: Identifiable {
 extension ComposerDraft {
     var title: String { subject.isEmpty ? "New Message" : subject }
 }
+
+/// A tab keeps its latest projection while navigation, search presentation, and scroll geometry change.
+@MainActor
+final class MailboxProjections {
+    struct Entry {
+        let query: String
+        let filter: MailboxFilter
+        let items: [MailboxItem]
+        let unread: Int
+    }
+
+    private var revision: UInt64?
+    private var accounts: [MailAccount] = []
+    private var drafts: [ComposerDraft] = []
+    private var entries: [Workflow?: Entry] = [:]
+    private var badge: (revision: UInt64, count: Int)?
+
+    func list(store: MailStore, drafts: [ComposerDraft], status: Workflow?, query: String, filter: MailboxFilter) -> Entry {
+        if revision != store.mailboxRevision || accounts != store.accounts || self.drafts != drafts {
+            entries.removeAll(keepingCapacity: true)
+            revision = store.mailboxRevision
+            accounts = store.accounts
+            self.drafts = drafts
+        }
+        if let current = entries[status], current.query == query, current.filter == filter { return current }
+        let items = MailboxItem.list(conversations: store.conversations, drafts: drafts, status: status,
+                                     search: store.search(query), filter: filter)
+        let entry = Entry(query: query, filter: filter, items: items, unread: items.count(where: \.unread))
+        entries[status] = entry
+        return entry
+    }
+
+    func inboxUnread(store: MailStore) -> Int {
+        if let badge, badge.revision == store.mailboxRevision { return badge.count }
+        let count = store.conversations.count { $0.workflow == .inbox && $0.removal == nil && $0.unread }
+        badge = (store.mailboxRevision, count)
+        return count
+    }
+}

@@ -29,7 +29,10 @@ enum ConversationAction: Equatable {
 
 @MainActor @Observable
 final class MailStore {
-    private(set) var conversations: [Conversation] = []
+    private(set) var conversations: [Conversation] = [] {
+        didSet { mailboxRevision &+= 1 }
+    }
+    private(set) var mailboxRevision: UInt64 = 0
     private(set) var blockedSenders: Set<String> = []
     private(set) var accounts = MailAccount.demo
     static let trashRetention: TimeInterval = 30 * 24 * 60 * 60
@@ -43,7 +46,9 @@ final class MailStore {
     private let persistence: any ConversationPersistence
     private var loadFailure: String?
     /// False after a failed save, when the stored search index can miss mail that only exists in memory.
-    private var indexCurrent = true
+    private var indexCurrent = true {
+        didSet { if oldValue != indexCurrent { mailboxRevision &+= 1 } }
+    }
     var needsReload: Bool { loadFailure != nil }
 
     init(persistence: any ConversationPersistence = SQLitePersistence.local) {
@@ -151,8 +156,9 @@ final class MailStore {
         action(&conversations[index]); save()
     }
     func markRead(_ id: UUID, unread: Bool = false) {
-        guard conversation(id)?.workflow != .settled else { return }
+        guard let current = conversation(id), current.workflow != .settled else { return }
         if case .read = undoAction { clearNotice() }
+        guard current.unread != unread || !indexCurrent else { return }
         update(id) { $0.unread = unread }
     }
     func togglePin(_ id: UUID) {
