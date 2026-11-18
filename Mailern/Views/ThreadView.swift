@@ -32,8 +32,7 @@ struct ThreadView: View {
     }
     private func remove(to mailbox: RemovedMailbox) {
         if !attachedDrafts.isEmpty { settleNext = nil; settling = DraftDiscard(ids: [id], action: .remove(mailbox)); return }
-        store.apply(ids: [id], action: .remove(mailbox))
-        dismiss()
+        if store.apply(ids: [id], action: .remove(mailbox)) { dismiss() }
     }
     var body: some View {
         Group {
@@ -63,7 +62,9 @@ struct ThreadView: View {
                             }
                             if c.removal == nil {
                                 Button("Snooze", systemImage: "clock") { snooze = true }
-                                if c.workflow != .inbox { Button("Restore to Inbox", systemImage: "tray") { store.move(id, to: .inbox); dismiss() } }
+                                if c.workflow != .inbox {
+                                    Button("Restore to Inbox", systemImage: "tray") { if store.move(id, to: .inbox) { dismiss() } }
+                                }
                                 Button("Move to Junk", systemImage: RemovedMailbox.junk.symbol) { remove(to: .junk) }
                             }
                             Button(c.muted == true ? "Unmute" : "Mute", systemImage: c.muted == true ? "bell" : "bell.slash") { store.toggleMute(id) }
@@ -74,18 +75,19 @@ struct ThreadView: View {
                     ToolbarItemGroup(placement: .bottomBar) {
                         if let mailbox = c.removal?.mailbox {
                             Button(mailbox == .junk ? "Not Junk" : "Restore", systemImage: "arrow.uturn.backward") {
-                                store.apply(ids: [id], action: .restoreRemoved)
-                                dismiss()
+                                if store.apply(ids: [id], action: .restoreRemoved) { dismiss() }
                             }
                             Spacer()
                             Button("Delete Permanently", systemImage: "trash") { deletingConversation = true }
                         } else {
                             Button(c.workflow == .settled ? "Restore" : "Settle", systemImage: c.workflow == .settled ? "tray" : "checkmark") {
-                                guard c.workflow != .settled else { store.move(id, to: .inbox); dismiss(); return }
+                                if c.workflow == .settled {
+                                    if store.move(id, to: .inbox) { dismiss() }
+                                    return
+                                }
                                 let next = next()
                                 if !attachedDrafts.isEmpty { settleNext = next; settling = DraftDiscard(ids: [id], action: .move(.settled)); return }
-                                store.move(id, to: .settled)
-                                leave(after: next)
+                                if store.move(id, to: .settled) { leave(after: next) }
                             }
                             Spacer()
                             Button("Snooze", systemImage: "clock") { snooze = true }
@@ -120,9 +122,8 @@ struct ThreadView: View {
         .confirmationDialog("Delete this conversation permanently?", isPresented: $deletingConversation, titleVisibility: .visible) {
             Button("Delete Permanently", role: .destructive) {
                 Task {
-                    guard await drafts.discardDrafts(for: [id], scheduled: true) else { return }
-                    store.deletePermanently([id])
-                    dismiss()
+                    let committed = await drafts.discardDrafts(for: [id], scheduled: true) { store.deletePermanently([id]) }
+                    if committed { dismiss() }
                 }
             }
         } message: { Text("This can't be undone.") }

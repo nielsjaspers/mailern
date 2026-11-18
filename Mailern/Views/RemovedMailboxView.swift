@@ -42,8 +42,7 @@ struct RemovedMailboxView: View {
                 ToolbarItemGroup(placement: .bottomBar) {
                     if selecting {
                         Button(restoreTitle, systemImage: "arrow.uturn.backward") {
-                            apply(selectedIDs)
-                            endSelection()
+                            if apply(selectedIDs) { endSelection() }
                         }
                         .disabled(selectedIDs.isEmpty)
                         Spacer()
@@ -66,9 +65,8 @@ struct RemovedMailboxView: View {
                     deleting = []
                     Task {
                         // Some conversations in Junk still have scheduled or saved replies.
-                        guard await drafts.discardDrafts(for: ids, scheduled: true) else { return }
-                        store.deletePermanently(ids)
-                        endSelection()
+                        let committed = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids) }
+                        if committed { endSelection() }
                     }
                 }
             } message: { Text("This can't be undone.") }
@@ -127,7 +125,7 @@ struct RemovedMailboxView: View {
         }
     }
 
-    private func apply(_ ids: Set<UUID>) {
+    @discardableResult private func apply(_ ids: Set<UUID>) -> Bool {
         withAnimation { store.apply(ids: ids, action: .restoreRemoved) }
     }
     private func endSelection() { selecting = false; selectedIDs = [] }

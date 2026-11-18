@@ -19,6 +19,24 @@ enum AttachmentJSON {
             try write(encoder(for: url).encode(value), url)
         }
     }
+    /// Stage a smaller manifest on the same volume. Its attachment references still belong to the original URL.
+    static func stageRemoval<T: Encodable>(_ value: T, at url: URL, write: (Data, URL) throws -> Void) throws -> URL {
+        let folder = try FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask,
+                                                appropriateFor: url, create: true)
+        let staged = folder.appendingPathComponent(url.lastPathComponent)
+        do {
+            try write(encoder(for: url).encode(value), staged)
+            return staged
+        } catch {
+            try? FileManager.default.removeItem(at: folder)
+            throw error
+        }
+    }
+    static func installRemoval(_ staged: URL, at url: URL) throws {
+        try locked(url) {
+            guard rename(staged.path, url.path) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        }
+    }
     static func encoder(for url: URL) -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.userInfo[contextKey] = PayloadContext(directory: directory(for: url))

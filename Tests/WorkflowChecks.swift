@@ -10,7 +10,7 @@ import SQLite3
         try await checkInboxDrafts()
         try await checkAttachmentStorage()
         try checkSettledRead()
-        try checkBulkActions()
+        try await checkBulkActions()
         checkDeliberatePull()
         try checkInboxOrder()
         try await checkMailboxFiltersAndDraftActions()
@@ -1224,7 +1224,7 @@ import SQLite3
         print("PASS: small metadata, mapped attachment reload, draft-to-mail transfer, unchanged payloads on workflow saves, cleanup, and failed/corrupt metadata protection")
     }
 
-    @MainActor static func checkBulkActions() throws {
+    @MainActor static func checkBulkActions() async throws {
         let url = URL.temporaryDirectory.appending(path: "mailern-bulk-\(UUID())/mail.sqlite")
         let disk = SQLitePersistence(url: url)
         let store = MailStore(persistence: disk)
@@ -1292,12 +1292,26 @@ import SQLite3
         store.undo()
         assert(store.conversation(first)!.workflow == .inbox && store.conversation(first)!.unread)
         assert(MailStore(persistence: disk).conversations == store.conversations)
+        let draftURL = url.deletingLastPathComponent().appending(path: "drafts.json")
+        let drafts = DraftStore(url: draftURL)
+        var reply = ComposerDraft.make(mode: .reply(first), conversation: store.conversation(first), accounts: store.accounts)
+        let bytes = Data("Draft attachment".utf8)
+        reply.attachments = [MailAttachment(name: "sample.txt", data: bytes, contentType: "public.plain-text")]
+        let saved = await drafts.save(reply)
+        var later = reply
+        later.id = UUID()
+        let scheduled = await drafts.schedule(later, at: .now.addingTimeInterval(3600))
+        assert(saved && scheduled)
         assert(sqlite3_exec(db, "CREATE TRIGGER reject_delete BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT, 'injected failure'); END", nil, nil, nil) == SQLITE_OK)
-        store.deletePermanently(ids)
+        let refused = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids) }
+        let reopenedDrafts = DraftStore(url: draftURL)
+        assert(!refused && reopenedDrafts.all == drafts.all && reopenedDrafts.outbox.count == 1)
+        assert(reopenedDrafts.drafts.first?.attachments.first?.data == bytes)
         assert(ids.allSatisfy { store.conversation($0) != nil })
         assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
         assert(sqlite3_exec(db, "DROP TRIGGER reject_delete", nil, nil, nil) == SQLITE_OK)
-        store.deletePermanently(ids)
+        let deleted = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids) }
+        assert(deleted && drafts.all.isEmpty && DraftStore(url: draftURL).all.isEmpty)
         assert(ids.allSatisfy { store.conversation($0) == nil })
         assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
         print("PASS: batch move/read/pin/snooze/restore, whole-batch field-specific Undo, incoming precedence and persistence")

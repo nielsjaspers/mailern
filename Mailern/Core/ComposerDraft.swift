@@ -218,20 +218,36 @@ final class DraftStore {
             return await self.persist(self.all.filter { $0.id != id })
         }
     }
-    /// Discards the given standalone drafts and every reply draft attached to the given conversations.
-    /// Scheduled replies stay unless `scheduled` is true, as when their conversation is deleted.
-    /// Discards the drafts in `ids` and the reply drafts of conversations in `ids`. Settling or trashing a standalone
-    /// draft row counts as a move. Reply drafts do not, because their conversation's move counts already.
-    func discardDrafts(for ids: Set<UUID>, scheduled: Bool = false) async -> Bool {
-        let standalone = drafts.contains { ids.contains($0.id) }
-        let discarded = await enqueue {
-            await self.persist(self.all.filter { draft in
+    /// The original draft file and its attachment bytes stay readable until the mail action commits.
+    func discardDrafts(for ids: Set<UUID>, scheduled: Bool = false,
+                       committingMail: @escaping @MainActor () -> Bool = { true }) async -> Bool {
+        await enqueue {
+            guard self.loadFailure == nil else { self.error = self.loadFailure; return false }
+            let remaining = self.all.filter { draft in
                 guard scheduled || draft.sendAt == nil else { return true }
                 return !ids.contains(draft.id) && !(draft.mode.replyID.map(ids.contains) ?? false)
-            })
+            }
+            guard remaining.count != self.all.count else { return committingMail() }
+            let standalone = self.drafts.contains { ids.contains($0.id) }
+            let url = self.url
+            let write = self.write
+            do {
+                let staged = try await Task.detached(priority: .utility) {
+                    try AttachmentJSON.stageRemoval(remaining, at: url, write: write)
+                }.value
+                defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
+                guard committingMail() else { return false }
+                try AttachmentJSON.installRemoval(staged, at: url)
+                self.all = remaining
+                self.error = nil
+                if standalone { self.actionCount += 1 }
+                await Task.detached { AttachmentJSON.removeUnusedPayloads(for: url, as: [ComposerDraft].self) }.value
+                return true
+            } catch {
+                self.error = "Could not discard drafts. \(error.localizedDescription)"
+                return false
+            }
         }
-        if discarded && standalone { actionCount += 1 }
-        return discarded
     }
     /// Discards every draft sent from the given account.
     func discardDrafts(accountID: String) async -> Bool {

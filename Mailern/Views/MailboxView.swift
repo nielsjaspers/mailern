@@ -575,8 +575,7 @@ struct MailboxView: View {
             settling = DraftDiscard(ids: ids, action: action)
             return
         }
-        endSelection()
-        act { store.apply(ids: ids, action: action) }
+        act { if store.apply(ids: ids, action: action) { endSelection() } }
     }
     private func performPull() {
         guard pullAction != .off && !selecting else { return }

@@ -197,11 +197,11 @@ final class MailStore {
     func toggleMute(_ id: UUID) {
         update(id) { $0.muted = $0.muted == true ? nil : true }
     }
-    func move(_ id: UUID, to status: Workflow, until: Date? = nil) {
+    @discardableResult func move(_ id: UUID, to status: Workflow, until: Date? = nil) -> Bool {
         apply(ids: [id], action: .move(status, until: until))
     }
-    func apply(ids: Set<UUID>, action: ConversationAction) {
-        if case .move(.snoozed, let until) = action, (until ?? .distantPast) <= .now { return }
+    @discardableResult func apply(ids: Set<UUID>, action: ConversationAction) -> Bool {
+        if case .move(.snoozed, let until) = action, (until ?? .distantPast) <= .now { return false }
         let indices = conversations.indices.filter { index in
             let conversation = conversations[index]
             guard ids.contains(conversation.id) else { return false }
@@ -212,7 +212,7 @@ final class MailStore {
             case .move, .pin: return true
             }
         }
-        guard !indices.isEmpty else { return }
+        guard !indices.isEmpty else { return false }
         var updated = conversations
         for i in indices {
             switch action {
@@ -231,7 +231,7 @@ final class MailStore {
             }
         }
         let changed = indices.filter { conversations[$0] != updated[$0] }
-        guard commitBatch(updated, changed: changed) else { return }
+        guard commitBatch(updated, changed: changed) else { return false }
         actionCount += 1
         undoSnapshot = indices.map { conversations[$0] }
         undoAction = action
@@ -252,6 +252,7 @@ final class MailStore {
             catch { return }
             self?.clearNotice()
         }
+        return true
     }
     private func commitBatch(_ updated: [Conversation], changed: [Int]) -> Bool {
         if changed.isEmpty && indexCurrent { return true }
@@ -329,9 +330,10 @@ final class MailStore {
                 updated[i].move(to: .inbox)
                 if waiting { updated[i].followUp = .noReply }
             }
-            conversations = updated
-            clearNotice()
-            save(metadataAt: due)
+            if save(replacingConversations: updated, metadataAt: due) {
+                conversations = updated
+                clearNotice()
+            }
         }
         let expired = Set(conversations.filter {
             if case .trash(let since) = $0.removal { return since <= now.addingTimeInterval(-Self.trashRetention) }
@@ -340,12 +342,13 @@ final class MailStore {
         if !expired.isEmpty { deletePermanently(expired) }
     }
     /// Deletes conversations without Undo. Callers confirm first; expired Trash needs no confirmation.
-    func deletePermanently(_ ids: Set<UUID>) {
-        guard canWrite(), conversations.contains(where: { ids.contains($0.id) }) else { return }
+    @discardableResult func deletePermanently(_ ids: Set<UUID>) -> Bool {
+        guard canWrite(), conversations.contains(where: { ids.contains($0.id) }) else { return false }
         let remaining = conversations.filter { !ids.contains($0.id) }
-        guard save(replacingConversations: remaining) else { return }
+        guard save(replacingConversations: remaining) else { return false }
         if undoSnapshot.contains(where: { ids.contains($0.id) }) { clearNotice() }
         conversations = remaining
+        return true
     }
     /// Why `account` cannot be saved, or nil when it can.
     func problem(with account: MailAccount) -> String? {
