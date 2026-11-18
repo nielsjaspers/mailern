@@ -217,6 +217,16 @@
       "finished_at": "2026-11-18T23:44:51+00:00",
       "bundle_id": "com.example.mailern",
       "ipa_sha256": "afe7e55acaae8dd6164720bc26b902c2e7cbb5219122a781f966d539c579fe50"
+    },
+    {
+      "source_revision": "e1421d4da9ad00b3d2a4600019365a4414111749",
+      "branch": "feat/local-mail-reminders",
+      "uncommitted_changes": false,
+      "source_digest": "14a338b19af3e62c32d0cf571bee16b7fbca20d4dadae83015a9acdfd177c51e",
+      "build": 52,
+      "version": "0.7.0",
+      "status": "reserved",
+      "created_at": "2026-11-18T23:49:07+00:00"
     }
   ]
 }
