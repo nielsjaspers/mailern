@@ -338,10 +338,9 @@ private struct MessageSection: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
             // The avatar folds the message too, so the fold target spans the header's height, as it did before.
-            if let fold {
-                Button(action: fold) { SenderAvatar(message: message, size: 36) }
-                    .buttonStyle(.plain).accessibilityHidden(true)
-            } else { SenderAvatar(message: message, size: 36) }
+            // It is a plain tap: VoiceOver already has the sender line's button for the same action.
+            SenderAvatar(message: message, size: 36)
+                .onTapGesture { fold?() }
             VStack(alignment: .leading, spacing: 4) {
                 Group {
                     if let fold {
