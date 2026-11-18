@@ -616,6 +616,8 @@ final class SenderBlockingUITests: MailernUITestCase {
         app.buttons["Move to Junk"].tap()
         XCTAssertTrue(app.navigationBars["Casey Rivera"].existsOrWait(timeout: 5))
         XCTAssertTrue(app.staticTexts["Junk"].exists)
+        // XCTest can find Undo before the closing native menu stops intercepting taps.
+        RunLoop.current.run(until: .now.addingTimeInterval(1))
         app.buttons["Undo"].tap()
         XCTAssertTrue(app.staticTexts["Inbox"].existsOrWait(timeout: 5))
         app.navigationBars.buttons.firstMatch.tap()
