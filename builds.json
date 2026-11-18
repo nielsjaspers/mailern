@@ -71,8 +71,12 @@
       "source_digest": "5eadc4a943936ab5a97b7ff36c582c08c4d2e0d495ad5730779469ca154b15bb",
       "build": 41,
       "version": "0.6.5",
-      "status": "reserved",
-      "created_at": "2026-11-18T20:17:11+00:00"
+      "status": "exported",
+      "created_at": "2026-11-18T20:17:11+00:00",
+      "repository": "nielsjaspers/mailern",
+      "finished_at": "2026-11-18T20:17:24+00:00",
+      "bundle_id": "com.example.mailern",
+      "ipa_sha256": "78027c01a22e2ed14af71cd847dad7ac669ec24c68b77958d919f305a17309cf"
     }
   ]
 }
