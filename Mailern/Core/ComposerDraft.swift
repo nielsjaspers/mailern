@@ -447,6 +447,7 @@ final class DraftStore {
         } catch { self.error = "Could not save drafts. \(error.localizedDescription)"; return false }
     }
     private func failedToLoad(_ error: any Error, report: Bool = true) {
+        needsMailRecovery = true
         loadFailure = "Could not load drafts. Existing storage has not been changed. \(error.localizedDescription)"
         if report { self.error = loadFailure }
     }
