@@ -1324,8 +1324,19 @@ import SQLite3
         assert(MailStore(persistence: SQLitePersistence(url: url)).conversations == store.conversations)
         assert(sqlite3_exec(db, "DROP TRIGGER reject_delete", nil, nil, nil) == SQLITE_OK)
         let fullDisk = DraftStore(url: draftURL, mail: store, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
-        let deleted = await fullDisk.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, from: .trash, discarding: $0) }
-        assert(deleted && fullDisk.all.isEmpty && fullDisk.error != nil)
+        let refusedDraftWrite = await fullDisk.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, from: .trash, discarding: $0) }
+        assert(!refusedDraftWrite && fullDisk.all.count == 2 && store.discardedDraftIDs.isEmpty)
+        let held = draftURL.appendingPathExtension("held")
+        let deleted = await drafts.discardDrafts(for: ids, scheduled: true) { removed in
+            guard store.deletePermanently(ids, from: .trash, discarding: removed) else { return false }
+            // Temporarily put a directory at the destination so the final file rename fails.
+            try! FileManager.default.moveItem(at: draftURL, to: held)
+            try! FileManager.default.createDirectory(at: draftURL, withIntermediateDirectories: false)
+            return true
+        }
+        assert(deleted && drafts.all.isEmpty && drafts.error != nil)
+        try FileManager.default.removeItem(at: draftURL)
+        try FileManager.default.moveItem(at: held, to: draftURL)
         assert(DraftStore(url: draftURL).all.count == 2 && store.discardedDraftIDs == [reply.id, later.id])
         let reopenedMail = MailStore(persistence: SQLitePersistence(url: url))
         let recovered = DraftStore(url: draftURL, mail: reopenedMail)

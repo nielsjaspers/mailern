@@ -334,6 +334,7 @@ final class MailStore {
             let conversation = conversations[index]
             return conversation.workflow == .snoozed && conversation.snoozedUntil.map { $0 <= now } == true
         }
+        if due.isEmpty { nextExpiryRetry = nil }
         if !due.isEmpty, nextExpiryRetry.map({ $0 <= now }) ?? true {
             var updated = conversations
             for i in due {

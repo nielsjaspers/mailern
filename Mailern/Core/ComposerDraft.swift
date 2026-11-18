@@ -245,10 +245,28 @@ final class DraftStore {
             let standalone = self.drafts.contains { removed.contains($0.id) && ids.contains($0.id) }
             let remaining = self.all.filter { !removed.contains($0.id) }
             if let committingMail {
+                let url = self.url
+                let write = self.write
+                let staged: URL
+                do {
+                    staged = try await Task.detached(priority: .utility) {
+                        try AttachmentJSON.stageRemoval(remaining, at: url, write: write)
+                    }.value
+                } catch {
+                    self.error = "Could not save drafts. \(error.localizedDescription)"
+                    return false
+                }
+                defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
                 guard committingMail(removed) else { return false }
                 self.all = remaining
-                // The mail transaction already discarded these IDs. A failed cleanup can be retried independently.
-                _ = await self.persist(remaining)
+                do {
+                    try AttachmentJSON.installRemoval(staged, at: url)
+                    self.mail?.finishDraftDiscards()
+                    self.error = nil
+                    await Task.detached { AttachmentJSON.removeUnusedPayloads(for: url, as: [ComposerDraft].self) }.value
+                } catch {
+                    self.error = "Mail was updated. Retry draft cleanup. \(error.localizedDescription)"
+                }
             } else {
                 guard await self.persist(remaining) else { return false }
             }
