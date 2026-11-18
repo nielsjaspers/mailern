@@ -75,7 +75,8 @@ final class SQLitePersistence: ConversationPersistence {
                     INSERT INTO conversations (id, position, payload) VALUES (?, ?, ?)
                     ON CONFLICT (id) DO UPDATE SET payload = excluded.payload
                     """, [id, .integer(positions[conversation.id]!), .blob(encoder.encode(conversation))])
-                try run(db, "DELETE FROM search WHERE id = ?", [id])
+                // FTS does not index the ID column. Scan it only when replacing an existing entry.
+                if old[conversation.id] != nil { try run(db, "DELETE FROM search WHERE id = ?", [id]) }
                 try run(db, "INSERT INTO search (id, content) VALUES (?, ?)", [id, .text(Self.folded(conversation.searchText))])
             }
             if previous?.accounts != data.accounts {
