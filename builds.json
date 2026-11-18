@@ -63,6 +63,16 @@
       "finished_at": "2026-11-18T11:37:17+00:00",
       "bundle_id": "com.example.mailern",
       "ipa_sha256": "ad6ab56f56ac0920cade96a650cfa9af275938cd2b21fb4f0b2d3a862681e458"
+    },
+    {
+      "source_revision": "9519d825c6acff75cea4c9ab7e7e183be0472f96",
+      "branch": "feat/explicit-sender-blocking",
+      "uncommitted_changes": false,
+      "source_digest": "5eadc4a943936ab5a97b7ff36c582c08c4d2e0d495ad5730779469ca154b15bb",
+      "build": 41,
+      "version": "0.6.5",
+      "status": "reserved",
+      "created_at": "2026-11-18T20:17:11+00:00"
     }
   ]
 }
