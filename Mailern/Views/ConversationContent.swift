@@ -323,7 +323,11 @@ private struct MessageSection: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
-            SenderAvatar(message: message, size: 36)
+            // The avatar folds the message too, so the fold target spans the header's height, as it did before.
+            if let fold {
+                Button(action: fold) { SenderAvatar(message: message, size: 36) }
+                    .buttonStyle(.plain).accessibilityHidden(true)
+            } else { SenderAvatar(message: message, size: 36) }
             VStack(alignment: .leading, spacing: 4) {
                 Group {
                     if let fold {
