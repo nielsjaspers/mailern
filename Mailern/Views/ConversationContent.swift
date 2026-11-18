@@ -85,73 +85,73 @@ struct ConversationContent: View {
         var id: String {
             switch self { case .message(let message): message.id.uuidString; case .middle: "middle" }
         }
-    }
-    /// Folded messages, and the row for hidden ones, share one grouped surface. An open message sits between
-    /// those groups on the page itself, so its HTML can use the full width.
-    private enum Segment: Identifiable {
-        case folded([Item]), open(MailMessage)
-        var id: String {
-            switch self { case .folded(let items): "folded-\(items[0].id)"; case .open(let message): message.id.uuidString }
+        /// What scrolling targets: a message's own ID, as the thread scrolls to messages by it.
+        var anchor: AnyHashable {
+            switch self { case .message(let message): message.id; case .middle: "middle" }
         }
     }
-    private var segments: [Segment] {
+    private var items: [Item] {
         let messages = conversation.messages
-        let items = showsMiddle || messages.count <= Self.foldAfter
+        return showsMiddle || messages.count <= Self.foldAfter
             ? messages.map(Item.message)
             : [.message(messages[0]), .middle(count: messages.count - 3)] + messages.suffix(2).map(Item.message)
-        var segments: [Segment] = []
-        for item in items {
-            if case .message(let message) = item, isExpanded(message) {
-                segments.append(.open(message))
-            } else if case .folded(let group) = segments.last {
-                segments[segments.count - 1] = .folded(group + [item])
-            } else {
-                segments.append(.folded([item]))
-            }
-        }
-        return segments
+    }
+    private func isFolded(_ item: Item) -> Bool {
+        if case .message(let message) = item { return !isExpanded(message) }
+        return true
     }
     private func toggle(_ message: MailMessage) {
-        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { _ = toggled.formSymmetricDifference([message.id]) }
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) { _ = toggled.formSymmetricDifference([message.id]) }
     }
 
+    /// Every message keeps one view, folded or open, so a toggle animates in place. Folded rows draw their part of one
+    /// rounded group: a row rounds its corners only where its neighbor is open. An open message sits on the page itself,
+    /// so its HTML can use the full width.
     private var thread: some View {
-        let segments = segments
-        return VStack(spacing: 12) {
-            ForEach(Array(segments.enumerated()), id: \.element.id) { index, segment in
-                switch segment {
-                case .folded(let items):
-                    VStack(spacing: 0) {
-                        ForEach(Array(items.enumerated()), id: \.element.id) { row, item in
-                            if row > 0 { Divider().padding(.leading, 60) }
-                            switch item {
-                            case .message(let message):
-                                FoldedMessageRow(message: message) { toggle(message) }
-                                    .id(message.id)
-                            case .middle(let count):
-                                Button { withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { showsMiddle = true } } label: {
-                                    Label("\(count) earlier messages", systemImage: "rectangle.stack")
-                                        .font(.subheadline.weight(.medium)).foregroundStyle(.tint)
-                                        .frame(maxWidth: .infinity).padding(.vertical, 12)
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityHint("Shows every message in the conversation")
-                            }
+        let items = items
+        return VStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                let folded = isFolded(item)
+                let joinsAbove = folded && index > 0 && isFolded(items[index - 1])
+                let joinsBelow = folded && index < items.count - 1 && isFolded(items[index + 1])
+                let follows = index > 0 && !joinsAbove
+                Group {
+                    switch item {
+                    case .message(let message):
+                        MessageRow(
+                            message: message, conversationID: conversation.id, threadSubject: conversation.subject,
+                            quoteStart: conversation.quoteStart(of: message), answered: conversation.answered(by: message),
+                            ownAddresses: ownAddresses, margin: margin, expanded: !folded,
+                            toggle: conversation.messages.count > 1 ? { toggle(message) } : nil,
+                            compose: compose.map { compose in { compose($0, message.id) } }
+                        )
+                    case .middle(let count):
+                        Button { withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) { showsMiddle = true } } label: {
+                            Label("\(count) earlier messages", systemImage: "rectangle.stack")
+                                .font(.subheadline.weight(.medium)).foregroundStyle(.tint)
+                                .frame(maxWidth: .infinity).padding(.vertical, 12)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Shows every message in the conversation")
                     }
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .padding(.horizontal, 16)
-                case .open(let message):
-                    if index > 0, case .open = segments[index - 1] { Divider().padding(.horizontal, margin) }
-                    MessageSection(
-                        message: message, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: message), answered: conversation.answered(by: message),
-                        ownAddresses: ownAddresses, margin: margin,
-                        fold: conversation.messages.count > 1 ? { toggle(message) } : nil,
-                        compose: compose.map { compose in { compose($0, message.id) } }
-                    )
-                    .id(message.id)
                 }
+                // A row reveals its content as it grows, so new text never shows over the rows still moving below it.
+                .clipped()
+                .overlay(alignment: .top) {
+                    if joinsAbove { Divider().padding(.leading, 60) }
+                    // Two open messages in a row get a hairline between them instead of a group.
+                    else if !folded, index > 0, !isFolded(items[index - 1]) { Divider().padding(.horizontal, margin) }
+                }
+                .background(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: joinsAbove ? 0 : 20, bottomLeadingRadius: joinsBelow ? 0 : 20,
+                        bottomTrailingRadius: joinsBelow ? 0 : 20, topTrailingRadius: joinsAbove ? 0 : 20, style: .continuous
+                    ).fill(Color(uiColor: .secondarySystemBackground).opacity(folded ? 1 : 0))
+                )
+                .padding(.horizontal, folded ? 16 : 0)
+                .padding(.top, follows ? 12 : 0)
+                .id(item.anchor)
             }
         }
     }
@@ -160,7 +160,7 @@ struct ConversationContent: View {
     // per-message actions. Every message is open, newest first: the peek opens on the
     // new message, and scrolling down reads back through the thread.
     @ViewBuilder private var preview: some View {
-        MessageSection(message: latest, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: latest), answered: conversation.answered(by: latest),
+        MessageRow(message: latest, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: latest), answered: conversation.answered(by: latest),
                        ownAddresses: ownAddresses, margin: margin, isPreview: true)
         if !earlier.isEmpty {
             Text("Earlier messages").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
@@ -168,7 +168,7 @@ struct ConversationContent: View {
                 .padding(.horizontal, margin)
             ForEach(earlier.reversed()) { message in
                 Divider().padding(.horizontal, margin)
-                MessageSection(message: message, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: message), answered: conversation.answered(by: message),
+                MessageRow(message: message, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: message), answered: conversation.answered(by: message),
                                ownAddresses: ownAddresses, margin: margin, isPreview: true)
             }
         }
@@ -176,49 +176,9 @@ struct ConversationContent: View {
 
 }
 
-/// A folded message: who wrote it, when, and the first line of what they wrote.
-private struct FoldedMessageRow: View {
-    let message: MailMessage
-    let expand: () -> Void
-    private var firstLine: String {
-        message.body.split(whereSeparator: \.isNewline).lazy
-            .map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? ""
-    }
-
-    var body: some View {
-        Button(action: expand) {
-            HStack(alignment: .top, spacing: 12) {
-                SenderAvatar(message: message, size: 32)
-                VStack(alignment: .leading, spacing: 2) {
-                    // At large text sizes the date moves below the sender instead of squeezing it.
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .firstTextBaseline) { sender; Spacer(minLength: 8); stamp }
-                        VStack(alignment: .leading, spacing: 2) { sender; stamp }
-                    }
-                    Text(firstLine).font(.footnote).lineLimit(1)
-                }
-                .font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 16).padding(.vertical, 12)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint("Expands the message")
-    }
-    private var sender: some View {
-        Text(message.sender).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
-    }
-    private var stamp: some View {
-        HStack(spacing: 4) {
-            if message.attachments?.isEmpty == false {
-                Image(systemName: "paperclip").accessibilityLabel("Attachments")
-            }
-            Text(message.date.mailboxStamp)
-        }.fixedSize()
-    }
-}
-
-private struct MessageSection: View {
+/// One message in a thread or a peek. Folded, it shows who wrote it, when, and its first line. Open, it shows the
+/// recipients, the reply controls, and the whole message.
+private struct MessageRow: View {
     @Environment(\.dynamicTypeSize) private var textSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let message: MailMessage
@@ -232,17 +192,43 @@ private struct MessageSection: View {
     let margin: CGFloat
     /// A peek opens the conversation on any tap, so its HTML takes no touches and nothing folds or unfolds.
     var isPreview = false
-    /// Nil when the message cannot fold: a single-message thread or a peek.
-    var fold: (() -> Void)?
+    var expanded = true
+    /// Folds or opens the message. Nil when it cannot fold: a single-message thread or a peek.
+    var toggle: (() -> Void)?
     /// Nil hides the reply controls.
     var compose: ((ComposeMode) -> Void)?
     @State private var showsDetails = false
     @State private var showsQuote = false
     private var richText: NSAttributedString? { message.richText.map { RichText.decode($0, fallback: message.body) } }
 
+    private var foldedSummary: String {
+        [message.sender, message.date.mailboxStamp, message.attachments?.isEmpty == false ? "Attachments" : nil, firstLine]
+            .compactMap { $0 }.joined(separator: ", ")
+    }
+    private var firstLine: String {
+        message.body.split(whereSeparator: \.isNewline).lazy
+            .map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? ""
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            header.padding(.horizontal, margin)
+            header.padding(.horizontal, expanded ? margin : 16)
+            if expanded { content.transition(.opacity) }
+        }
+        .padding(.vertical, expanded ? 14 : 12)
+        .contentShape(Rectangle())
+        // A folded message opens on a tap anywhere and reads as one button. Open, the tap is off, so links,
+        // selection, and controls in the message keep their own taps.
+        .gesture(TapGesture().onEnded { toggle?() }, including: expanded ? .subviews : .all)
+        // Folded, the row is one button that leaves out its own sender button. Open, its controls are separate elements.
+        .accessibilityElement(children: expanded ? .contain : .ignore)
+        .accessibilityLabel(expanded ? "" : foldedSummary)
+        .accessibilityAddTraits(expanded ? [] : .isButton)
+        .accessibilityHint(expanded ? Text(verbatim: "") : Text("Expands the message"))
+        .accessibilityAction { if !expanded { toggle?() } }
+    }
+
+    @ViewBuilder private var content: some View {
             if showsDetails { details.padding(.horizontal, margin) }
             if let subject = message.subject,
                subject != threadSubject, subject.caseInsensitiveCompare("Re: \(threadSubject)") != .orderedSame {
@@ -278,8 +264,6 @@ private struct MessageSection: View {
             if let attachments = message.attachments, !attachments.isEmpty {
                 AttachmentList(attachments: attachments).padding(.horizontal, margin)
             }
-        }
-        .padding(.vertical, 14)
     }
 
     private func messageText(_ text: NSAttributedString?) -> some View {
@@ -330,44 +314,53 @@ private struct MessageSection: View {
         return "to \(names.prefix(2).joined(separator: ", ")) +\(names.count - 2)"
     }
     private var date: some View {
-        Text(Calendar.current.isDateInToday(message.date)
-             ? message.date.mailboxStamp
-             : message.date.formatted(.dateTime.month(.abbreviated).day().hour().minute())).fixedSize()
+        HStack(spacing: 4) {
+            if !expanded, message.attachments?.isEmpty == false {
+                Image(systemName: "paperclip").accessibilityLabel("Attachments")
+            }
+            Text(expanded && !Calendar.current.isDateInToday(message.date)
+                 ? message.date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+                 : message.date.mailboxStamp)
+        }.fixedSize()
     }
 
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
-            // The avatar folds the message too, so the fold target spans the header's height, as it did before.
-            // It is a plain tap: VoiceOver already has the sender line's button for the same action.
-            SenderAvatar(message: message, size: 36)
-                .onTapGesture { fold?() }
-            VStack(alignment: .leading, spacing: 4) {
-                Group {
-                    if let fold {
-                        Button(action: fold) { nameLine }
-                            .buttonStyle(.plain)
-                            .accessibilityHint("Collapses the message")
-                    } else { nameLine }
-                }
-                // At accessibility sizes the reply controls get their own line, so the recipients keep the full width.
-                let layout = textSize.isAccessibilitySize
-                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(alignment: .center))
-                layout {
-                    Group {
-                        if isPreview { recipientsLabel } else {
-                            Button {
-                                withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { showsDetails.toggle() }
-                            } label: {
-                                // The caption stays compact, but the free width beside the reply controls, at their height, takes the tap.
-                                recipientsLabel.frame(maxWidth: .infinity, minHeight: 36, alignment: .leading).contentShape(Rectangle())
+            // The avatar folds an open message too. It is a plain tap: VoiceOver has the sender line's button.
+            SenderAvatar(message: message, size: expanded ? 36 : 32)
+                .onTapGesture { toggle?() }
+            VStack(alignment: .leading, spacing: expanded ? 4 : 2) {
+                // One view in both states, so the sender line keeps its identity while toggling. Open, it folds the
+                // message and acts as a button. Folded, the whole row is the button.
+                nameLine
+                    .gesture(TapGesture().onEnded { toggle?() }, including: expanded && toggle != nil ? .all : .subviews)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(expanded && toggle != nil ? .isButton : [])
+                    .accessibilityHint(expanded && toggle != nil ? Text("Collapses the message") : Text(verbatim: ""))
+                if expanded {
+                    // At accessibility sizes the reply controls get their own line, so the recipients keep the full width.
+                    let layout = textSize.isAccessibilitySize
+                        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(alignment: .center))
+                    layout {
+                        Group {
+                            if isPreview { recipientsLabel } else {
+                                Button {
+                                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { showsDetails.toggle() }
+                                } label: {
+                                    // The caption stays compact, but the free width beside the reply controls, at their height, takes the tap.
+                                    recipientsLabel.frame(maxWidth: .infinity, minHeight: 36, alignment: .leading).contentShape(Rectangle())
+                                }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel(recipients)
+                                    .accessibilityHint(showsDetails ? "Hides the addresses" : "Shows the addresses")
                             }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(recipients)
-                                .accessibilityHint(showsDetails ? "Hides the addresses" : "Shows the addresses")
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        controls
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    controls
+                    .transition(.opacity)
+                } else {
+                    Text(firstLine).font(.footnote).lineLimit(1).transition(.opacity)
                 }
             }
             .font(.caption).foregroundStyle(.secondary)
@@ -389,8 +382,9 @@ private struct MessageSection: View {
         Text(message.sender).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
     }
     @ViewBuilder private var foldIndicator: some View {
-        if fold != nil {
-            Image(systemName: "chevron.up").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+        if toggle != nil {
+            Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(expanded ? 180 : 0))
                 .accessibilityHidden(true)
         }
     }
