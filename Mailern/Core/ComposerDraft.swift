@@ -327,6 +327,9 @@ final class DraftStore {
             return await self.persist(updated)
         }
     }
+    func finishPendingWrites() async {
+        _ = await pending?.value
+    }
     private func updateMailbox(ids: Set<UUID>, change: @escaping (inout ComposerDraft) -> Void) async -> Bool {
         await enqueue {
             var updated = self.all

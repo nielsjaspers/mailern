@@ -1129,14 +1129,19 @@ import SQLite3
             return await store.delete(first.id)
         }
         while !deleteStarted { await Task.yield() }
+        let drained = Task {
+            await store.finishPendingWrites()
+            return DraftStore(url: url).drafts.map(\.id)
+        }
         gate.release.signal()
+        let reopened = await drained.value
         let firstSaved = await savingFirst.value
         let secondSaved = await savingSecond.value
         let deleted = await deletingFirst.value
         assert(firstSaved && secondSaved && deleted)
         assert(store.drafts.map(\.id) == [second.id])
-        assert(DraftStore(url: url).drafts.map(\.id) == [second.id])
-        print("PASS: background writes, cancelled-save completion, cross-draft ordering, and ordered deletion")
+        assert(reopened == [second.id] && DraftStore(url: url).drafts.map(\.id) == [second.id])
+        print("PASS: background writes, cancelled-save completion, cross-draft ordering, deletion, and reopening after a drain")
     }
 
     @MainActor static func checkAttachmentStorage() async throws {

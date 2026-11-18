@@ -5,7 +5,7 @@ import CoreFoundation
 
 @main
 struct MailernApp: App {
-    @State private var mailbox = MailboxSession(benchmark: TestStorage.selectedBenchmark)
+    @State private var mailboxes = MailboxSessions()
 
     #if DEBUG
     init() {
@@ -13,7 +13,7 @@ struct MailernApp: App {
     }
     #endif
 
-    @MainActor private struct MailboxSession: Identifiable {
+    @MainActor fileprivate struct MailboxSession: Identifiable {
         let id = UUID()
         let benchmark: BenchmarkMailbox?
         let store: MailStore
@@ -25,7 +25,7 @@ struct MailernApp: App {
             self.benchmark = benchmark
             defaults = TestStorage.preferences(for: benchmark)
             snoozePreferences = SnoozePreferences(defaults: defaults)
-            store = MailStore(persistence: SQLitePersistence(url: TestStorage.mailURL(for: benchmark)))
+            store = MailStore(persistence: SQLitePersistence(url: TestStorage.mailURL(for: benchmark), requiresSeed: benchmark != nil))
             drafts = makeDrafts(url: TestStorage.directory(for: benchmark).appending(path: "drafts-v1.json"))
             #if DEBUG
             if benchmark == nil, TestStorage.isTestSession {
@@ -59,46 +59,67 @@ struct MailernApp: App {
             try data.write(to: url, options: .atomic)
         })
     }
-    private func selectBenchmark(_ benchmark: BenchmarkMailbox?) async throws {
-        let previous = mailbox.id
-        if let benchmark {
-            let url = TestStorage.mailURL(for: benchmark)
-            try await Task.detached(priority: .userInitiated) {
-                try SQLitePersistence(url: url).seedIfNeeded { benchmark.makeMail() }
-            }.value
+    @MainActor @Observable fileprivate final class MailboxSessions {
+        let id = UUID()
+        private let demo = MailboxSession(benchmark: nil)
+        private var fixture = TestStorage.selectedBenchmark.map { MailboxSession(benchmark: $0) }
+        @ObservationIgnored private var dueWork: Task<Void, Never>?
+        @ObservationIgnored private var switching = false
+        var active: MailboxSession { fixture ?? demo }
+
+        func select(_ benchmark: BenchmarkMailbox?) async throws {
+            guard !switching, benchmark != active.benchmark else { return }
+            if let benchmark {
+                let url = TestStorage.mailURL(for: benchmark)
+                try await Task.detached(priority: .userInitiated) {
+                    try SQLitePersistence(url: url).seedIfNeeded { benchmark.makeMail() }
+                }.value
+            }
+            // Stop the timer from starting another operation on the outgoing fixture while it drains.
+            switching = true
+            defer { switching = false }
+            await dueWork?.value
+            await fixture?.drafts.finishPendingWrites()
+            try Task.checkCancellation()
+            let next = benchmark.map { MailboxSession(benchmark: $0) }
+            if let store = next?.store, store.needsReload {
+                throw SQLitePersistence.Failure(message: store.error ?? "The large mailbox could not be loaded.")
+            }
+            TestStorage.selectedBenchmark = benchmark
+            fixture = next
         }
-        try Task.checkCancellation()
-        guard mailbox.id == previous else { return }
-        let next = MailboxSession(benchmark: benchmark)
-        if benchmark != nil, next.store.needsReload {
-            throw SQLitePersistence.Failure(message: next.store.error ?? "The large mailbox could not be loaded.")
+
+        func processDue() async {
+            guard !switching, dueWork == nil else { return }
+            let sessions = [demo] + (fixture.map { [$0] } ?? [])
+            let work = Task {
+                for session in sessions {
+                    session.store.wakeDue()
+                    await session.drafts.wakeDue()
+                    await session.drafts.sendDue(through: session.store)
+                }
+            }
+            dueWork = work
+            await work.value
+            dueWork = nil
         }
-        TestStorage.selectedBenchmark = benchmark
-        mailbox = next
     }
 
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup {
-            // Capture both stores together. A due-send task can outlive the screen that started it.
-            let session = mailbox
-            MailboxView(benchmark: session.benchmark, selectBenchmark: selectBenchmark)
+            let sessions = mailboxes
+            let session = sessions.active
+            MailboxView(benchmark: session.benchmark, selectBenchmark: sessions.select)
                 .environment(session.store).environment(session.drafts).environment(session.snoozePreferences).tint(.teal)
                 .defaultAppStorage(session.defaults)
+                .id(session.id)
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active {
-                        session.store.wakeDue()
-                        Task {
-                            await session.drafts.wakeDue()
-                            await session.drafts.sendDue(through: session.store)
-                        }
-                    }
+                    if phase == .active { Task { await sessions.processDue() } }
                 }
-                .task {
+                .task(id: sessions.id) {
                     while !Task.isCancelled {
-                        session.store.wakeDue()
-                        await session.drafts.wakeDue()
-                        await session.drafts.sendDue(through: session.store)
+                        await sessions.processDue()
                         try? await Task.sleep(for: .seconds(1))
                     }
                 }
@@ -107,12 +128,11 @@ struct MailernApp: App {
                     TestStorage.observeReset { environment in
                         TestStorage.environment = environment
                         TestStorage.applyAnimationSetting()
-                        mailbox = MailboxSession(benchmark: TestStorage.selectedBenchmark)
+                        mailboxes = MailboxSessions()
                     }
                     TestStorage.acknowledge()
                 }
                 #endif
-                .id(session.id)
         }
     }
 }

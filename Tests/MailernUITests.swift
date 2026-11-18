@@ -595,6 +595,18 @@ final class BenchmarkMailboxUITests: MailernUITestCase {
             app.buttons["Demo"].tap()
             XCTAssertTrue(app.navigationBars["Demo"].existsOrWait(timeout: 5))
         }
+        func openSettings() {
+            app.buttons["More"].tap()
+            app.buttons["Settings"].tap()
+            XCTAssertTrue(app.navigationBars["Settings"].existsOrWait(timeout: 5))
+        }
+        let afterSettling = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "After settling")).firstMatch
+        openSettings()
+        afterSettling.tap()
+        app.buttons["Open next conversation"].tap()
+        XCTAssertTrue(app.buttons["After settling, Open next conversation"].existsOrWait(timeout: 5))
+        app.buttons["Done"].tap()
+
         openDemo()
         app.buttons["Receive a new email"].tap()
         let demoMail = row("Coffee this week?", in: app)
@@ -624,6 +636,9 @@ final class BenchmarkMailboxUITests: MailernUITestCase {
 
         app.launch()
         XCTAssertTrue(generatedMail.waitForExistence(timeout: 15))
+        openSettings()
+        XCTAssertTrue(app.buttons["After settling, Return to list"].existsOrWait(timeout: 5))
+        app.buttons["Done"].tap()
         openDemo()
         XCTAssertFalse(app.buttons["benchmark-10000"].isEnabled)
         app.buttons["Return to Demo Mail"].tap()
@@ -635,6 +650,9 @@ final class BenchmarkMailboxUITests: MailernUITestCase {
         XCTAssertTrue(demoMail.existsOrWait(timeout: 10))
         XCTAssertTrue(demoDraft.exists)
         XCTAssertFalse(generatedMail.exists)
+        openSettings()
+        XCTAssertTrue(app.buttons["After settling, Open next conversation"].existsOrWait(timeout: 5))
+        app.buttons["Done"].tap()
     }
 }
 
