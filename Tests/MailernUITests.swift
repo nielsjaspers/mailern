@@ -13,6 +13,9 @@ final class TestApplication: XCUIApplication {
     private static var observing = false
     private static var acknowledge: (() -> Void)?
 
+    /// A failed case can stop with a sheet still open, which a fixture reset does not close.
+    static func discardProcessAfterFailure() { processReusable = false }
+
     override func launch() {
         // Reapply this after tests replace launchEnvironment to clear fault injection.
         launchEnvironment["MAILERN_TEST_SESSION"] = session
@@ -605,6 +608,9 @@ final class LongThreadScrollsToLatestMessageUITests: MailernUITestCase {
         app.launch()
         let subject = "Dinner on Saturday?"
         row(subject, in: app).tap()
+        // Thread actions replace the mailbox tabs while reading.
+        XCTAssertTrue(app.buttons["More actions"].existsOrWait(timeout: 5))
+        XCTAssertFalse(app.tabBars.buttons["Inbox"].isHittable)
         let caseyReplies = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera"))
         XCTAssertTrue(caseyReplies.firstMatch.existsOrWait(timeout: 5))
         // The first message and the last two show. One row holds the fifteen between them.
@@ -631,6 +637,7 @@ final class LongThreadScrollsToLatestMessageUITests: MailernUITestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
         XCTAssertTrue(caseyReplies.element(boundBy: caseyReplies.count - 1).isHittable)
         app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Inbox"].isHittable)
         row(subject, in: app).tap()
         // A reopened thread folds its middle again and opens on the latest message.
         XCTAssertTrue(app.buttons["16 earlier messages"].existsOrWait(timeout: 5))
@@ -913,6 +920,7 @@ final class PeekMenuResizeAndTapsUITests: MailernUITestCase {
         peek(subject, in: app)
         let card = preview(in: app)
         let compactHeight = card.frame.height
+        // Without animations the card can settle a few points off compact; the tall card is 100+ points taller.
         XCTAssertLessThan(compactHeight, app.frame.height * 0.7)
         for title in ["Mark read", "Settle", "Snooze", "Unpin"] {
             XCTAssertTrue(app.frame.contains(app.buttons[title].frame))
@@ -933,18 +941,17 @@ final class PeekMenuResizeAndTapsUITests: MailernUITestCase {
         waitForAbsence(app.navigationBars["Re: \(subject)"])
         expectReadStatus(subject, in: app)
         peek(subject, in: app)
-        XCTAssertEqual(card.frame.height, compactHeight, accuracy: 3)
+        XCTAssertEqual(card.frame.height, compactHeight, accuracy: 20)
         XCTAssertFalse(app.navigationBars["Re: \(subject)"].exists)
         expectReadStatus(subject, in: app)
         card.swipeUp()
-        XCTAssertEqual(card.frame.height, compactHeight, accuracy: 3)
+        XCTAssertEqual(card.frame.height, compactHeight, accuracy: 20)
         expectReadStatus(subject, in: app)
 
         dragMenu(280, in: app)
         XCTAssertGreaterThan(card.frame.height, compactHeight + 100)
         expectReadStatus(subject, in: app)
         dragMenu(-280, in: app)
-        // Without animations the card can settle a few points off; the tall card is 100+ points taller.
         XCTAssertEqual(card.frame.height, compactHeight, accuracy: 20)
         app.buttons["Mark read"].tap()
         waitForAbsence(preview(in: app))
@@ -958,6 +965,7 @@ class MailernUITestCase: XCTestCase {
         let recordedIssue: XCTIssue
         if Thread.isMainThread {
             recordedIssue = MainActor.assumeIsolated {
+                TestApplication.discardProcessAfterFailure()
                 let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
                 attachment.name = "Failure state"
                 attachment.lifetime = .deleteOnSuccess
@@ -971,6 +979,7 @@ class MailernUITestCase: XCTestCase {
             }
         } else {
             recordedIssue = issue
+            Task { @MainActor in TestApplication.discardProcessAfterFailure() }
         }
         super.record(recordedIssue)
     }

@@ -20,6 +20,24 @@ def run(*args, **kwargs):
     return subprocess.run(args, text=True, check=True, **kwargs)
 
 
+def run_group(*args, timeout, **kwargs):
+    """Run an Xcode phase in its own process group, so a timeout or Ctrl-C also stops its compilers and runners."""
+    child = subprocess.Popen(args, text=True, start_new_session=True, **kwargs)
+    try:
+        return child.wait(timeout=timeout)
+    except BaseException:
+        for sig, grace in [(signal.SIGTERM, 10), (signal.SIGKILL, None)]:
+            try:
+                os.killpg(child.pid, sig)
+                child.wait(timeout=grace)
+                break
+            except ProcessLookupError:
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        raise
+
+
 def output(*args, timeout=120):
     return run(*args, stdout=subprocess.PIPE, timeout=timeout).stdout.strip()
 
@@ -42,15 +60,18 @@ def shutdown(simulator):
         except subprocess.TimeoutExpired:
             pass
         try:
-            running = state(simulator) not in (None, "Shutdown")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            running = True
-        if running:
+            current = state(simulator)
+        except Exception:
+            current = "unknown"
+        running = current not in (None, "Shutdown")
+        if current is None:
+            print(f"Simulator not found: {simulator}", file=sys.stderr, flush=True)
+        elif running:
             print(f"Simulator {simulator} may still be running. Run scripts/check-ui.sh {simulator} --stop.",
                   file=sys.stderr, flush=True)
         else:
             print("Simulator shut down", flush=True)
-        return not running
+        return current == "Shutdown"
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
@@ -110,8 +131,6 @@ def main():
         # Recovery must not depend on listing devices first.
         with lock(simulator_lock, "Simulator"):
             return 0 if shutdown(simulator) else 1
-    if state(simulator) is None:
-        parser.error(f"Simulator not found: {simulator}")
     selectors = args.only_testing or ["MailernUITests", "MailernTests"]
     expected = selected(selectors)
 
@@ -123,12 +142,16 @@ def main():
     with lock(derived / ".run.lock", "build products"), lock(simulator_lock, "Simulator"):
         succeeded = False
         try:
+            initial = state(simulator)
+            if initial is None:
+                raise RuntimeError(f"Simulator not found: {simulator}")
             # Boot while the build runs; bootstatus waits for it later.
-            if state(simulator) == "Shutdown":
+            if initial == "Shutdown":
                 run("xcrun", "simctl", "boot", simulator, timeout=120)
-            run("xcodebuild", "-quiet", "-project", "Mailern.xcodeproj", "-scheme", "Mailern",
-                "-destination", f"id={simulator}", "-derivedDataPath", derived, "ONLY_ACTIVE_ARCH=YES", "build-for-testing",
-                timeout=1800)
+            build = ["xcodebuild", "-quiet", "-project", "Mailern.xcodeproj", "-scheme", "Mailern", "-destination",
+                     f"id={simulator}", "-derivedDataPath", str(derived), "ONLY_ACTIVE_ARCH=YES", "build-for-testing"]
+            if run_group(*build, timeout=1800):
+                raise RuntimeError("Build failed")
             # Active-architecture builds can leave older test runs for other architectures.
             test_run = max(products.glob("Mailern_*.xctestrun"), key=lambda path: path.stat().st_mtime_ns, default=None)
             if test_run is None:
@@ -167,19 +190,22 @@ def main():
             print(f"Setup: {time.monotonic() - started:.0f}s. Testing, log in {log}", flush=True)
             # XCTest limits each case once it runs. This bounds a stall before or between cases.
             with open(log, "w") as out:
-                completed = subprocess.run(
-                    ["xcodebuild", "-xctestrun", str(patched), "-destination", f"id={simulator}",
-                     "-resultBundlePath", result, "test-without-building", "-parallel-testing-enabled", "NO",
-                     # A hung case fails on its own instead of stalling the serial run.
-                     "-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", "120",
-                     "-maximum-test-execution-time-allowance", "180",
-                     *(f"-only-testing:{test}" for test in selectors)],
-                    stdout=out, stderr=subprocess.STDOUT, timeout=600)
+                try:
+                    code = run_group(
+                        "xcodebuild", "-xctestrun", str(patched), "-destination", f"id={simulator}",
+                        "-resultBundlePath", result, "test-without-building", "-parallel-testing-enabled", "NO",
+                        # A hung case fails on its own instead of stalling the serial run.
+                        "-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", "120",
+                        "-maximum-test-execution-time-allowance", "180",
+                        *(f"-only-testing:{test}" for test in selectors),
+                        stdout=out, stderr=subprocess.STDOUT, timeout=600)
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError(f"Tests timed out. See {log}") from None
             if not Path(result).exists():
                 raise RuntimeError(f"xcodebuild failed before testing. See {log}")
             summary = json.loads(output("xcrun", "xcresulttool", "get", "test-results", "summary", "--path", result))
             failed = re.findall(r"Test Case '-\[(\w+\.\w+ \w+)\]' failed", Path(log).read_text())
-            if completed.returncode or summary["failedTests"] or summary["skippedTests"]:
+            if code or summary["failedTests"] or summary["skippedTests"]:
                 raise RuntimeError(f"Tests failed: {', '.join(failed) or summary}. See {log} and {result}")
             ran = re.findall(r"Test Case '-\[(\w+)\.(\w+) (\w+)\]' started\.", Path(log).read_text())
             if sorted(ran) != sorted(expected) or summary["passedTests"] != len(expected):
