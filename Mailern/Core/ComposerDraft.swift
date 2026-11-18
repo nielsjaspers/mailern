@@ -206,13 +206,13 @@ final class DraftStore {
             let scheduled = Set(loaded.lazy.filter { $0.sendAt != nil }.map(\.id))
             guard mail.verifyOutbox(scheduled) else {
                 needsMailRecovery = true
-                throw SQLitePersistence.Failure(message: mail.error ?? "Could not verify scheduled mail.")
+                throw SQLitePersistence.Failure(message: "Could not verify scheduled mail in mail storage.")
             }
         }
         all = loaded.filter { mail?.discardedDraftIDs.contains($0.id) != true }
     }
 
-    func reload() async {
+    func reload(automatic: Bool = false) async {
         let url = url
         _ = await enqueue {
             do {
@@ -226,7 +226,7 @@ final class DraftStore {
                 self.error = nil
                 if self.mail?.discardedDraftIDs.isEmpty == false { return await self.persist(self.all) }
                 return true
-            } catch { self.failedToLoad(error); return false }
+            } catch { self.failedToLoad(error, report: !automatic || self.loadFailure == nil); return false }
         }
     }
     @discardableResult func save(_ draft: ComposerDraft) async -> Bool {
@@ -405,8 +405,8 @@ final class DraftStore {
     }
     func recoverAfterMailLoad(now: Date = .now) async {
         guard needsMailRecovery, mail?.needsReload != true, (retryMailRecoveryAfter ?? .distantPast) <= now else { return }
-        needsMailRecovery = false
-        await reload()
+        await reload(automatic: true)
+        needsMailRecovery = !hasReadableManifest || mail?.discardedDraftIDs.isEmpty == false
         if needsMailRecovery { retryMailRecoveryAfter = now.addingTimeInterval(30) }
     }
 
@@ -446,8 +446,8 @@ final class DraftStore {
             return true
         } catch { self.error = "Could not save drafts. \(error.localizedDescription)"; return false }
     }
-    private func failedToLoad(_ error: any Error) {
+    private func failedToLoad(_ error: any Error, report: Bool = true) {
         loadFailure = "Could not load drafts. Existing storage has not been changed. \(error.localizedDescription)"
-        self.error = loadFailure
+        if report { self.error = loadFailure }
     }
 }

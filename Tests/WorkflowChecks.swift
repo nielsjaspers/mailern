@@ -781,10 +781,16 @@ import SQLite3
         assert(sqlite3_exec(db, "DROP TRIGGER reject_receipt", nil, nil, nil) == SQLITE_OK)
         await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(1))
         assert(!retryDrafts.hasReadableManifest)
+        retryDrafts.error = nil
+        let manifest = try Data(contentsOf: draftURL)
+        try Data("unreadable manifest".utf8).write(to: draftURL)
         await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(30))
+        assert(!retryDrafts.hasReadableManifest && retryDrafts.error == nil && retryMail.error == nil)
+        try manifest.write(to: draftURL)
+        await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(60))
         assert(retryDrafts.outbox.map(\.id) == [pending.id])
-        await retryDrafts.sendDue(through: retryMail, now: deadline.addingTimeInterval(30))
-        assert(Set(retryMail.conversations.flatMap(\.messages).map(\.id)) == [kept.id, pending.id])
+        await retryDrafts.sendDue(through: retryMail, now: deadline.addingTimeInterval(60))
+        assert(retryMail.conversations.flatMap(\.messages).map(\.id).sorted { $0.uuidString < $1.uuidString } == [kept.id, pending.id].sorted { $0.uuidString < $1.uuidString })
         assert(retryDrafts.outbox.isEmpty)
         print("PASS: existing outbox reconciles before sent mail deletion and survives startup Trash expiry without redelivery")
     }

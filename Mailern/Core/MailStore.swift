@@ -189,15 +189,16 @@ final class MailStore {
         return unsent
     }
 
-    func recordPreviouslySentDrafts(_ ids: Set<UUID>) -> Bool {
+    func recordPreviouslySentDrafts(_ ids: Set<UUID>, reportFailure: Bool = true) -> Bool {
         ids.isSubset(of: discardedDraftIDs) ||
-            save(replacingConversations: conversations, metadataAt: [], draftDiscards: discardedDraftIDs.union(ids))
+            save(replacingConversations: conversations, metadataAt: [], draftDiscards: discardedDraftIDs.union(ids), reportFailure: reportFailure)
     }
 
     func beginOutboxLoad() { outboxVerified = false }
 
     func verifyOutbox(_ ids: Set<UUID>) -> Bool {
-        outboxVerified = recordPreviouslySentDrafts(ids.subtracting(unsentDraftIDs(ids)))
+        // DraftStore reports failures to load the outbox through its own storage alert.
+        outboxVerified = recordPreviouslySentDrafts(ids.subtracting(unsentDraftIDs(ids)), reportFailure: false)
         return outboxVerified
     }
 
