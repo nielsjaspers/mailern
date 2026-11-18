@@ -31,6 +31,7 @@ def state(simulator):
 
 
 def shutdown(simulator):
+    """Return whether the Simulator is off. Reports a failure itself, before cancellation can interrupt it."""
     # Finish teardown even if cancellation arrives, but never wait on CoreSimulator forever.
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
     try:
@@ -45,8 +46,11 @@ def shutdown(simulator):
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             running = True
         if running:
-            raise RuntimeError(f"Simulator {simulator} may still be running. Run scripts/check-ui.sh {simulator} --stop.")
-        print("Simulator shut down", flush=True)
+            print(f"Simulator {simulator} may still be running. Run scripts/check-ui.sh {simulator} --stop.",
+                  file=sys.stderr, flush=True)
+        else:
+            print("Simulator shut down", flush=True)
+        return not running
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
@@ -101,13 +105,13 @@ def main():
     if args.stop and (args.only_testing or args.keep_booted):
         parser.error("--stop must be used on its own")
     simulator = str(args.simulator).upper()
-    if state(simulator) is None:
-        parser.error(f"Simulator not found: {simulator}")
     simulator_lock = Path(tempfile.gettempdir()) / f"mailern-ui-{simulator}.lock"
     if args.stop:
+        # Recovery must not depend on listing devices first.
         with lock(simulator_lock, "Simulator"):
-            shutdown(simulator)
-        return 0
+            return 0 if shutdown(simulator) else 1
+    if state(simulator) is None:
+        parser.error(f"Simulator not found: {simulator}")
     selectors = args.only_testing or ["MailernUITests", "MailernTests"]
     expected = selected(selectors)
 
@@ -170,7 +174,7 @@ def main():
                      "-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", "120",
                      "-maximum-test-execution-time-allowance", "180",
                      *(f"-only-testing:{test}" for test in selectors)],
-                    stdout=out, stderr=subprocess.STDOUT, timeout=1800)
+                    stdout=out, stderr=subprocess.STDOUT, timeout=600)
             if not Path(result).exists():
                 raise RuntimeError(f"xcodebuild failed before testing. See {log}")
             summary = json.loads(output("xcrun", "xcresulttool", "get", "test-results", "summary", "--path", result))
@@ -185,12 +189,14 @@ def main():
         finally:
             if not (args.keep_booted and succeeded):
                 try:
-                    shutdown(simulator)
-                except BaseException as error:
+                    stopped = shutdown(simulator)
+                except BaseException:
                     if succeeded:
                         raise
                     # Keep the build or test failure as the reported error, even after a second Ctrl-C.
-                    print(error or "Interrupted during Simulator shutdown", file=sys.stderr)
+                    stopped = True
+                if succeeded and not stopped:
+                    raise RuntimeError("Tests passed, but the Simulator did not shut down")
     print(f"UI tests completed in {time.monotonic() - started:.0f}s")
     return 0
 
