@@ -319,9 +319,9 @@ final class DraftStore {
         if await unschedule(id) { reopening = id }
     }
     /// Sends outbox mail that is due.
-    func sendDue(through store: MailStore, now: Date = .now) async {
+    func sendDue(through store: MailStore, now: Date = .now, whileActive: @escaping @MainActor () -> Bool = { true }) async {
         guard all.contains(where: { ($0.sendAt ?? .distantFuture) <= now }) else { return }
-        _ = await deliver(through: store) { ($0.sendAt ?? .distantFuture) <= now }
+        _ = await deliver(through: store) { whileActive() && ($0.sendAt ?? .distantFuture) <= now }
     }
     /// Sends one scheduled message at once.
     func sendNow(_ id: UUID, through store: MailStore) async -> Bool {
@@ -365,9 +365,10 @@ final class DraftStore {
         actionCount += 1
         return true
     }
-    func wakeDue(now: Date = .now) async {
+    func wakeDue(now: Date = .now, whileActive: @escaping @MainActor () -> Bool = { true }) async {
         guard all.contains(where: { ($0.snoozedUntil ?? .distantFuture) <= now }) else { return }
         _ = await enqueue {
+            guard whileActive() else { return false }
             var updated = self.all
             for i in updated.indices where (updated[i].snoozedUntil ?? .distantFuture) <= now {
                 updated[i].snoozedUntil = nil

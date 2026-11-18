@@ -103,11 +103,13 @@ struct MailernApp: App {
             guard !switching, dueWork == nil else { return }
             let sessions = [demo] + (fixture.map { [$0] } ?? [])
             let work = Task {
+                let active: @MainActor () -> Bool = { UIApplication.shared.applicationState == .active }
                 for session in sessions {
                     await session.drafts.recoverAfterMailLoad()
+                    guard active() else { return }
                     session.store.wakeDue()
-                    await session.drafts.wakeDue()
-                    await session.drafts.sendDue(through: session.store)
+                    await session.drafts.wakeDue(whileActive: active)
+                    await session.drafts.sendDue(through: session.store, whileActive: active)
                 }
             }
             dueWork = work

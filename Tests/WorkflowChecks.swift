@@ -1226,6 +1226,12 @@ import SQLite3
             }
         }
         let url = URL.temporaryDirectory.appending(path: "mailern-ordered-drafts-\(UUID())/drafts.json")
+        let mail = MailStore(persistence: SQLitePersistence(url: url.deletingLastPathComponent().appending(path: "mail.sqlite")))
+        var due = ComposerDraft(subject: "Queued foreground send")
+        due.to = "sam@example.com"
+        let deadline = Date.now.addingTimeInterval(60)
+        let scheduled = await DraftStore(url: url).schedule(due, at: deadline)
+        assert(scheduled)
         let gate = Gate()
         let store = DraftStore(url: url, write: { try gate.write($0, to: $1) })
         let first = ComposerDraft(subject: "First")
@@ -1237,6 +1243,14 @@ import SQLite3
             try await Task.sleep(for: .milliseconds(10))
         }
         assert(entered) // Main-actor work continues while the writer is blocked.
+        var active = true
+        var startedSending = false
+        let automatic = Task {
+            startedSending = true
+            await store.sendDue(through: mail, now: deadline, whileActive: { active })
+        }
+        while !startedSending { await Task.yield() }
+        active = false
         let savingSecond = Task { await store.save(second) }
         savingFirst.cancel()
         var deleteStarted = false
@@ -1263,6 +1277,11 @@ import SQLite3
         assert(firstSaved && secondSaved && deleted)
         assert(store.drafts.map(\.id) == [second.id])
         assert(reopened == [second.id] && DraftStore(url: url).drafts.map(\.id) == [second.id])
+        await automatic.value
+        assert(store.outbox.map(\.id) == [due.id] && !mail.conversations.contains { $0.subject == due.subject })
+        active = true
+        await store.sendDue(through: mail, now: deadline, whileActive: { active })
+        assert(store.outbox.isEmpty && mail.conversations.filter { $0.subject == due.subject }.count == 1)
         print("PASS: background writes, cancelled-save completion, cross-draft ordering, deletion, and reopening after a drain")
     }
 
