@@ -224,7 +224,7 @@ private struct MessageSection: View {
     let message: MailMessage
     let conversationID: UUID
     let threadSubject: String
-    /// Where the quoted history starts in the plain-text body. It stays folded until the reader shows it.
+    /// Where the composer's quote starts in the body. It stays folded until the reader shows it.
     let quoteStart: Int?
     /// The message this one answers. Its formatting proves a rich-text quote unchanged.
     let answered: MailMessage?
@@ -254,12 +254,13 @@ private struct MessageSection: View {
             } else {
                 let rich = richText
                 // Rich text folds at the plain body's offsets, so it folds only when it holds exactly the same characters.
-                let foldable = quoteStart != nil && (rich.map(quoteIsUnchanged) ?? true)
+                // Only the composer writes rich text with a quote, so plain mail never folds.
+                let foldable = quoteStart != nil && (rich.map(quoteIsUnchanged) ?? false)
                 let length = foldable && !showsQuote ? visibleLength : nil
                 Group {
                     if let rich {
                         RichMessageText(text: length.map { rich.attributedSubstring(from: NSRange(location: 0, length: $0)) } ?? rich)
-                    } else { Text(MessageLinks.linked(length.map { (message.body as NSString).substring(to: $0) } ?? message.body)) }
+                    } else { Text(MessageLinks.linked(message.body)) }
                 }.font(.body).lineSpacing(5).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, margin)
@@ -291,7 +292,7 @@ private struct MessageSection: View {
             guard RichText.isPlain(original, in: NSRange(location: 0, length: original.length)) else { return false }
         }
         let attribution = QuotedText.attribution(for: answered).utf16.count
-        let length = attribution + 1 + (answered.body as NSString).length
+        let length = text.length - quoteStart
         return RichText.isUnchangedQuote(text, in: NSRange(location: quoteStart, length: length), attributionLength: attribution)
     }
     /// The UTF-16 length of the text above the quote, without the blank lines that separated them.

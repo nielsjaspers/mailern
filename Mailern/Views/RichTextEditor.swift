@@ -35,8 +35,14 @@ enum RichText {
         let copy = NSMutableAttributedString(attributedString: text)
         var composed = true
         copy.enumerateAttribute(.paragraphStyle, in: range) { value, span, stop in
+            // Only the indents may differ from a default paragraph. Line height, spacing, or tail indent are the writer's.
+            let plain = NSParagraphStyle.default
             guard let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle,
-                  style.headIndent == 10, style.firstLineHeadIndent == 10 else { composed = false; stop.pointee = true; return }
+                  style.headIndent == 10, style.firstLineHeadIndent == 10, style.tailIndent == plain.tailIndent,
+                  style.lineSpacing == plain.lineSpacing, style.paragraphSpacing == plain.paragraphSpacing,
+                  style.paragraphSpacingBefore == plain.paragraphSpacingBefore, style.lineHeightMultiple == plain.lineHeightMultiple,
+                  style.minimumLineHeight == plain.minimumLineHeight, style.maximumLineHeight == plain.maximumLineHeight
+            else { composed = false; stop.pointee = true; return }
             style.headIndent = 0
             style.firstLineHeadIndent = 0
             copy.addAttribute(.paragraphStyle, value: style, range: span)
@@ -49,6 +55,10 @@ enum RichText {
                 composed = false; stop.pointee = true; return
             }
             copy.addAttribute(.foregroundColor, value: UIColor.label, range: span)
+        }
+        // The composer marks the whole quote. Text without the mark was not written by it.
+        copy.enumerateAttribute(quote, in: range) { value, _, stop in
+            if value as? Bool != true { composed = false; stop.pointee = true }
         }
         copy.removeAttribute(quote, range: range)
         return composed && isPlain(copy, in: range)

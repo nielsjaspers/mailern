@@ -376,6 +376,7 @@ import SQLite3
         assert(visible(reply) == "Sure, 7 works.\n\nMorgan\n\n")
         // Text written below the quote, an edited quote, or a different attribution keeps the whole message visible.
         assert(visible(reply + "\n\nP.S. I'll bring wine.") == nil, "Text below a quote never folds")
+        assert(visible(reply + "\n") == nil && visible(reply + "\t") == nil, "Even whitespace added below the quote is not proven")
         assert(visible(reply.replacingOccurrences(of: "Saturday", with: "Sunday")) == nil, "An edited quote is not proven")
         assert(visible("Yes.\n\nOn the sign at check-in, Casey Rivera <casey@example.com> wrote:\n\(casey.body)") == nil,
                "Only the composer's own attribution counts")

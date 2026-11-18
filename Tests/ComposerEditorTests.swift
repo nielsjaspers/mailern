@@ -43,6 +43,12 @@ import SwiftUI
             centered.headIndent = 10; centered.firstLineHeadIndent = 10; centered.alignment = .center
             text.addAttribute(.paragraphStyle, value: centered, range: NSRange(location: 31, length: 9))
         }))
+        XCTAssertFalse(folds(try reply { text in
+            let tall = NSMutableParagraphStyle()
+            tall.headIndent = 10; tall.firstLineHeadIndent = 10; tall.minimumLineHeight = 40
+            text.addAttribute(.paragraphStyle, value: tall, range: NSRange(location: 31, length: 9))
+        }))
+        XCTAssertFalse(folds(try reply { $0.removeAttribute(RichText.quote, range: NSRange(location: 31, length: 9)) }))
     }
 
     func testReplyActionsResumePlainSavedDraftAfterIncomingMail() async throws {

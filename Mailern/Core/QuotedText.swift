@@ -10,14 +10,13 @@ enum QuotedText {
     }
 
     /// The UTF-16 offset where the quote of `answered` starts, or nil when there is none, or nothing would remain above it.
-    /// A quote is the composer's attribution line followed by exactly the answered body, with nothing after it.
+    /// A quote is the composer's attribution line followed by exactly the answered body, with nothing after it,
+    /// not even whitespace.
     static func start(in body: String, answering answered: MailMessage?) -> Int? {
         guard let answered, !answered.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         let quote = "\n\n" + attribution(for: answered) + "\n" + answered.body
-        let text = body.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
-        let expected = quote.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
         // Code units, not characters: text that only looks the same could shift the offset below.
-        let units = Array(text.utf16), quoteUnits = Array(expected.utf16)
+        let units = Array(body.utf16), quoteUnits = Array(quote.utf16)
         guard units.count >= quoteUnits.count, units.suffix(quoteUnits.count).elementsEqual(quoteUnits) else { return nil }
         let offset = units.count - quoteUnits.count + 2
         guard !(body as NSString).substring(to: offset).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
