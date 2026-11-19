@@ -329,7 +329,8 @@ extension MailStore {
                 m.attachments = old.attachments
                 m.bcc = old.bcc
             }
-            m.remoteHTML = message.hasHTML && m.html == nil ? true : nil
+            // Mail sent from this phone keeps its own rich text, with the composer's foldable quote.
+            m.remoteHTML = message.hasHTML && m.html == nil && m.richText == nil ? true : nil
             m.replyTo = message.replyTo?.isEmpty == false ? message.replyTo : nil
             m.deliveredTo = message.deliveredTo?.isEmpty == false ? message.deliveredTo : nil
             return m

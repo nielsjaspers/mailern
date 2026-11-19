@@ -510,6 +510,7 @@ import os
         try await checkReplyDuringSend()
         try await checkReplyWinsOverUnsyncedMove()
         try await checkOutboxBackoffAndReplyTo()
+        try checkOverdueAndOwnRichText()
         try await checkOutboxDuringSourceDelete()
     }
 
@@ -891,6 +892,33 @@ import os
         await ServerSync(client: client, store: saved).push()
         assert(deletedAfterPut && saved.pendingRemoteDeletes.isEmpty)
         print("PASS: delete keeps confirmed IDs and mailbox identity across pulls, restart, and PUT acknowledgment. A conflict refreshes the mailbox.")
+    }
+
+    @MainActor static func checkOverdueAndOwnRichText() throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-overdue-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        let thread = remoteThread()
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        // Another client archives an overdue thread: the No Reply mark ends with it.
+        var overdue = store.conversation(thread.id)!
+        overdue.followUp = .noReply
+        overdue.returnedFromSnoozeAt = .now
+        overdue.synced = overdue.remoteState
+        store.replaceRemote(conversations: [overdue], accounts: store.accounts, invalidatingUndo: [])
+        var archived = thread
+        archived.workflow = .settled
+        archived.unread = false
+        assert(store.mergeRemote(remoteBatch(2, [archived])))
+        assert(store.conversation(thread.id)!.followUp == nil && store.conversation(thread.id)!.returnedFromSnoozeAt == nil)
+        // A message with rich text from this phone does not fetch the server's HTML, so its quote stays foldable.
+        var own = store.conversation(thread.id)!
+        own.messages[0].richText = Data("rich".utf8)
+        store.replaceRemote(conversations: [own], accounts: store.accounts, invalidatingUndo: [])
+        archived.messages[0].hasHTML = true
+        assert(store.mergeRemote(remoteBatch(3, [archived])))
+        assert(store.conversation(thread.id)!.messages[0].remoteHTML == nil)
+        print("PASS: an outside archive ends an overdue reminder, and own rich text skips the server's HTML")
     }
 
     @MainActor static func checkOutboxBackoffAndReplyTo() async throws {
