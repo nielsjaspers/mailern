@@ -816,6 +816,32 @@ import SQLite3
         blockedCleanup.error = nil
         await blockedCleanup.recoverAfterMailLoad(now: deadline.addingTimeInterval(30))
         assert(blockedCleanup.error == nil && blockedCleanup.outbox.isEmpty && retryMail.discardedDraftIDs == [another.id])
+        let cleanupURL = directory.appending(path: "pending-cleanup.json")
+        let blockWrites = directory.appending(path: "block-draft-writes")
+        var automatic = pending
+        automatic.id = UUID()
+        let sleeper = ComposerDraft(subject: "Draft waking during cleanup", snoozedUntil: deadline)
+        try AttachmentJSON.save([automatic, sleeper], to: cleanupURL)
+        let cleanupMail = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "cleanup.sqlite")))
+        let cleanup = DraftStore(url: cleanupURL, mail: cleanupMail) { data, url in
+            if FileManager.default.fileExists(atPath: blockWrites.path) { throw CocoaError(.fileWriteOutOfSpace) }
+            try data.write(to: url, options: .atomic)
+        }
+        try Data().write(to: blockWrites)
+        await cleanup.sendDue(through: cleanupMail, now: deadline)
+        assert(cleanup.error != nil && cleanupMail.discardedDraftIDs == [automatic.id])
+        cleanup.error = nil
+        await cleanup.recoverAfterMailLoad(now: deadline)
+        await cleanup.wakeDue(now: deadline)
+        assert(cleanup.error == nil && cleanupMail.error == nil)
+        await cleanup.reload() // A user can still retry and see the current error.
+        assert(cleanup.error != nil)
+        cleanup.error = nil
+        try FileManager.default.removeItem(at: blockWrites)
+        await cleanup.recoverAfterMailLoad(now: deadline.addingTimeInterval(30))
+        await cleanup.wakeDue(now: deadline.addingTimeInterval(30))
+        assert(cleanupMail.discardedDraftIDs.isEmpty && cleanup.drafts.first?.snoozedUntil == nil)
+        assert(cleanupMail.conversations.flatMap(\.messages).filter { $0.id == automatic.id }.count == 1)
         print("PASS: existing outbox reconciles before sent mail deletion and survives startup Trash expiry without redelivery")
     }
 
