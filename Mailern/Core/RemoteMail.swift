@@ -113,6 +113,11 @@ extension Conversation {
             }
         }
         if !fields.contains(.removal) {
+            // Moving a thread to Trash or Junk ends its reminder, as it does in Mailern, also when another client did it.
+            if removal == nil, remote.removal != nil, followUp != nil {
+                endReminder()
+                returnedFromSnoozeAt = nil
+            }
             removal = switch remote.removal {
             case .trash: .trash(since: remote.trashSince ?? .now)
             case .junk: .junk
