@@ -690,6 +690,10 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 			cancelDelete(c)
 		}
 		for _, key := range c.Keys {
+			// A copy another client marked deleted is on its way out, so it does not count as an arrival.
+			if arrived[key] && account.Messages[key].Deleted {
+				continue
+			}
 			if arrived[key] && !c.Muted {
 				c.Workflow, c.SnoozedUntil, c.ReturnedFromSnoozeAt = WorkflowInbox, nil, nil
 				c.Unread = c.Unread || !account.Messages[key].Seen

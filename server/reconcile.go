@@ -147,6 +147,10 @@ func adopt(c *Conversation, msgs []*Message, archiveIsAll bool) bool {
 	}
 	var places []Role
 	for _, m := range placed {
+		// A copy another client marked deleted does not keep a thread in a mailbox.
+		if m.Deleted {
+			continue
+		}
 		if at, ok := observedPlace(c, m, archiveIsAll); ok {
 			places = append(places, at.role)
 		}

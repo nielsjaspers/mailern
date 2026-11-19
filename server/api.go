@@ -251,7 +251,7 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 			muted = state.Muted
 		}
 		if !muted && state.MessageIDs != nil && slices.ContainsFunc(st.messages(c), func(m *Message) bool {
-			return !m.Outgoing && !slices.Contains(state.MessageIDs, m.ID)
+			return !m.Outgoing && !m.Deleted && !slices.Contains(state.MessageIDs, m.ID)
 		}) {
 			state.Fields = slices.DeleteFunc(slices.Clone(state.Fields), func(field string) bool {
 				return (field == "workflow" && state.Workflow != WorkflowInbox) || (field == "unread" && !state.Unread) ||

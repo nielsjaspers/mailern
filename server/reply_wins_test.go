@@ -126,6 +126,20 @@ func TestRestorePutsNewestLiveMessageInInbox(t *testing.T) {
 	}
 }
 
+func TestDeletedReplyDoesNotReturnThread(t *testing.T) {
+	h := newHarness(t)
+	root := h.deliver("INBOX", "Dinner", "")
+	h.sync()
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Workflow, s.Unread = WorkflowSettled, false })
+	h.sync()
+	h.deliver("INBOX", "Re: Dinner", root, imap.FlagDeleted)
+	h.sync()
+	h.sync()
+	if c := h.conversations()["Dinner"]; c.Workflow != WorkflowSettled {
+		t.Fatalf("a reply another client marked deleted must not return the thread, got %s", c.Workflow)
+	}
+}
+
 func TestRemovedAliasKeepsSentMailOutgoing(t *testing.T) {
 	h := newHarness(t)
 	const alias = "morgan@alias.example.com"
