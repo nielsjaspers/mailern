@@ -166,9 +166,8 @@ struct DraftDock: View {
                         .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                // The panel draws the draft while it is up. The dock stays in place, hidden, so a drag that opened
-                // the panel keeps going.
-                .opacity(panel.request == nil ? 1 : 0)
+                // Keep the resting draft behind a closing panel. The sliding panel reveals it as it leaves.
+                .opacity(panel.showsDock ? 1 : 0)
                 .highPriorityGesture(DragGesture(minimumDistance: 10, coordinateSpace: .global)
                     .updating($touching) { _, state, _ in state = true }
                     .onChanged { value in

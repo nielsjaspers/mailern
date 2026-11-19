@@ -4,7 +4,10 @@ struct MailboxView: View {
     var benchmark: BenchmarkMailbox?
     var selectBenchmark: ((BenchmarkMailbox?) async throws -> Void)?
     @Environment(MailStore.self) private var store
-    @State private var selection: Workflow = .inbox
+    private var selection: Workflow {
+        get { panel.selectedTab }
+        nonmutating set { panel.selectedTab = newValue }
+    }
     @State private var searchInput = MailboxSearchInput()
     private var search: String { searchInput.text }
     @AppStorage("mailboxFilters") private var filterData = Data()
@@ -29,9 +32,6 @@ struct MailboxView: View {
     @AppStorage("leftSwipeTertiary") private var leftTertiary: MailboxSwipeAction = .none
     @AppStorage("rightSwipeTertiary") private var rightTertiary: MailboxSwipeAction = .none
     @State private var panel = ComposerPanel()
-    /// The tab the open composer belongs to. A tab switch while it docks keeps its editor alive there, so a failed save
-    /// can bring that same editor back.
-    @State private var panelLocation: PanelLocation?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var demo = false
     @State private var snoozing: Conversation?
@@ -116,12 +116,9 @@ struct MailboxView: View {
             drafts.reopening = nil
             compose(.draft(id))
         }
-        .onChange(of: panel.request?.id) { _, id in
-            panelLocation = id.map { PanelLocation(id: $0, tab: selection) }
-        }
-        // A failed save brings the composer back up, on its own tab.
-        .onChange(of: panel.covering) { _, covering in
-            if covering, let panelTab, panelTab != selection { selection = panelTab }
+        // A queued request or failed save can bring an editor up on a different tab.
+        .onChange(of: panel.covering ? panel.request?.tab : nil) { _, tab in
+            if let tab, tab != selection { selection = tab }
         }
         .modifier(DraftStorageAlert(active: paths[selection, default: []].isEmpty))
         .sheet(isPresented: $settings) {
@@ -149,11 +146,6 @@ struct MailboxView: View {
         }
     }
     private struct ReopenState: Equatable { var id: UUID?; var open: Bool }
-    private struct PanelLocation { let id: UUID; let tab: Workflow }
-    private var panelTab: Workflow? {
-        guard let panelLocation, panelLocation.id == panel.request?.id else { return nil }
-        return panelLocation.tab
-    }
     private func compose(_ mode: ComposeMode) { panel.present(mode, inboxAccountID: composeInboxAccount) }
     private enum SearchScope: CaseIterable, Identifiable {
         case section, allMail
@@ -199,7 +191,7 @@ struct MailboxView: View {
             }
             .background(ComposeTabAction { compose(.new) })
         } else {
-            TabView(selection: $selection) {
+            TabView(selection: Binding(get: { selection }, set: { selection = $0 })) {
                 ForEach(Workflow.allCases) { status in
                     section(status)
                         .tabItem { Label(status.title, systemImage: status.symbol) }
@@ -271,7 +263,7 @@ struct MailboxView: View {
                 }
         }
         // Over the tab's screens and under its tab bar, so the tab bar floats over the docked panel.
-        .overlay { if status == (panelTab ?? selection) { ComposerPanelHost() } }
+        .overlay { if status == (panel.request?.tab ?? selection) { ComposerPanelHost() } }
     }
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {

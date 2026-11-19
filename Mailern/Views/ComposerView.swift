@@ -438,7 +438,7 @@ struct ComposerView: View {
     /// Ending editing commits any text the keyboard is still composing before deciding where the panel goes.
     private func minimize(velocity: CGFloat) {
         editor.view?.window?.endEditing(true)
-        guard canPull else { panel.open(); return }
+        guard canPull else { panel.open(velocity: velocity); return }
         guard saved || dirty else { complete(); panel.close(velocity: velocity); return }
         panel.dock(velocity: velocity)
         if dirty {

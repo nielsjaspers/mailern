@@ -7,9 +7,12 @@ import SwiftUI
     struct Request: Identifiable {
         let id = UUID()
         let mode: ComposeMode
+        let tab: Workflow
         var messageID: UUID?
         var inboxAccountID: String?
     }
+    /// Shared by the mailbox tabs and composer entry points so each request captures the active tab.
+    var selectedTab: Workflow = .inbox
     /// The open composer. Nil while no composer shows, also when a draft rests in the dock.
     private(set) var request: Request?
     /// True while the panel covers the screen. The tab bar steps aside, and comes back as soon as the panel heads for
@@ -59,16 +62,18 @@ import SwiftUI
     /// Where a drag on the dock started. The tab bar hides as the panel rises, which moves the dock under the finger.
     private var dragOrigin: CGFloat = 0
     private var generation = 0
-    private enum Exit { case dock, close }
+    private enum Exit { case dock, close(from: CGFloat) }
     private var exit: Exit?
-    private var docking: Bool { exit == .dock }
+    private var docking: Bool { if case .dock = exit { true } else { false } }
+    fileprivate var closingFrom: CGFloat? { if case .close(let start) = exit { start } else { nil } }
+    var showsDock: Bool { request == nil || closingFrom != nil }
     private var arrived = false
     private var ready = false
     /// A compose request that came while the panel was leaving.
     private var queued: Request?
 
     func present(_ mode: ComposeMode, messageID: UUID? = nil, inboxAccountID: String? = nil) {
-        let next = Request(mode: mode, messageID: messageID, inboxAccountID: inboxAccountID)
+        let next = Request(mode: mode, tab: selectedTab, messageID: messageID, inboxAccountID: inboxAccountID)
         guard request == nil else {
             if exit != nil { queued = next }
             return
@@ -84,7 +89,7 @@ import SwiftUI
     func resume(_ id: UUID, summary: DockSummary) {
         guard request == nil else { return }
         self.summary = summary
-        start(Request(mode: .draft(id)), at: dockOffset, morphing: true)
+        start(Request(mode: .draft(id), tab: selectedTab), at: dockOffset, morphing: true)
         DispatchQueue.main.async { self.open() }
     }
     /// An upward drag on the dock: the panel takes the dock's place and follows the finger.
@@ -92,7 +97,7 @@ import SwiftUI
         guard request == nil else { return }
         self.summary = summary
         dragOrigin = dockOffset
-        start(Request(mode: .draft(id)), at: dragOrigin, morphing: true)
+        start(Request(mode: .draft(id), tab: selectedTab), at: dragOrigin, morphing: true)
     }
     func followDock(_ translation: CGFloat) {
         guard request != nil, !settled, !docking else { return }
@@ -125,7 +130,6 @@ import SwiftUI
     func open(velocity: CGFloat = 0) {
         guard request != nil else { return }
         exit = nil
-        queued = nil
         withAnimation(.smooth(duration: 0.3)) { covering = true }
         move(to: 0, velocity: velocity) { [weak self] in
             self?.settled = true
@@ -138,10 +142,11 @@ import SwiftUI
         guard request != nil else { return }
         // Only a message with something to keep turns into the dock, and that one docks instead of closing.
         morphing = false
-        exit = .close
+        exit = .close(from: offset)
         settled = false
         withAnimation(.smooth(duration: 0.3)) { covering = false }
-        move(to: height, velocity: velocity, until: .removed) { [weak self] in self?.leave() }
+        // The close target is past the screen edge, so there's no visible spring tail to wait for.
+        move(to: height, fade: max(1, dockOffset), velocity: velocity) { [weak self] in self?.leave() }
     }
 
     fileprivate func pullChanged(start: CGFloat, translation: CGSize) {
@@ -307,7 +312,8 @@ struct ComposerPanelHost: View {
                 let dockOffset = panel.fadeBase
                 ZStack(alignment: .top) {
                     PanelDim(offset: panel.offset, dockOffset: dockOffset)
-                    PanelMotion(offset: panel.offset, dockOffset: dockOffset, morphing: panel.morphing) {
+                    PanelMotion(offset: panel.offset, dockOffset: dockOffset, morphing: panel.morphing,
+                                closingFrom: panel.closingFrom) {
                         ComposerView(mode: request.mode, messageID: request.messageID, inboxAccountID: request.inboxAccountID)
                             .id(request.id)
                             // The tab bar comes back while the panel heads for the dock. Its inset must not move the
@@ -361,6 +367,7 @@ private struct PanelMotion<Content: View, Header: View>: View, Animatable {
     var offset: CGFloat
     var dockOffset: CGFloat
     let morphing: Bool
+    let closingFrom: CGFloat?
     @ViewBuilder let content: Content
     @ViewBuilder let header: Header
     var animatableData: AnimatablePair<CGFloat, CGFloat> {
@@ -377,6 +384,7 @@ private struct PanelMotion<Content: View, Header: View>: View, Animatable {
             header.opacity(morphing ? min(1, max(0, (docking - 0.8) / 0.2)) : 0)
             PanelGrabber().allowsHitTesting(false)
         }
+        .opacity(closeOpacity)
         .clipShape(shape)
         .background(alignment: .top) {
             shape.fill(ComposerPanel.background)
@@ -385,6 +393,13 @@ private struct PanelMotion<Content: View, Header: View>: View, Animatable {
                 .padding(.bottom, -100)
         }
         .offset(y: offset)
+    }
+    private var closeOpacity: Double {
+        guard let closingFrom else { return 1 }
+        // Fade the controls before they reach the tab bar. A long pull still starts at full opacity on release.
+        let fadeStart = max(closingFrom, dockOffset - 110)
+        let fadeLength = max(30, dockOffset - fadeStart)
+        return 1 - min(1, max(0, (offset - fadeStart) / fadeLength))
     }
 }
 

@@ -17,11 +17,42 @@ import SwiftUI
 
         let draftID = UUID()
         panel.close()
+        panel.selectedTab = .settled
         panel.present(.draft(draftID))
+        panel.selectedTab = .snoozed
         for _ in 0..<20 where panel.request?.mode != .draft(draftID) {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(panel.request?.mode, .draft(draftID))
+        XCTAssertEqual(panel.request?.tab, .settled)
+    }
+
+    func testFailedDockRetainsQueuedComposeUntilRetrySucceeds() async throws {
+        let animationsEnabled = UIView.areAnimationsEnabled
+        UIView.setAnimationsEnabled(false)
+        defer { UIView.setAnimationsEnabled(animationsEnabled) }
+
+        let panel = ComposerPanel()
+        panel.present(.new)
+        for _ in 0..<20 where !panel.settled { try await Task.sleep(for: .milliseconds(10)) }
+        let original = try XCTUnwrap(panel.request)
+        panel.dock()
+        let draftID = UUID()
+        panel.selectedTab = .settled
+        panel.present(.draft(draftID))
+
+        panel.open()
+        for _ in 0..<20 where !panel.settled { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(panel.request?.id, original.id)
+        XCTAssertEqual(panel.request?.tab, .inbox)
+
+        panel.dock()
+        panel.dockReady()
+        for _ in 0..<20 where panel.request?.mode != .draft(draftID) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(panel.request?.mode, .draft(draftID))
+        XCTAssertEqual(panel.request?.tab, .settled)
     }
 }
 
