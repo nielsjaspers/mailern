@@ -63,3 +63,21 @@ func TestAddedAliasReclassifiesStoredMail(t *testing.T) {
 		t.Fatal("after adding the alias, stored mail from it should be outgoing")
 	}
 }
+
+func TestUnseenReplyDoesNotStopSettlingAMutedThread(t *testing.T) {
+	h := newHarness(t)
+	root := h.deliver("INBOX", "Dinner", "")
+	h.sync()
+	seen := h.conversations()["Dinner"]
+	h.deliver("INBOX", "Re: Dinner", root)
+	h.sync()
+	state := ConversationState{Fields: []string{"workflow", "unread", "muted"}, Workflow: WorkflowSettled, Muted: true,
+		MessageIDs: []string{seen.Messages[0].ID}}
+	if code := h.request("PUT", "/v1/conversations/"+seen.ID, state, nil); code != http.StatusOK {
+		t.Fatalf("set state: %d", code)
+	}
+	h.sync()
+	if c := h.conversations()["Dinner"]; c.Workflow != WorkflowSettled || c.Unread {
+		t.Fatalf("a muted thread should settle despite an unseen reply: %s unread=%v", c.Workflow, c.Unread)
+	}
+}

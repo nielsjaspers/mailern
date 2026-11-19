@@ -244,8 +244,13 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 		}
 		previousRemoval, wasMoving := c.Removal, c.PendingPlacement
 		// A reply the phone has not seen yet wins, as an arrival does in Mailern: the change neither moves the
-		// thread out of Inbox nor marks it read. The response brings the reply to the phone.
-		if state.MessageIDs != nil && slices.ContainsFunc(st.messages(c), func(m *Message) bool {
+		// thread out of Inbox nor marks it read. The response brings the reply to the phone. Replies to a muted
+		// thread do not move it, so they do not stop the change either.
+		muted := c.Muted
+		if slices.Contains(state.Fields, "muted") {
+			muted = state.Muted
+		}
+		if !muted && state.MessageIDs != nil && slices.ContainsFunc(st.messages(c), func(m *Message) bool {
 			return !m.Outgoing && !slices.Contains(state.MessageIDs, m.ID)
 		}) {
 			state.Fields = slices.DeleteFunc(slices.Clone(state.Fields), func(field string) bool {
