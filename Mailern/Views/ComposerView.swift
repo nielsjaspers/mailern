@@ -31,8 +31,6 @@ struct ComposerView: View {
     private enum Editing { case body, subject, address(Field) }
     /// The field that was editing when a pull began, so a canceled pull gives it the keyboard back.
     @State private var pull: (active: Bool, editing: Editing?) = (false, nil)
-    /// The minimized draft this one took the dock from. It goes back to the dock if this one closes instead.
-    @State private var displaced: DraftStore.Docked?
     @State private var filePicker = false
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
@@ -160,7 +158,9 @@ struct ComposerView: View {
                 ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importing || finishing) }
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Minimize draft", systemImage: "chevron.down") {
-                        // Like a pull, this keeps a saved draft without writing it again, and closes an untouched one.
+                        // Ending editing first commits text the keyboard is still composing. Like a pull, this keeps a
+                        // saved draft without writing it again, and closes an untouched one.
+                        editor.view?.window?.endEditing(true)
                         if !dirty { minimizeNow() }
                         else { Task { await saveDraft(then: .minimize) } }
                     }
@@ -191,7 +191,7 @@ struct ComposerView: View {
                 pull = (true, editor.view?.isFirstResponder == true ? .body : subjectFocused ? .subject : focus.map(Editing.address))
                 editor.view?.window?.endEditing(true)
                 // The pull reveals the dock, so it shows this draft from now on.
-                if saved { takeDock() }
+                if saved { showInDock() }
                 drafts.sheetOverDock = false
             } else if pull.active, frame.minY - restingTop < 2 {
                 // The pull was canceled and the sheet is back at rest.
@@ -213,6 +213,7 @@ struct ComposerView: View {
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear {
             drafts.sheetOverDock = true
+            drafts.composerOpen = true
             load()
         }
         .onChange(of: draft.accountID) { _, id in if loaded { replaceSignature(with: store.account(id).signature) } }
@@ -228,8 +229,10 @@ struct ComposerView: View {
         }
         .onDisappear {
             drafts.sheetOverDock = false
+            drafts.composerOpen = false
+            if drafts.preview == draft.id { drafts.preview = nil }
             autosave?.cancel()
-            if !completed { minimize() }
+            if !completed { recordDockPosition() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background && !completed && dirty { Task { await saveDraft() } }
@@ -439,40 +442,42 @@ struct ComposerView: View {
         result.updatedAt = .now
         return result
     }
-    /// Closes the draft for good. If it held the dock, the draft it took the dock from gets it back.
+    /// Closes the draft for good, and takes it out of the dock.
     private func complete() {
         completed = true
-        if drafts.docked?.id == draft.id { drafts.docked = displaced }
+        if drafts.preview == draft.id { drafts.preview = nil }
+        if drafts.docked?.id == draft.id { drafts.docked = nil }
     }
     /// Closes the sheet into the dock. The dock shows this draft as the sheet slides down, not only once it is gone.
     private func minimizeNow() {
-        if saved { takeDock() }
+        if saved { showInDock() }
         drafts.sheetOverDock = false
         dismiss()
     }
-    /// Shows this saved draft in the dock under the sheet, so a pull reveals it.
-    private func takeDock() {
-        guard drafts.docked?.id != draft.id else { return }
-        displaced = drafts.docked
-        drafts.docked = DraftStore.Docked(id: draft.id)
+    /// Shows this saved draft in the dock under the sheet. A save that finishes after the draft closed must not.
+    private func showInDock() {
+        if !completed { drafts.preview = draft.id }
     }
     /// Puts the saved draft in the dock after the sheet is pulled down or Minimize draft closes it.
-    private func minimize() {
+    private func recordDockPosition() {
         guard loaded, saved else { return }
         let selections: [NSRange]
         if #available(iOS 26, *), let view = editor.view { selections = view.selectedRanges }
         else { selections = [editor.view?.selectedRange ?? editor.selection] }
         drafts.docked = DraftStore.Docked(id: draft.id, position: .init(selections: selections,
                                                                          typing: editor.view?.typingAttributes ?? editor.typing))
+        drafts.preview = nil
     }
-    enum AfterSave { case stay, close, minimize }
+    private enum AfterSave { case stay, close, minimize }
     private func saveDraft(then after: AfterSave = .stay, submitted: DraftInput? = nil) async {
         guard loaded, !completed, !finishing else { return }
         let activity = DraftSaveActivity()
         defer { activity.end() }
         let dismissAfter = after != .stay
-        if dismissAfter { finishing = true }
-        if dismissAfter { editor.view?.window?.endEditing(true) }
+        if dismissAfter {
+            finishing = true
+            editor.view?.window?.endEditing(true)
+        }
         savesInFlight += 1
         defer {
             savesInFlight -= 1
@@ -484,7 +489,7 @@ struct ComposerView: View {
             guard await drafts.save(content) else { return }
             if drafts.drafts.first(where: { $0.id == content.id })?.matchesContent(of: content) == true { savedInput = submitted }
             switch after {
-            case .stay: takeDock()
+            case .stay: showInDock()
             case .close: complete(); dismiss()
             case .minimize: minimizeNow()
             }

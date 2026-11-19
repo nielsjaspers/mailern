@@ -124,7 +124,7 @@ struct DraftStorageAlert: ViewModifier {
     func body(content: Content) -> some View {
         content.alert("Draft storage", isPresented: Binding(
             // Any open composer shows the error itself, including one the dock opened over this screen.
-            get: { active && !drafts.sheetOverDock && drafts.error != nil },
+            get: { active && !drafts.composerOpen && drafts.error != nil },
             set: { if !$0 && active { drafts.error = nil } }
         )) {
             Button("Retry") { Task { await drafts.reload() } }
@@ -153,13 +153,16 @@ struct DraftDock: View {
     var body: some View {
         // The container always exists, so the reset runs even while the keyboard has removed the dock.
         ZStack {
-            if let id = drafts.docked?.id, let draft = drafts.drafts.first(where: { $0.id == id }), !SoftwareKeyboard.shared.visible {
+            if let draft = [drafts.preview, drafts.docked?.id].lazy.compactMap({ id in drafts.drafts.first { $0.id == id } }).first,
+               !SoftwareKeyboard.shared.visible {
+                let id = draft.id
+                let summary = recipients(draft)
                 Button { resume(id) } label: {
                     VStack(spacing: 0) {
                         Capsule().fill(.tertiary).frame(width: 36, height: 5).padding(.top, 6)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(draft.title).font(.headline).lineLimit(1)
-                            Text(recipients(draft)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                            Text(summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 10)
@@ -180,20 +183,21 @@ struct DraftDock: View {
                 .offset(y: handoff ?? lift)
                 // The sheet follows an upward drag, then opens. A drag never counts as a tap.
                 .highPriorityGesture(DragGesture(minimumDistance: 10)
-                    .updating($lift) { value, lift, _ in lift = Self.lift(value.translation.height) }
+                    .updating($lift) { value, lift, _ in if Self.vertical(value) { lift = Self.lift(value.translation.height) } }
                     .onEnded { value in
-                        guard value.translation.height < 0, value.predictedEndTranslation.height < -40 else { return }
+                        guard Self.vertical(value), value.translation.height < 0, value.predictedEndTranslation.height < -40 else { return }
                         resume(id, holding: Self.lift(value.translation.height))
                     })
                 // Fade out as the composer rises over the dock, and back in as a pull reveals it. Only this fade is
                 // animated, so the header hides at once.
                 .animation(.easeOut(duration: 0.25)) { $0.opacity(drafts.sheetOverDock ? 0 : 1) }
                 .accessibilityLabel("Resume draft, \(draft.title)")
-                .accessibilityValue(recipients(draft))
+                .accessibilityValue(summary)
             }
         }
         .onChange(of: drafts.sheetOverDock) { _, covered in if !covered { handoff = nil } }
     }
+    private static func vertical(_ value: DragGesture.Value) -> Bool { abs(value.translation.height) > abs(value.translation.width) }
     private static func lift(_ translation: CGFloat) -> CGFloat { max(-maxLift, min(0, translation) * 0.5) }
     private func resume(_ id: UUID, holding lift: CGFloat = 0) {
         handoff = lift

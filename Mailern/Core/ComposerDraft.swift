@@ -170,8 +170,7 @@ final class DraftStore {
     var undoable: UUID?
     /// A draft to open in the composer, set when Undo Send or Edit takes scheduled mail back.
     var reopening: UUID?
-    /// The draft the dock shows, if it is still in Drafts. Snoozing it clears the dock. Minimizing records where the editor was,
-    /// so the composer can resume there.
+    /// The minimized draft and where its editor was, so the composer can resume there. Snoozing it clears the dock.
     struct Docked {
         struct Position {
             var selections: [NSRange]
@@ -181,9 +180,14 @@ final class DraftStore {
         var position: Position?
     }
     var docked: Docked?
+    /// The saved draft of the open composer. The dock shows it under the sheet, so a pull reveals it in place, and
+    /// shows the minimized draft again once that composer closes.
+    var preview: UUID?
     /// True while a composer sheet covers the dock. The dock fades out under a rising sheet, and shows again as soon
     /// as a pull moves the sheet down.
     var sheetOverDock = false
+    /// True while a composer sheet is presented, from any screen. Its alert shows draft errors then.
+    var composerOpen = false
     var error: String?
     /// Counts Pin, Snooze, Restore, Settle, and Discard on standalone drafts, like `MailStore.actionCount`.
     private(set) var actionCount = 0
