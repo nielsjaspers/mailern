@@ -42,7 +42,7 @@ struct HTMLDocument {
             \(isConversation ? """
                 /* A conversation keeps the screen width. Fixed-width tables shrink and their text wraps. */
                 body { width: auto; min-width: 0; }
-                body * { white-space: normal !important; max-width: 100% !important; }
+                body * { white-space: normal !important; min-width: 0 !important; max-width: 100% !important; }
                 table, td, th { width: auto !important; }
                 pre, pre * { white-space: pre-wrap !important; }
                 """ : "")

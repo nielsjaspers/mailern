@@ -461,7 +461,7 @@ import os
     static func checkHTMLDocument() {
         // A reply with a fixed-width signature wraps; a newsletter without quoted mail still scales to fit.
         let reply = HTMLDocument("<p>Thanks</p><blockquote><table style=\"width:600px; white-space:nowrap\"><tr><td>Sam</td></tr></table></blockquote>", remoteContent: false)
-        assert(reply.isConversation && reply.html.contains("body { width: auto; min-width: 0; }"))
+        assert(reply.isConversation && reply.html.contains("body { width: auto; min-width: 0; }") && reply.html.contains("min-width: 0 !important"))
         let newsletter = HTMLDocument("<table style=\"width:600px\"><tr><td>Issue 12</td></tr></table>", remoteContent: false)
         assert(!newsletter.isConversation && !newsletter.html.contains("white-space: normal !important"))
         func dark(_ html: String) -> Bool { HTMLDocument(html, remoteContent: false).adaptsToDarkMode }
