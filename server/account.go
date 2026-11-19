@@ -322,8 +322,7 @@ func (a *Account) read(c *imapclient.Client, recoverKeys ...string) error {
 
 func (a *Account) unreadableSent(role Role, err error) bool {
 	var status *imap.Error
-	return role == RoleSent && a.cfg.Mailboxes[RoleSent] != "" &&
-		errors.As(err, &status) && status.Type == imap.StatusResponseTypeNo
+	return role == RoleSent && errors.As(err, &status) && status.Type == imap.StatusResponseTypeNo
 }
 
 func (a *Account) readMailbox(c *imapclient.Client, role Role, name string, since time.Time) (mailboxSnapshot, error) {
@@ -547,6 +546,7 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 			continue
 		}
 		if identityFor(account, role) != snap.mailboxIdentity {
+			st.Revision++
 			for _, m := range account.Messages {
 				if _, ok := m.Locations[role]; ok {
 					delete(m.Locations, role)

@@ -227,6 +227,7 @@ func (st *State) account(id string) *AccountState {
 
 // Touch gives a conversation a new revision, so the next sync request returns it.
 func (st *State) Touch(c *Conversation) {
+	delete(st.Tombstones, c.ID)
 	st.Revision++
 	c.Revision = st.Revision
 }

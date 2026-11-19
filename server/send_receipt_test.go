@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"net/textproto"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestSubmissionEndsAtSMTPAcceptance(t *testing.T) {
@@ -106,6 +109,54 @@ func TestSentCopyAfterInterruptedSendKeepsClientIDs(t *testing.T) {
 			t.Error("the synced Sent copy must resolve the original submission with its original IDs")
 		}
 	})
+}
+
+func TestRecoveredSentReplacesDeletedConversationInIncrementalSync(t *testing.T) {
+	for _, syncFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("syncFirst=%t", syncFirst), func(t *testing.T) {
+			h := newHarness(t)
+			parent := h.deliver("Trash", "Fictional itinerary", "")
+			h.sync()
+			var initial syncResponse
+			h.request("GET", "/v1/sync?since=0", nil, &initial)
+			source := h.conversations()["Fictional itinerary"]
+			req := SendRequest{ID: uuid.NewString(), ConversationID: source.ID, InReplyTo: parent, To: []string{"sam@example.com"}, Subject: "Re: Fictional itinerary"}
+			raw, err := h.account.compose(req, h.account.messageID(req.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := h.account.submit(req, raw); err != nil {
+				t.Fatal(err)
+			}
+			if code := h.delete(source, RoleTrash); code != http.StatusNoContent {
+				t.Fatalf("source delete returned %d", code)
+			}
+			h.sync()
+			path := fmt.Sprintf("/v1/sync?since=%d", initial.Revision)
+			var deleted syncResponse
+			h.request("GET", path, nil, &deleted)
+			if len(deleted.Deleted) != 1 || deleted.Deleted[0] != source.ID || len(deleted.Conversations) != 0 {
+				t.Fatalf("expected only the source tombstone, got %+v", deleted)
+			}
+			if err := h.lab.Deliver(labAddress, "Sent", raw); err != nil {
+				t.Fatal(err)
+			}
+			if syncFirst {
+				h.sync()
+			}
+			if err := h.account.Send(req); err != nil {
+				t.Fatal(err)
+			}
+			var recovered syncResponse
+			h.request("GET", path, nil, &recovered)
+			if len(recovered.Deleted) != 0 || len(recovered.Conversations) != 1 || recovered.Conversations[0].ID != source.ID {
+				t.Fatalf("expected the recovered conversation without a tombstone, got %+v", recovered)
+			}
+			if messages := recovered.Conversations[0].Messages; len(messages) != 1 || messages[0].ID != req.ID || !messages[0].Outgoing || len(h.lab.Submitted) != 1 {
+				t.Fatalf("expected the original outgoing message and one delivery, got %+v", messages)
+			}
+		})
+	}
 }
 
 func TestQueuedSendCannotUseReplacementAccount(t *testing.T) {

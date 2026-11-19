@@ -1,10 +1,50 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
 )
+
+func TestSyncPersistsMailboxIdentityChangesWithoutConversationChanges(t *testing.T) {
+	h := newHarness(t)
+	h.deliver("INBOX", "Unchanged Inbox mail", "")
+	h.sync()
+	var before syncResponse
+	h.request("GET", "/v1/sync?since=0", nil, &before)
+	oldToken := before.Accounts[0].MailboxIdentities[RoleTrash]
+	if oldToken == "" {
+		t.Fatal("expected the original Trash identity")
+	}
+	if err := h.lab.users[labAddress].Create("New Trash", nil); err != nil {
+		t.Fatal(err)
+	}
+	h.account.cfg.Mailboxes = map[Role]string{RoleTrash: "New Trash"}
+	h.sync()
+	var after syncResponse
+	h.request("GET", fmt.Sprintf("/v1/sync?since=%d", before.Revision), nil, &after)
+	newToken := after.Accounts[0].MailboxIdentities[RoleTrash]
+	if newToken == "" || newToken == oldToken || len(after.Conversations) != 0 || len(after.Deleted) != 0 {
+		t.Fatalf("expected only a Trash identity change, got %+v", after)
+	}
+	reopened, err := OpenStore(h.account.store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened.Read(func(st *State) {
+		identity := identityFor(st.account(h.account.cfg.ID), RoleTrash)
+		if st.Revision <= before.Revision || st.Revision != after.Revision || mailboxToken(identity) != newToken {
+			t.Errorf("Trash identity change did not reach disk: revision %d, identity %+v", st.Revision, identity)
+		}
+	})
+	h.sync()
+	var unchanged syncResponse
+	h.request("GET", fmt.Sprintf("/v1/sync?since=%d", after.Revision), nil, &unchanged)
+	if unchanged.Revision != after.Revision {
+		t.Fatalf("unchanged scan advanced revision from %d to %d", after.Revision, unchanged.Revision)
+	}
+}
 
 func TestAccountCacheBelongsToTheConfiguredIMAPLogin(t *testing.T) {
 	for _, change := range []string{"login", "endpoint"} {

@@ -293,7 +293,8 @@ final class DraftStore {
         return await enqueue {
             guard self.loadFailure == nil else { self.error = self.loadFailure; return false }
             let removed = Set(self.all.filter { draft in
-                (scheduled || draft.sendAt == nil) && (ids.contains(draft.id) || draft.mode.replyID.map(ids.contains) == true)
+                guard scheduled || draft.sendAt == nil, self.mail?.hasPendingRemoteSend(draft.id) != true else { return false }
+                return ids.contains(draft.id) || draft.mode.replyID.map(ids.contains) == true
             }.map(\.id))
             guard !removed.isEmpty else { return committingMail?([]) ?? true }
             let standalone = self.drafts.contains { removed.contains($0.id) && ids.contains($0.id) }

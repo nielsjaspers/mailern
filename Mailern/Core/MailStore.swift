@@ -687,7 +687,10 @@ final class MailStore {
         }
     }
     func hasSentOrDiscarded(_ id: UUID) -> Bool {
-        discardedDraftIDs.contains(id) || pendingRemoteSends[id] != nil || sentConversation(id) != nil
+        discardedDraftIDs.contains(id) || hasPendingRemoteSend(id) || sentConversation(id) != nil
+    }
+    func hasPendingRemoteSend(_ id: UUID) -> Bool {
+        pendingRemoteSends[id] != nil
     }
 
     /// Immediate sends use the same durable cleanup receipt as scheduled sends.
@@ -792,60 +795,65 @@ final class MailStore {
 
     private func fileAcceptedSend(_ accepted: PreparedRemoteSend) -> DraftDelivery {
         let draft = accepted.draft
-        remoteSendGeneration &+= 1
+        let threadID = sentConversation(draft.id)?.id ?? accepted.conversationID
         acceptedSends.insert(draft.id)
+        guard pendingRemoteDeletes[threadID] == nil else {
+            return deferAcceptedSend(draft.id, message: "Message was sent. The sent copy will be filed once the conversation deletion is resolved.")
+        }
+        remoteSendGeneration &+= 1
         var pending = pendingRemoteSends
         pending.removeValue(forKey: draft.id)
         var updated = conversations
-        let threadID = sentConversation(draft.id)?.id ?? accepted.conversationID
-        if pendingRemoteDeletes[threadID] == nil {
-            let subject = draft.subject.isEmpty ? "(No Subject)" : draft.subject
-            let bcc = ComposerDraft.addresses(draft.bcc)
-            let attachments = draft.attachments.isEmpty ? nil : draft.attachments
-            let index: Int
-            if let existing = updated.firstIndex(where: { $0.id == threadID }) {
-                index = existing
-            } else {
-                index = 0
-                updated.insert(Conversation(id: threadID, accountID: accepted.from.id, subject: subject, unread: false, messages: []), at: index)
-            }
-            if let messageIndex = updated[index].messages.firstIndex(where: { $0.id == draft.id }) {
-                updated[index].messages[messageIndex].bcc = bcc.isEmpty ? nil : bcc
-                updated[index].messages[messageIndex].richText = draft.richText
-                updated[index].messages[messageIndex].attachments = attachments
-            } else {
-                var message = MailMessage(id: draft.id, sender: accepted.from.name, address: accepted.from.address,
-                                          to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
-                                          date: .now, body: draft.text, outgoing: true, bcc: bcc.isEmpty ? nil : bcc,
-                                          richText: draft.richText, attachments: attachments, subject: subject,
-                                          messageID: MailMessage.newMessageID(from: accepted.from.address, id: draft.id))
-                message.inReplyTo = accepted.replyTo?.threadingID
-                message.references = accepted.replyTo?.references
-                updated[index].messages.append(message)
-            }
-            updated[index].removal = nil
-            if let followUp = draft.followUp, followUp > .now {
-                updated[index].move(to: .snoozed, until: followUp)
-                updated[index].followUp = .waiting
-            } else {
-                updated[index].move(to: .settled)
-            }
+        let subject = draft.subject.isEmpty ? "(No Subject)" : draft.subject
+        let bcc = ComposerDraft.addresses(draft.bcc)
+        let attachments = draft.attachments.isEmpty ? nil : draft.attachments
+        let index: Int
+        if let existing = updated.firstIndex(where: { $0.id == threadID }) {
+            index = existing
+        } else {
+            index = 0
+            updated.insert(Conversation(id: threadID, accountID: accepted.from.id, subject: subject, unread: false, messages: []), at: index)
+        }
+        if let messageIndex = updated[index].messages.firstIndex(where: { $0.id == draft.id }) {
+            updated[index].messages[messageIndex].bcc = bcc.isEmpty ? nil : bcc
+            updated[index].messages[messageIndex].richText = draft.richText
+            updated[index].messages[messageIndex].attachments = attachments
+        } else {
+            var message = MailMessage(id: draft.id, sender: accepted.from.name, address: accepted.from.address,
+                                      to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
+                                      date: .now, body: draft.text, outgoing: true, bcc: bcc.isEmpty ? nil : bcc,
+                                      richText: draft.richText, attachments: attachments, subject: subject,
+                                      messageID: MailMessage.newMessageID(from: accepted.from.address, id: draft.id))
+            message.inReplyTo = accepted.replyTo?.threadingID
+            message.references = accepted.replyTo?.references
+            updated[index].messages.append(message)
+        }
+        updated[index].removal = nil
+        if let followUp = draft.followUp, followUp > .now {
+            updated[index].move(to: .snoozed, until: followUp)
+            updated[index].followUp = .waiting
+        } else {
+            updated[index].move(to: .settled)
         }
         guard save(replacingConversations: updated, draftDiscards: discardedDraftIDs.union([draft.id]),
                    pendingSends: pending, reportFailure: false) else {
-            if pendingRemoteSends[draft.id]?.accepted == false {
-                var unfiled = pendingRemoteSends
-                unfiled[draft.id]?.accepted = true
-                save(replacingConversations: conversations, pendingSends: unfiled, reportFailure: false)
-            }
-            error = "Message was sent. Try again to save the sent copy."
-            return .waitingToFile
+            return deferAcceptedSend(draft.id, message: "Message was sent. Try again to save the sent copy.")
         }
         acceptedSends.remove(draft.id)
         if conversations != updated { conversations = updated }
         clearNotice()
         error = nil
         return .filed
+    }
+
+    private func deferAcceptedSend(_ id: UUID, message: String) -> DraftDelivery {
+        if pendingRemoteSends[id]?.accepted == false {
+            var unfiled = pendingRemoteSends
+            unfiled[id]?.accepted = true
+            save(replacingConversations: conversations, pendingSends: unfiled, reportFailure: false)
+        }
+        error = message
+        return .waitingToFile
     }
 
     private func sendDraft(_ draft: ComposerDraft, id: UUID, discardingDraft: UUID? = nil) -> Bool {

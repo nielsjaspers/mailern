@@ -505,6 +505,7 @@ import os
         try await checkRemoteUndo()
         try await checkRemoteDelete()
         try await checkRemoteSending()
+        try await checkOutboxDuringSourceDelete()
     }
 
     @MainActor static func checkRemoteMerge() async throws {
@@ -1001,6 +1002,71 @@ import os
         assert(pulled.conversation(observed.id)?.latest.attachments == observed.attachments)
         assert(pulled.conversation(observed.id)?.latest.bcc == ["hidden@example.test"])
         print("PASS: send preflight blocks missing sources. After restart, accepted mail files from the original snapshot and ambiguous retries reuse it.")
+    }
+
+    @MainActor static func checkOutboxDuringSourceDelete() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-outbox-source-delete-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mailURL = directory.appending(path: "mail.sqlite")
+        let draftURL = directory.appending(path: "drafts.json")
+        let store = try remoteStore(at: mailURL)
+        let drafts = DraftStore(url: draftURL, mail: store)
+        var source = remoteThread()
+        source.removal = .trash
+        assert(store.mergeRemote(remoteBatch(1, [source], reset: true)))
+        var reply = ComposerDraft.make(mode: .reply(source.id), conversation: store.conversation(source.id), accounts: store.accounts)
+        reply.bcc = "hidden@example.test"
+        reply.attachments = [MailAttachment(name: "plan.txt", data: Data("Fictional plans".utf8), contentType: "text/plain")]
+        let queued = await drafts.schedule(reply, at: .now)
+        var unsent = reply
+        unsent.id = UUID()
+        let queuedUnsent = await drafts.schedule(unsent, at: .now.addingTimeInterval(3600))
+        assert(queued && queuedUnsent)
+
+        var submitted: PreparedRemoteSend?
+        store.sendRemote = { prepared in
+            submitted = prepared
+            throw URLError(.networkConnectionLost)
+        }
+        let unconfirmed = await drafts.sendNow(reply.id, through: store)
+        assert(!unconfirmed && submitted?.replyTo?.id == source.messages[0].id)
+        let deleted = await drafts.discardDrafts(for: [source.id], scheduled: true) {
+            store.deletePermanently([source.id], from: .trash, discarding: $0)
+        }
+        assert(deleted && store.pendingRemoteDeletes[source.id] != nil && store.conversation(source.id) == nil)
+        assert(drafts.outbox.map(\.id) == [reply.id], "Source deletion must preserve the unresolved outbox entry")
+
+        let retry = try remoteStore(at: mailURL)
+        let retryDrafts = DraftStore(url: draftURL, mail: retry)
+        var accepted = false
+        retry.sendRemote = { prepared in
+            assert(prepared == submitted)
+            accepted = true
+        }
+        let filedDuringDelete = await retryDrafts.sendNow(reply.id, through: retry)
+        assert(accepted && !filedDuringDelete && retryDrafts.outbox.map(\.id) == [reply.id],
+               "Acceptance must keep the outbox entry while the source delete is pending")
+        assert(retry.conversation(source.id) == nil && retry.pendingRemoteDeletes[source.id] != nil)
+
+        let recovered = try remoteStore(at: mailURL)
+        let recoveredDrafts = DraftStore(url: draftURL, mail: recovered)
+        assert(recoveredDrafts.outbox.map(\.id) == [reply.id])
+        let client = RemoteMailboxStub()
+        client.remove = { id, request in
+            assert(id == source.id && request.messageIDs == [source.messages[0].id])
+            return true
+        }
+        let sync = ServerSync(client: client, store: recovered)
+        await sync.push()
+        assert(recovered.pendingRemoteDeletes.isEmpty)
+        client.fetch = { _, _ in remoteBatch(2, [], deleted: [source.id]) }
+        try await sync.pull(wait: 0)
+        assert(recovered.discardedDraftIDs == [reply.id] && recovered.conversation(source.id)?.latest.id == reply.id)
+        assert(recovered.conversation(source.id)?.latest.attachments == reply.attachments)
+        assert(recovered.conversation(source.id)?.latest.bcc == ["hidden@example.test"])
+        let cleanedUp = await recoveredDrafts.sendNow(reply.id, through: recovered)
+        assert(cleanedUp && recoveredDrafts.outbox.isEmpty && DraftStore(url: draftURL).outbox.isEmpty)
+        print("PASS: source deletion removes unsent replies and preserves unresolved sends until they can be filed")
     }
 
     @MainActor static func checkMute() throws {
