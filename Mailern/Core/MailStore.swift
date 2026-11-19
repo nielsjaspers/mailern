@@ -588,6 +588,17 @@ final class MailStore {
         if hasSentOrDiscarded(draft.id) { return true }
         return sendUnsentOutboxDraft(draft)
     }
+    /// Sends now. Mail for a server account goes out through the server first; the store records only what it accepted.
+    func sendNow(_ draft: ComposerDraft) async -> Bool {
+        if hasSentOrDiscarded(draft.id) { return true }
+        if let sendRemote {
+            do { try await sendRemote(draft) } catch {
+                self.error = "Message could not be sent. \(error.localizedDescription)"
+                return false
+            }
+        }
+        return sendUnsentOutboxDraft(draft)
+    }
 
     /// Delivery checks the queued IDs together before calling this method.
     func sendUnsentOutboxDraft(_ draft: ComposerDraft) -> Bool {

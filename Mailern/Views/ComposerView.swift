@@ -392,7 +392,7 @@ struct ComposerView: View {
         }
         // A draft can outlive its account, for example after a demo reset. It sends from the default account instead.
         let missingAccount = !store.accounts.contains { $0.id == draft.accountID }
-        if missingAccount { draft.accountID = store.accounts.first { $0.id == defaultAccount }?.id ?? store.accounts[0].id }
+        if missingAccount { draft.accountID = store.accounts.first { $0.id == defaultAccount }?.id ?? store.accounts.first?.id ?? draft.accountID }
         let text = NSMutableAttributedString(attributedString: RichText.decode(draft.richText, fallback: draft.text))
         if !saved, draft.richText == nil, let sourceID = draft.mode.sourceID, let source = store.conversation(sourceID), text.length > 2 {
             // Retain the original formatting inside the editable reply or forward quote.
@@ -536,7 +536,7 @@ struct ComposerView: View {
                 if scheduled == nil { drafts.undoable = content.id }
             } else {
                 // The draft's ID makes sending a leftover draft again a no-op if deleting it fails below.
-                guard store.send(content) else {
+                guard await store.sendNow(content) else {
                     error = store.error
                     store.error = nil
                     return
