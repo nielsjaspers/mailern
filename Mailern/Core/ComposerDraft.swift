@@ -278,6 +278,8 @@ final class DraftStore {
     @discardableResult func save(_ draft: ComposerDraft) async -> Bool {
         await enqueue {
             var draft = draft
+            // A filed send no longer has a draft. A composer still open on it must not bring one back.
+            if draft.sendAt == nil, self.mail?.hasFiledSend(draft.id) == true { return true }
             if draft.sendAt != nil, self.mail?.hasSentOrDiscarded(draft.id) == true {
                 self.error = "This draft has already been sent or discarded."
                 return false

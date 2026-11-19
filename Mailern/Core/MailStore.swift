@@ -687,6 +687,8 @@ final class MailStore {
             return false
         }
     }
+    /// The draft went out and its sent message is filed in a conversation.
+    func hasFiledSend(_ id: UUID) -> Bool { sentConversation(id) != nil }
     func hasSentOrDiscarded(_ id: UUID) -> Bool {
         discardedDraftIDs.contains(id) || hasPendingRemoteSend(id) || sentConversation(id) != nil
     }

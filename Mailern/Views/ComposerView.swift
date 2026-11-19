@@ -216,6 +216,12 @@ struct ComposerView: View {
             minimize(velocity: velocity)
         }
         .onChange(of: draft.accountID) { _, id in if loaded { replaceSignature(with: store.account(id).signature) } }
+        // Sync can confirm an earlier send while the composer is open. The message is out, so the composer closes.
+        .onChange(of: store.hasFiledSend(draft.id)) { _, filed in
+            guard filed, loaded, !completed, !finishing else { return }
+            complete()
+            panel.close()
+        }
         .onChange(of: input) { _, value in
             autosave?.cancel()
             guard loaded, !completed, !finishing,
@@ -414,6 +420,11 @@ struct ComposerView: View {
         // A draft can outlive its account, for example after a demo reset. It sends from the default account instead.
         let missingAccount = !store.accounts.contains { $0.id == draft.accountID }
         if missingAccount { draft.accountID = store.accounts.first { $0.id == defaultAccount }?.id ?? store.accounts.first?.id ?? draft.accountID }
+        // An alias can leave the server config while its draft waits. Say which address the draft uses now.
+        if let chosen = draft.fromAddress, !store.account(draft.accountID).owns(chosen) {
+            draft.fromAddress = nil
+            error = "\(chosen) is no longer an address of this account. This message now goes out from \(store.account(draft.accountID).address)."
+        }
         let text = NSMutableAttributedString(attributedString: RichText.decode(draft.richText, fallback: draft.text))
         if !saved, draft.richText == nil, let sourceID = draft.mode.sourceID, let source = store.conversation(sourceID), text.length > 2 {
             // Retain the original formatting inside the editable reply or forward quote.
