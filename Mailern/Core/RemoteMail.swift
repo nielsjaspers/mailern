@@ -111,6 +111,11 @@ extension Conversation {
             if followUp == .waiting, workflow != .snoozed {
                 followUp = workflow == .inbox && remote.returnedFromSnoozeAt != nil ? .noReply : nil
             }
+            // An overdue reminder ends when the thread leaves Inbox, also when another client moved it.
+            if followUp == .noReply, workflow != .inbox {
+                followUp = nil
+                returnedFromSnoozeAt = nil
+            }
         }
         if !fields.contains(.removal) {
             // Moving a thread to Trash or Junk ends its reminder, as it does in Mailern, also when another client did it.
