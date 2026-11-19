@@ -34,6 +34,7 @@ const (
 // Message is one email as the service knows it. Locations holds its UID in each role mailbox that contains it.
 // Gmail keeps an inbox message in both INBOX and All Mail, so one message can have several locations.
 type Message struct {
+	PendingMove    *copyMove       `json:"pendingMove,omitempty"`
 	ID             string          `json:"id"`
 	Key            string          `json:"key"`
 	ConversationID string          `json:"conversationID"`

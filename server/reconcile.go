@@ -29,7 +29,8 @@ type flagChange struct {
 type plan struct {
 	moves    []move
 	flags    []flagChange
-	expunges []location
+	deleteAt Role
+	expunges []imap.UID
 }
 
 func (p plan) empty() bool { return len(p.moves)+len(p.flags)+len(p.expunges) == 0 }
@@ -37,6 +38,10 @@ func (p plan) empty() bool { return len(p.moves)+len(p.flags)+len(p.expunges) ==
 // placeOf is where a message counts as being. Gmail lists inbox and sent mail in All Mail too; Inbox and Sent win,
 // so a move starts from the mailbox Gmail documents for it.
 func placeOf(m *Message) (location, bool) {
+	// A partial copy to Trash must not hide the source before its cleanup finishes.
+	if pending := m.PendingMove; pending != nil && pending.From.UID != 0 && imap.UID(m.Locations[pending.From.Role]) == pending.From.UID {
+		return location{pending.From.Role, pending.From.UID}, true
+	}
 	for _, role := range []Role{RoleTrash, RoleJunk, RoleInbox, RoleSent, RoleArchive} {
 		if uid, ok := m.Locations[role]; ok {
 			return location{role, imap.UID(uid)}, true
@@ -54,7 +59,12 @@ func (a *Account) reconcile(st *State) []plan {
 			continue
 		}
 		msgs := st.messages(c)
-		if c.Deleting && (!slices.Equal(c.Keys, c.DeleteKeys) || slices.ContainsFunc(msgs, outsideRemoval)) {
+		if c.Deleting && (c.Removal != RoleTrash && c.Removal != RoleJunk ||
+			!slices.Equal(c.Keys, c.DeleteKeys) || len(msgs) != len(c.DeleteKeys) ||
+			slices.ContainsFunc(msgs, func(m *Message) bool {
+				at, ok := placeOf(m)
+				return !ok || at.uid == 0 || at.role != c.Removal
+			})) {
 			cancelDelete(c)
 			st.Touch(c)
 		}
@@ -78,11 +88,6 @@ func (a *Account) reconcile(st *State) []plan {
 		st.Touch(c)
 	}
 	return plans
-}
-
-func outsideRemoval(m *Message) bool {
-	at, ok := placeOf(m)
-	return !ok || at.role != RoleTrash && at.role != RoleJunk
 }
 
 func cancelDelete(c *Conversation) {
@@ -151,12 +156,9 @@ func sameTime(a, b *time.Time) bool {
 func planFor(c *Conversation, msgs []*Message) plan {
 	var p plan
 	if c.Deleting {
+		p.deleteAt = c.Removal
 		for _, m := range msgs {
-			for _, role := range []Role{RoleTrash, RoleJunk} {
-				if uid, ok := m.Locations[role]; ok {
-					p.expunges = append(p.expunges, location{role, imap.UID(uid)})
-				}
-			}
+			p.expunges = append(p.expunges, imap.UID(m.Locations[p.deleteAt]))
 		}
 		return p
 	}
@@ -235,16 +237,68 @@ func appendFlag(changes []flagChange, m *Message, flag imap.Flag, add bool) []fl
 	return changes
 }
 
+func (a *Account) checkMove(m move, caps imap.CapSet) error {
+	if m.from.uid == 0 {
+		return fmt.Errorf("move requires a source UID")
+	}
+	if a.mailboxes[m.to] == "" || a.mailboxes[m.to] == a.mailboxes[m.from.role] {
+		return fmt.Errorf("no distinct destination mailbox for %s", m.to)
+	}
+	if !(m.from.role == RoleArchive && a.archiveIsAll) && !caps.Has(imap.CapMove) && !caps.Has(imap.CapUIDPlus) {
+		return fmt.Errorf("move requires MOVE or UIDPLUS")
+	}
+	return nil
+}
+
+var errDeleteUnsupported = fmt.Errorf("permanent delete requires UIDPLUS")
+
+// Keep unsupported operations pending while allowing other writes in the same sync to proceed.
+func (a *Account) supportedPlans(plans []plan, caps imap.CapSet) ([]plan, error) {
+	var blocked error
+	var sources map[location]copyMoveSource
+	if caps.Has(imap.CapMove) && !caps.Has(imap.CapUIDPlus) {
+		sources = a.copyMoveSources(plans)
+	}
+	for i := range plans {
+		p := &plans[i]
+		p.moves = slices.DeleteFunc(p.moves, func(m move) bool {
+			if err := a.checkMove(m, caps); err != nil {
+				blocked = err
+				return true
+			}
+			if sources[m.from].pending {
+				blocked = fmt.Errorf("unfinished move requires UIDPLUS")
+				return true
+			}
+			return false
+		})
+		if len(p.expunges) > 0 && !caps.Has(imap.CapUIDPlus) {
+			p.expunges = nil
+			blocked = errDeleteUnsupported
+		}
+	}
+	return slices.DeleteFunc(plans, plan.empty), blocked
+}
+
 // apply carries out plans grouped by mailbox. Flags go first, because a move gives a message a new UID.
-// Gmail's All Mail holds every message, so mail leaves it by a copy that adds a label, not by a move.
-func (a *Account) apply(c *imapclient.Client, plans []plan, validity map[Role]uint32) error {
+func (a *Account) apply(c *imapclient.Client, plans []plan, identities map[Role]mailboxIdentity) error {
+	return a.applyPlans(c, plans, identities, nil)
+}
+
+func (a *Account) applyConfirmedMoves(c *imapclient.Client, p plan, identities map[Role]mailboxIdentity, validate func(*State) error) error {
+	return a.applyPlans(c, []plan{p}, identities, validate)
+}
+
+func (a *Account) applyPlans(c *imapclient.Client, plans []plan, identities map[Role]mailboxIdentity, validate func(*State) error) error {
 	flags := map[Role]map[flagChange][]imap.UID{}
 	moves := map[Role]map[Role][]imap.UID{}
-	expunges := map[Role][]imap.UID{}
+	expunges := map[Role][][]imap.UID{}
+	var copies []move
 	caps := c.Caps()
+	sources := a.copyMoveSources(plans)
 	for _, p := range plans {
 		if len(p.expunges) > 0 && !caps.Has(imap.CapUIDPlus) {
-			return fmt.Errorf("permanent delete requires UIDPLUS")
+			return errDeleteUnsupported
 		}
 		for _, f := range p.flags {
 			key := flagChange{flag: f.flag, add: f.add}
@@ -254,32 +308,31 @@ func (a *Account) apply(c *imapclient.Client, plans []plan, validity map[Role]ui
 			flags[f.at.role][key] = append(flags[f.at.role][key], f.at.uid)
 		}
 		for _, m := range p.moves {
-			if a.mailboxes[m.to] == "" || a.mailboxes[m.to] == a.mailboxes[m.from.role] {
-				return fmt.Errorf("no distinct destination mailbox for %s", m.to)
+			if err := a.checkMove(m, caps); err != nil {
+				return err
 			}
-			if !(m.from.role == RoleArchive && a.archiveIsAll) && !caps.Has(imap.CapMove) && !caps.Has(imap.CapUIDPlus) {
-				return fmt.Errorf("move requires MOVE or UIDPLUS")
+			if !(m.from.role == RoleArchive && a.archiveIsAll) && (!caps.Has(imap.CapMove) || sources[m.from].pending) {
+				if !caps.Has(imap.CapUIDPlus) {
+					return fmt.Errorf("unfinished move requires UIDPLUS")
+				}
+				copies = append(copies, m)
+				continue
 			}
 			if moves[m.from.role] == nil {
 				moves[m.from.role] = map[Role][]imap.UID{}
 			}
 			moves[m.from.role][m.to] = append(moves[m.from.role][m.to], m.from.uid)
 		}
-		for _, at := range p.expunges {
-			expunges[at.role] = append(expunges[at.role], at.uid)
+		if len(p.expunges) > 0 {
+			expunges[p.deleteAt] = append(expunges[p.deleteAt], p.expunges)
 		}
 	}
 	for _, role := range syncedRoles {
 		if len(flags[role])+len(moves[role])+len(expunges[role]) == 0 {
 			continue
 		}
-		name := a.mailboxes[role]
-		sel, err := c.Select(name, nil).Wait()
-		if err != nil {
-			return fmt.Errorf("select %s: %w", name, err)
-		}
-		if validity[role] == 0 || validity[role] != sel.UIDValidity {
-			return fmt.Errorf("UIDVALIDITY changed for %s", name)
+		if _, err := a.selectMailbox(c, role, identities[role], false); err != nil {
+			return err
 		}
 		for change, uids := range flags[role] {
 			op := imap.StoreFlagsDel
@@ -292,30 +345,42 @@ func (a *Account) apply(c *imapclient.Client, plans []plan, validity map[Role]ui
 			}
 		}
 		for to, uids := range moves[role] {
+			if validate != nil {
+				var err error
+				a.store.Read(func(st *State) { err = validate(st) })
+				if err != nil {
+					return err
+				}
+			}
 			set := imap.UIDSetNum(uids...)
-			if err := moveUIDs(c, set, a.mailboxes[to], role == RoleArchive && a.archiveIsAll, caps); err != nil {
+			var err error
+			if role == RoleArchive && a.archiveIsAll {
+				// COPY from Gmail's All Mail adds the destination label while retaining the message.
+				_, err = c.Copy(set, a.mailboxes[to]).Wait()
+			} else {
+				_, err = c.Move(set, a.mailboxes[to]).Wait()
+			}
+			if err != nil {
 				return fmt.Errorf("move to %s: %w", a.mailboxes[to], err)
 			}
 		}
-		if uids := expunges[role]; len(uids) > 0 {
-			if err := expungeUIDs(c, imap.UIDSetNum(uids...)); err != nil {
+		for _, uids := range expunges[role] {
+			set := imap.UIDSetNum(uids...)
+			found, err := c.UIDSearch(&imap.SearchCriteria{UID: []imap.UIDSet{set}}, nil).Wait()
+			if err != nil {
+				return fmt.Errorf("revalidate delete in %s: %w", a.mailboxes[role], err)
+			}
+			present, _ := found.All.(imap.UIDSet)
+			if slices.ContainsFunc(uids, func(uid imap.UID) bool { return !present.Contains(uid) }) {
+				// A restore may leave only some members here. Let the next scan reconcile the whole thread.
+				continue
+			}
+			if err := expungeUIDs(c, set); err != nil {
 				return err
 			}
 		}
 	}
-	return nil
-}
-
-func moveUIDs(c *imapclient.Client, set imap.UIDSet, dest string, copyOnly bool, caps imap.CapSet) error {
-	if !copyOnly && caps.Has(imap.CapMove) {
-		_, err := c.Move(set, dest).Wait()
-		return err
-	}
-	// The client's MOVE fallback queues deletion before it knows whether COPY succeeded.
-	if _, err := c.Copy(set, dest).Wait(); err != nil || copyOnly {
-		return err
-	}
-	return expungeUIDs(c, set)
+	return a.applyCopyMoves(c, copies, sources, identities, validate)
 }
 
 func expungeUIDs(c *imapclient.Client, set imap.UIDSet) error {

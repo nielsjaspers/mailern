@@ -195,8 +195,11 @@ func (a *Account) Sync() error {
 }
 
 func (a *Account) sync() error {
+	var c *imapclient.Client
+	var blocked error
 	for range 3 {
-		c, err := a.connect()
+		var err error
+		c, err = a.connect()
 		if err != nil {
 			return err
 		}
@@ -207,30 +210,60 @@ func (a *Account) sync() error {
 			return err
 		}
 		var plans []plan
-		validity := make(map[Role]uint32)
+		var identities map[Role]mailboxIdentity
 		if err := a.store.Update(func(st *State) error {
 			plans = a.reconcile(st)
-			for role, value := range st.account(a.cfg.ID).UIDValidity {
-				validity[role] = value
-			}
+			identities = mailboxIdentities(st.account(a.cfg.ID))
 			return nil
 		}); err != nil {
 			return err
 		}
+		plans, blocked = a.supportedPlans(plans, c.Caps())
 		if len(plans) == 0 {
-			return a.fileSent(c)
+			break
 		}
-		if err := a.apply(c, plans, validity); err != nil {
+		if err := a.apply(c, plans, identities); err != nil {
 			return err
 		}
 	}
-	return nil
+	return errors.Join(blocked, a.fileSent(c))
+}
+
+type mailboxIdentity struct {
+	name     string
+	validity uint32
+}
+
+func identityFor(state *AccountState, role Role) mailboxIdentity {
+	return mailboxIdentity{state.Mailboxes[role], state.UIDValidity[role]}
+}
+
+func mailboxIdentities(state *AccountState) map[Role]mailboxIdentity {
+	identities := make(map[Role]mailboxIdentity, len(syncedRoles))
+	for _, role := range syncedRoles {
+		identities[role] = identityFor(state, role)
+	}
+	return identities
+}
+
+func (a *Account) selectMailbox(c *imapclient.Client, role Role, expected mailboxIdentity, readOnly bool) (*imap.SelectData, error) {
+	name := a.mailboxes[role]
+	if name == "" || name != expected.name {
+		return nil, fmt.Errorf("mailbox for %s changed from %q to %q", role, expected.name, name)
+	}
+	sel, err := c.Select(name, &imap.SelectOptions{ReadOnly: readOnly}).Wait()
+	if err != nil {
+		return nil, fmt.Errorf("select %s: %w", name, err)
+	}
+	if expected.validity == 0 || sel.UIDValidity != expected.validity {
+		return nil, fmt.Errorf("UIDVALIDITY changed for %s", name)
+	}
+	return sel, nil
 }
 
 type mailboxSnapshot struct {
-	name     string
-	validity uint32
-	flags    map[imap.UID][]imap.Flag
+	mailboxIdentity
+	flags map[imap.UID][]imap.Flag
 	// Messages new to this mailbox, by UID: their key, and the raw message when the account has never seen the key.
 	keys map[imap.UID]string
 	raw  map[imap.UID][]byte
@@ -260,10 +293,13 @@ func (a *Account) read(c *imapclient.Client) error {
 }
 
 func (a *Account) readMailbox(c *imapclient.Client, role Role, name string, since time.Time) (mailboxSnapshot, error) {
-	snap := mailboxSnapshot{name: name, flags: map[imap.UID][]imap.Flag{}, keys: map[imap.UID]string{}, raw: map[imap.UID][]byte{}}
+	snap := mailboxSnapshot{mailboxIdentity: mailboxIdentity{name: name}, flags: map[imap.UID][]imap.Flag{}, keys: map[imap.UID]string{}, raw: map[imap.UID][]byte{}}
 	sel, err := c.Select(name, &imap.SelectOptions{ReadOnly: true}).Wait()
 	if err != nil {
 		return snap, err
+	}
+	if sel.UIDValidity == 0 {
+		return snap, fmt.Errorf("missing UIDVALIDITY")
 	}
 	snap.validity = sel.UIDValidity
 	if sel.NumMessages == 0 {
@@ -279,17 +315,21 @@ func (a *Account) readMailbox(c *imapclient.Client, role Role, name string, sinc
 	}
 	known := map[imap.UID]bool{}
 	keys := map[string]bool{}
+	var copyUIDs []imap.UID
 	a.store.Read(func(st *State) {
 		account := st.account(a.cfg.ID)
-		current := account.Mailboxes[role] == snap.name && account.UIDValidity[role] == snap.validity
+		current := identityFor(account, role) == snap.mailboxIdentity
 		for key, m := range account.Messages {
 			keys[key] = true
 			if uid, ok := m.Locations[role]; ok && current {
 				known[imap.UID(uid)] = true
 			}
+			if p := m.PendingMove; p != nil && p.To.Role == role && p.To.identity() == snap.mailboxIdentity && p.To.UID != 0 {
+				copyUIDs = append(copyUIDs, p.To.UID)
+			}
 		}
 	})
-	uids := found.AllUIDs()
+	uids := append(found.AllUIDs(), copyUIDs...)
 	for uid := range known {
 		uids = append(uids, uid)
 	}
@@ -351,10 +391,7 @@ func (a *Account) findOldMoves(c *imapclient.Client, snapshots map[Role]mailboxS
 			missingLocation := false
 			for role, uid := range m.Locations {
 				snap, ok := snapshots[role]
-				if !ok {
-					continue
-				}
-				if _, present := snap.flags[imap.UID(uid)]; present && account.Mailboxes[role] == snap.name && account.UIDValidity[role] == snap.validity {
+				if _, present := snap.flags[imap.UID(uid)]; ok && present && identityFor(account, role) == snap.mailboxIdentity {
 					continue
 				}
 				missingLocation = true
@@ -378,34 +415,32 @@ func (a *Account) findOldMoves(c *imapclient.Client, snapshots map[Role]mailboxS
 	var searches []imap.SearchCriteria
 	if missingID {
 		// Messages without a usable Message-ID need their envelope to recover the key.
-		searches = append(searches, imap.SearchCriteria{Before: since})
+		searches = append(searches, imap.SearchCriteria{})
 	} else {
 		for batch := range slices.Chunk(ids, 32) {
-			criteria := messageIDSearch(batch)
-			criteria.Before = since
-			searches = append(searches, criteria)
+			searches = append(searches, messageIDSearch(batch))
 		}
 	}
 	for _, role := range syncedRoles {
 		snap, ok := snapshots[role]
-		if !ok || role == RoleInbox {
+		if !ok {
 			continue
 		}
-		name := a.mailboxes[role]
-		sel, err := c.Select(name, &imap.SelectOptions{ReadOnly: true}).Wait()
+		sel, err := a.selectMailbox(c, role, snap.mailboxIdentity, true)
 		if err != nil {
-			return fmt.Errorf("select %s: %w", name, err)
-		}
-		if sel.UIDValidity != snap.validity {
-			return fmt.Errorf("UIDVALIDITY changed for %s", name)
+			return err
 		}
 		if sel.NumMessages == 0 {
 			continue
 		}
 		for _, criteria := range searches {
+			// Inbox was scanned first. A tracked message of any age can move there during the scan.
+			if role != RoleInbox {
+				criteria.Before = since
+			}
 			found, err := c.UIDSearch(&criteria, nil).Wait()
 			if err != nil {
-				return fmt.Errorf("search old mail in %s: %w", name, err)
+				return fmt.Errorf("search tracked mail in %s: %w", snap.name, err)
 			}
 			uids := slices.DeleteFunc(found.AllUIDs(), func(uid imap.UID) bool {
 				_, ok := snap.flags[uid]
@@ -414,7 +449,7 @@ func (a *Account) findOldMoves(c *imapclient.Client, snapshots map[Role]mailboxS
 			for batch := range slices.Chunk(uids, 100) {
 				msgs, err := c.Fetch(imap.UIDSetNum(batch...), &imap.FetchOptions{UID: true, Envelope: true, Flags: true}).Collect()
 				if err != nil {
-					return fmt.Errorf("fetch old mail in %s: %w", name, err)
+					return fmt.Errorf("fetch tracked mail in %s: %w", snap.name, err)
 				}
 				for _, m := range msgs {
 					if key := envelopeKey(m.Envelope); lost[key] {
@@ -469,11 +504,8 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 	}
 	var fresh []*parsedArrival
 	for _, role := range syncedRoles {
-		snap, ok := snapshots[role]
-		if !ok {
-			continue
-		}
-		if account.Mailboxes[role] != snap.name || account.UIDValidity[role] != snap.validity {
+		snap := snapshots[role]
+		if identityFor(account, role) != snap.mailboxIdentity {
 			for _, m := range account.Messages {
 				if _, ok := m.Locations[role]; ok {
 					delete(m.Locations, role)
@@ -481,8 +513,12 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 					changed[m.ConversationID] = true
 				}
 			}
-			account.Mailboxes[role] = snap.name
-			account.UIDValidity[role] = snap.validity
+			if snap.name == "" {
+				delete(account.Mailboxes, role)
+				delete(account.UIDValidity, role)
+				continue
+			}
+			account.Mailboxes[role], account.UIDValidity[role] = snap.name, snap.validity
 		}
 		located := byUID(role)
 		for uid, m := range located {
@@ -526,6 +562,25 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 		}
 	}
 	for _, m := range account.Messages {
+		if p := m.PendingMove; p != nil {
+			from, to := snapshots[p.From.Role], snapshots[p.To.Role]
+			_, destinationPresent := to.flags[p.To.UID]
+			sourceUID := imap.UID(m.Locations[p.From.Role])
+			invalidated := from.mailboxIdentity != p.From.identity() || to.mailboxIdentity != p.To.identity() ||
+				(sourceUID != 0 && sourceUID != p.From.UID) || (p.To.UID != 0 && !destinationPresent)
+			if invalidated || sourceUID == 0 {
+				m.PendingMove = nil
+				st.Revision++
+			}
+			if invalidated {
+				// A remap or a removed copy invalidates the old cleanup and its placement intent.
+				if thread := st.Conversations[m.ConversationID]; thread != nil && thread.PendingPlacement {
+					thread.PendingPlacement = false
+					thread.Pending = thread.Deleting || thread.PendingRead || thread.PendingPin
+					changed[thread.ID] = true
+				}
+			}
+		}
 		at, ok := placeOf(m)
 		if !ok {
 			continue

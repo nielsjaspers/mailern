@@ -96,7 +96,7 @@ func TestProviderDeleteCancelsWhenThreadChanges(t *testing.T) {
 			parent := h.deliver("Trash", "Trashed thread", "")
 			h.sync()
 			c := h.conversations()["Trashed thread"]
-			if code := h.request("DELETE", "/v1/conversations/"+c.ID, nil, nil); code != http.StatusNoContent {
+			if code := h.delete(c, c.Removal); code != http.StatusNoContent {
 				t.Fatalf("delete: %d", code)
 			}
 			h.deliver(replyMailbox, "New reply", parent)
@@ -115,10 +115,11 @@ func TestProviderDeleteCancelsWhenThreadChanges(t *testing.T) {
 func TestProviderDeleteCancelsWhenMessageLeavesTrash(t *testing.T) {
 	h := newHarness(t)
 	parent := h.deliver("Trash", "Trashed thread", "")
+	h.sync()
 	h.deliver("Trash", "Existing reply", parent)
 	h.sync()
 	c := h.conversations()["Trashed thread"]
-	if code := h.request("DELETE", "/v1/conversations/"+c.ID, nil, nil); code != http.StatusNoContent {
+	if code := h.delete(c, c.Removal); code != http.StatusNoContent {
 		t.Fatalf("delete: %d", code)
 	}
 	client, err := h.account.dial()
@@ -251,7 +252,7 @@ func (s createRecordingSession) Create(name string, options *imap.CreateOptions)
 	return s.Session.Create(name, options)
 }
 
-func TestProviderCopyFallbackExpungesOnlyMovedUIDs(t *testing.T) {
+func TestProviderNativeMovePreservesUnrelatedDeletedMail(t *testing.T) {
 	for _, targeted := range []bool{true, false} {
 		name := "UIDPLUS"
 		if !targeted {
@@ -259,7 +260,7 @@ func TestProviderCopyFallbackExpungesOnlyMovedUIDs(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
-			caps := imap.CapSet{imap.CapIMAP4rev1: {}}
+			caps := imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapMove: {}}
 			if targeted {
 				caps[imap.CapUIDPlus] = struct{}{}
 			}
@@ -271,13 +272,10 @@ func TestProviderCopyFallbackExpungesOnlyMovedUIDs(t *testing.T) {
 			err := h.account.Sync()
 			inbox, archive := h.mailbox("INBOX"), h.mailbox("Archive")
 			if !slices.Contains(inbox["Unrelated deleted message"], imap.FlagDeleted) {
-				t.Fatalf("fallback expunged an unrelated UID: %v", inbox)
+				t.Fatalf("MOVE expunged an unrelated UID: %v", inbox)
 			}
-			if targeted && (err != nil || len(inbox) != 1 || len(archive) != 1) {
-				t.Fatalf("targeted fallback did not move one message: %v, inbox %v, archive %v", err, inbox, archive)
-			}
-			if !targeted && (err == nil || len(inbox) != 2 || len(archive) != 0) {
-				t.Fatalf("fallback without UIDPLUS wrote to the mailbox: %v, inbox %v, archive %v", err, inbox, archive)
+			if err != nil || len(inbox) != 1 || len(archive) != 1 {
+				t.Fatalf("MOVE should move one message: %v, inbox %v, archive %v", err, inbox, archive)
 			}
 		})
 	}
@@ -316,7 +314,7 @@ func TestProviderValidatesUIDsBeforeWriting(t *testing.T) {
 			case "move":
 				h.set(c, func(s *ConversationState) { s.Removal = RoleTrash })
 			case "delete":
-				if code := h.request("DELETE", "/v1/conversations/"+c.ID, nil, nil); code != http.StatusNoContent {
+				if code := h.delete(c, c.Removal); code != http.StatusNoContent {
 					t.Fatalf("delete: %d", code)
 				}
 			}
@@ -339,13 +337,19 @@ func (s failingCopySession) Copy(imap.NumSet, string) (*imap.CopyData, error) {
 	return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "test copy refused"}
 }
 
-func TestProviderFailedCopyLeavesSourceUndeleted(t *testing.T) {
+func TestProviderFailedAllMailCopyLeavesSourceUndeleted(t *testing.T) {
 	h := newHarness(t)
-	serveProvider(t, h, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapUIDPlus: {}},
-		func(s imapserver.Session) imapserver.Session { return failingCopySession{s} })
-	h.deliver("INBOX", "Keep on failed copy", "")
+	if err := h.lab.users[labAddress].Create("Everything", nil); err != nil {
+		t.Fatal(err)
+	}
+	h.account.cfg.Mailboxes = map[Role]string{RoleArchive: "Everything"}
+	serveProvider(t, h, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapSpecialUse: {}, imap.CapListExtended: {}},
+		func(s imapserver.Session) imapserver.Session {
+			return failingCopySession{allMailSession{s.(imapserver.SessionIMAP4rev2)}}
+		})
+	h.deliver("Everything", "Keep on failed copy", "")
 	h.sync()
-	h.set(h.conversations()["Keep on failed copy"], func(s *ConversationState) { s.Workflow = WorkflowSettled })
+	h.set(h.conversations()["Keep on failed copy"], func(s *ConversationState) { s.Workflow = WorkflowInbox })
 	// Keep the connection open after the error so a queued STORE or EXPUNGE reaches the server.
 	err := h.account.sync()
 	var status *imap.Error
@@ -355,7 +359,7 @@ func TestProviderFailedCopyLeavesSourceUndeleted(t *testing.T) {
 	if err := h.account.client.Noop().Wait(); err != nil {
 		t.Fatal(err)
 	}
-	got := h.mailbox("INBOX")
+	got := h.mailbox("Everything")
 	if flags, ok := got["Keep on failed copy"]; !ok || slices.Contains(flags, imap.FlagDeleted) {
 		t.Fatalf("failed COPY touched the source: %v", got)
 	}
