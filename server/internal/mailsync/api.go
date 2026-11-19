@@ -38,20 +38,21 @@ func mailboxToken(identity mailboxIdentity) string {
 }
 
 type wireMessage struct {
-	ID         string    `json:"id"`
-	Sender     string    `json:"sender"`
-	Address    string    `json:"address"`
-	To         []string  `json:"to"`
-	Cc         []string  `json:"cc"`
-	ReplyTo    []string  `json:"replyTo,omitempty"`
-	Date       time.Time `json:"date"`
-	Body       string    `json:"body"`
-	Outgoing   bool      `json:"outgoing"`
-	Subject    string    `json:"subject"`
-	HasHTML    bool      `json:"hasHTML"`
-	MessageID  string    `json:"messageID,omitempty"`
-	InReplyTo  string    `json:"inReplyTo,omitempty"`
-	References []string  `json:"references,omitempty"`
+	ID          string    `json:"id"`
+	Sender      string    `json:"sender"`
+	Address     string    `json:"address"`
+	To          []string  `json:"to"`
+	Cc          []string  `json:"cc"`
+	ReplyTo     []string  `json:"replyTo,omitempty"`
+	DeliveredTo []string  `json:"deliveredTo,omitempty"`
+	Date        time.Time `json:"date"`
+	Body        string    `json:"body"`
+	Outgoing    bool      `json:"outgoing"`
+	Subject     string    `json:"subject"`
+	HasHTML     bool      `json:"hasHTML"`
+	MessageID   string    `json:"messageID,omitempty"`
+	InReplyTo   string    `json:"inReplyTo,omitempty"`
+	References  []string  `json:"references,omitempty"`
 	// Another client marked the message deleted. It still shows, but it is not a new reply.
 	Deleted bool `json:"deleted,omitempty"`
 }
@@ -133,7 +134,7 @@ func wire(st *State, c *Conversation) wireConversation {
 	}
 	for _, m := range st.messages(c) {
 		out.Messages = append(out.Messages, wireMessage{
-			ID: m.ID, Sender: m.Sender, Address: m.Address, To: m.To, Cc: m.Cc, ReplyTo: m.ReplyTo, Date: wireTime(m.Date), Body: m.Text,
+			ID: m.ID, Sender: m.Sender, Address: m.Address, To: m.To, Cc: m.Cc, ReplyTo: m.ReplyTo, DeliveredTo: m.DeliveredTo, Date: wireTime(m.Date), Body: m.Text,
 			Outgoing: m.Outgoing, Subject: m.Subject, HasHTML: m.HasHTML, MessageID: m.MessageID,
 			InReplyTo: m.InReplyTo, References: m.References, Deleted: m.Deleted,
 		})

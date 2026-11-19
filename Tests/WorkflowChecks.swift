@@ -1154,6 +1154,12 @@ import os
         var c = store.conversation(thread.id)!
         let reply = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
         assert(reply.fromAddress == "hello@example.test" && reply.sender(in: synced) == "hello@example.test" && reply.cc.isEmpty)
+        // List mail or a blind copy names your alias only in its delivery address. The reply still uses it.
+        c.messages[0].to = ["list@example.test"]
+        c.messages[0].deliveredTo = ["hello@example.test"]
+        let fromList = ComposerDraft.make(mode: .reply(c.id), conversation: c, accounts: store.accounts)
+        assert(fromList.fromAddress == "hello@example.test")
+        c.messages[0].deliveredTo = nil
         // Mail to the main address answers from the main address.
         c.messages[0].to = [account.address]
         let plain = ComposerDraft.make(mode: .reply(c.id), conversation: c, accounts: store.accounts)

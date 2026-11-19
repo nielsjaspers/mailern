@@ -92,6 +92,8 @@ struct MailMessage: Codable, Identifiable, Equatable {
     var remoteHTML: Bool?
     /// Where the sender wants replies, such as a contact form's visitor or a mailing list.
     var replyTo: [String]?
+    /// The addresses the message was delivered to. A blind copy or list mail names your alias only here.
+    var deliveredTo: [String]?
 
     /// The ID other messages use to refer to this one. Messages without a Message-ID get a stable local stand-in.
     var threadingID: String { messageID ?? "<\(id.uuidString)@mailern.local>" }

@@ -38,6 +38,14 @@ func parseMessage(raw []byte) (parsed, error) {
 	p.To = addresses(h, "To")
 	p.Cc = addresses(h, "Cc")
 	p.ReplyTo = addresses(h, "Reply-To")
+	// Where the message was delivered. A blind copy or list mail names the alias only here.
+	for _, key := range []string{"Delivered-To", "X-Original-To"} {
+		for _, value := range h.Values(key) {
+			if address := strings.Trim(strings.TrimSpace(value), "<>"); strings.Contains(address, "@") {
+				p.DeliveredTo = append(p.DeliveredTo, address)
+			}
+		}
+	}
 	p.Date, _ = h.Date()
 	p.Subject, _ = h.Subject()
 	if id, _ := h.MessageID(); id != "" {

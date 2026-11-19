@@ -159,6 +159,7 @@ struct RemoteMessage: Decodable, Equatable {
     var to: [String]?
     var cc: [String]?
     var replyTo: [String]?
+    var deliveredTo: [String]?
     var date: Date
     var body: String
     var outgoing: Bool
@@ -325,6 +326,7 @@ extension MailStore {
             }
             m.remoteHTML = message.hasHTML && m.html == nil ? true : nil
             m.replyTo = message.replyTo?.isEmpty == false ? message.replyTo : nil
+            m.deliveredTo = message.deliveredTo?.isEmpty == false ? message.deliveredTo : nil
             return m
         }
         if c.messages.isEmpty, let local { c.messages = local.messages }
