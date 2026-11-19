@@ -190,6 +190,7 @@ final class ComposeAccountUITests: MailernUITestCase {
         checkSender("morgan@mail.example.com")
         openFilterOptions(in: app)
         app.buttons["filter-account-icloud"].tap()
+        app.buttons["filter-account-proton"].tap()
         app.buttons["filter-account-gmail"].tap()
         app.buttons["Done"].tap()
         checkSender("morgan@student.example.com")
