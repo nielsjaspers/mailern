@@ -34,6 +34,7 @@ import os
         await checkDraftDiscardHaptics()
         checkAllMailSearch()
         checkNextConversation()
+        try await checkRemoteMerge()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -492,6 +493,82 @@ import os
         assert(String(text.characters).contains("*this*"), "Plain text is not read as Markdown")
         assert(MessageLinks.linked("Tuesday, 10:00–11:00\nOrder #10428").runs.allSatisfy { $0.link == nil })
         print("PASS: mailto parsing and drafts, web/email/phone links in plain text, no Markdown in plain text")
+    }
+
+    @MainActor static func checkRemoteMerge() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-remote-\(UUID())")
+        let disk = SQLitePersistence(url: directory.appending(path: "server.sqlite"))
+        let store = MailStore(persistence: disk)
+        // The server's JSON: UTC dates, and null lists from Go.
+        let json = """
+        {"revision":4,"reset":true,"accounts":[{"id":"gmail","name":"Gmail","address":"morgan@mail.example.com"}],
+         "conversations":[{"id":"6F1D1D2E-6C4B-4E0A-9C1E-1B3A0A6E2B10","accountID":"gmail","subject":"Dinner","workflow":"inbox",
+           "unread":true,"pinned":false,"muted":false,"revision":3,"messages":[{"id":"0B7C5B0E-0E9A-4B8E-8B57-4A1E0F2C6D11",
+           "sender":"Sam","address":"sam@example.com","to":["morgan@mail.example.com"],"cc":null,"date":"2026-11-19T14:16:51Z",
+           "body":"Saturday?","outgoing":false,"subject":"Dinner","hasHTML":true,"messageID":"<a@example.com>"}]}],"deleted":[]}
+        """
+        var sync = try RemoteJSON.decoder.decode(RemoteSync.self, from: Data(json.utf8))
+        store.mergeRemote(sync)
+        // A reset replaces the demo mail and accounts with the server's.
+        assert(store.conversations.count == 1 && store.accounts.map(\.id) == ["gmail"])
+        let id = sync.conversations[0].id
+        var c = store.conversation(id)!
+        assert(c.workflow == .inbox && c.unread && !c.hasUnsyncedChanges && c.latest.remoteHTML == true && c.latest.cc.isEmpty)
+        // A local Settle waits for the server. A sync that still shows Inbox brings the reply but keeps the Settle.
+        store.move(id, to: .settled)
+        assert(store.conversation(id)!.hasUnsyncedChanges)
+        sync.reset = false
+        var reply = sync.conversations[0].messages[0]
+        reply.id = UUID()
+        reply.date = reply.date.addingTimeInterval(60)
+        sync.conversations[0].messages.append(reply)
+        store.mergeRemote(sync)
+        c = store.conversation(id)!
+        assert(c.workflow == .settled && c.messages.count == 2 && c.hasUnsyncedChanges)
+        // The server confirms the Settle.
+        sync.conversations[0].workflow = .settled
+        sync.conversations[0].unread = false
+        store.mergeRemote(sync)
+        assert(!store.conversation(id)!.hasUnsyncedChanges && store.conversation(id)!.workflow == .settled)
+        // A snooze with fractions of a second matches the server's whole-second copy, so it is not sent again.
+        let until = Date.now.addingTimeInterval(3_600.25)
+        store.move(id, to: .snoozed, until: until)
+        sync.conversations[0].workflow = .snoozed
+        sync.conversations[0].snoozedUntil = Date(timeIntervalSince1970: until.timeIntervalSince1970.rounded(.down))
+        store.mergeRemote(sync)
+        assert(!store.conversation(id)!.hasUnsyncedChanges)
+        // HTML loaded on the phone stays when the conversation syncs again.
+        store.loadRemoteHTML = { _ in "<p>Saturday?</p>" }
+        let first = sync.conversations[0].messages[0].id
+        await store.loadHTML(message: first, in: id)
+        store.mergeRemote(sync)
+        let html = store.conversation(id)!.messages.first { $0.id == first }!
+        assert(html.html == "<p>Saturday?</p>" && html.remoteHTML == nil)
+        // A server reminder that returns without a reply is overdue; a reply ends it.
+        var waiting = store.conversation(id)!
+        waiting.followUp = .waiting
+        store.replaceRemote(conversations: [waiting], accounts: store.accounts, invalidatingUndo: [])
+        sync.conversations[0].workflow = .inbox
+        sync.conversations[0].snoozedUntil = nil
+        store.mergeRemote(sync)
+        assert(store.conversation(id)!.followUp == .noReply)
+        // New mail from a blocked sender goes to Junk and syncs back.
+        store.setSenderBlocked(true, address: "spam@example.net")
+        var spam = sync.conversations[0]
+        spam.id = UUID()
+        spam.messages = [RemoteMessage(id: UUID(), sender: "Spam", address: "spam@example.net", to: nil, cc: nil, date: .now,
+                                       body: "Win", outgoing: false, subject: "Win", hasHTML: false)]
+        sync.conversations = [spam]
+        store.mergeRemote(sync)
+        assert(store.conversation(spam.id)!.removal == .junk && store.conversation(spam.id)!.hasUnsyncedChanges)
+        // Deletions on the server remove the conversation, and the merge persists.
+        sync.conversations = []
+        sync.deleted = [spam.id]
+        store.mergeRemote(sync)
+        assert(store.conversation(spam.id) == nil)
+        let reloaded = MailStore(persistence: SQLitePersistence(url: disk.url))
+        assert(reloaded.conversations.map(\.id) == [id] && reloaded.conversation(id)!.synced != nil)
+        print("PASS: server sync replaces demo mail, keeps unsynced local moves, takes replies, rounds snoozes, keeps loaded HTML, ends reminders, junks blocked senders, applies deletions, persists")
     }
 
     @MainActor static func checkMute() throws {

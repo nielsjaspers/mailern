@@ -60,6 +60,12 @@ final class MailStore {
     private var undoAction: ConversationAction?
     @ObservationIgnored private var noticeExpiryTask: Task<Void, Never>?
     private let persistence: any ConversationPersistence
+    /// Sends a draft through the mail server before the store records it. Nil for demo mail, which sends nothing.
+    @ObservationIgnored var sendRemote: ((ComposerDraft) async throws -> Void)?
+    /// Loads a message's HTML part from the mail server.
+    @ObservationIgnored var loadRemoteHTML: ((UUID) async throws -> String)?
+    /// Accounts come from the mail server, so they cannot be added or deleted here.
+    var isServerMailbox: Bool { sendRemote != nil }
     private var loadFailure: String?
     /// False after a failed save, when the stored search index can miss mail that only exists in memory.
     private var indexCurrent = true {
@@ -378,6 +384,29 @@ final class MailStore {
         conversations = remaining
         return true
     }
+    /// Replaces mail with a merged server sync. Undo cannot restore a conversation that gained or lost mail since.
+    func replaceRemote(conversations updated: [Conversation], accounts: [MailAccount], invalidatingUndo ids: Set<UUID>) {
+        guard canWrite() else { return }
+        let before = (self.accounts, conversations)
+        self.accounts = accounts
+        guard save(replacingConversations: updated) else { self.accounts = before.0; return }
+        conversations = updated
+        if !ids.isEmpty { clearWorkflowUndo(involving: ids) }
+    }
+    /// Loads and stores the HTML part of a message from the mail server.
+    func loadHTML(message id: UUID, in conversationID: UUID) async {
+        guard let loadRemoteHTML else { return }
+        do {
+            let html = try await loadRemoteHTML(id)
+            guard let c = conversations.firstIndex(where: { $0.id == conversationID }),
+                  let m = conversations[c].messages.firstIndex(where: { $0.id == id }) else { return }
+            conversations[c].messages[m].html = html.isEmpty ? nil : html
+            conversations[c].messages[m].remoteHTML = nil
+            save()
+        } catch {
+            self.error = "The message could not be loaded. \(error.localizedDescription)"
+        }
+    }
     /// Why `account` cannot be saved, or nil when it can.
     func problem(with account: MailAccount) -> String? {
         if account.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Enter a name for this account." }
@@ -516,13 +545,14 @@ final class MailStore {
         let before = conversations
         var message = MailMessage(id: id, sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body,
                                   outgoing: true, bcc: bcc.isEmpty ? nil : bcc, richText: richText, attachments: attachments.isEmpty ? nil : attachments,
-                                  subject: subject, messageID: MailMessage.newMessageID(from: account.address))
+                                  subject: subject, messageID: MailMessage.newMessageID(from: account.address, id: id))
         if let threadID, let i = conversations.firstIndex(where: { $0.id == threadID }) {
             message.answer(conversations[i].message(replyingTo))
             conversations[i].messages.append(message)
             conversations[i].removal = nil
         } else {
-            conversations.insert(Conversation(accountID: account.id, subject: subject, unread: false, messages: [message]), at: 0)
+            // A new conversation takes the message's ID, so the mail server files the sent copy in the same thread.
+            conversations.insert(Conversation(id: id, accountID: account.id, subject: subject, unread: false, messages: [message]), at: 0)
         }
         let i = threadID.flatMap { id in conversations.firstIndex { $0.id == id } } ?? 0
         if let followUp, followUp > .now {

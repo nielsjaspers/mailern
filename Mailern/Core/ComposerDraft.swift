@@ -390,14 +390,21 @@ final class DraftStore {
             let queued = Set(self.all.lazy.filter { $0.sendAt != nil && pick($0) }.map(\.id))
             guard !queued.isEmpty else { return true }
             var failure: String?
+            // Mail for a server account goes out first. The store records only what the server accepted.
+            var remoteFailures: [UUID: String] = [:]
+            if let sendRemote = store.sendRemote {
+                for draft in self.all where queued.contains(draft.id) && !store.hasSentOrDiscarded(draft.id) {
+                    do { try await sendRemote(draft) } catch { remoteFailures[draft.id] = error.localizedDescription }
+                }
+            }
             let updated = self.all.compactMap { draft -> ComposerDraft? in
                 guard queued.contains(draft.id) else { return draft }
                 guard !store.discardedDraftIDs.contains(draft.id) else { return nil }
-                if store.sendUnsentOutboxDraft(draft) { return nil }
+                if remoteFailures[draft.id] == nil, store.sendUnsentOutboxDraft(draft) { return nil }
                 var refused = draft
                 refused.sendAt = nil
                 refused.holdingForUndo = nil
-                failure = "“\(draft.title)” could not be sent and is back in Drafts. \(store.error ?? "")"
+                failure = "“\(draft.title)” could not be sent and is back in Drafts. \(remoteFailures[draft.id] ?? store.error ?? "")"
                 return refused
             }
             let saved = await self.persist(updated, reportFailure: !automatic || !self.recoveryFailureReported)

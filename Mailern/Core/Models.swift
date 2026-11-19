@@ -82,13 +82,16 @@ struct MailMessage: Codable, Identifiable, Equatable {
     var references: [String]?
     /// The provider's own ID for this message. Nil for demo mail.
     var remoteID: String?
+    /// The mail server holds an HTML part the phone has not loaded yet. The reader loads it on open.
+    var remoteHTML: Bool?
 
     /// The ID other messages use to refer to this one. Messages without a Message-ID get a stable local stand-in.
     var threadingID: String { messageID ?? "<\(id.uuidString)@mailern.local>" }
-    /// A new Message-ID in the domain of the sending address.
-    static func newMessageID(from address: String) -> String {
+    /// A Message-ID in the domain of the sending address. Sent mail uses its draft's ID, so the mail server can find
+    /// a copy that already went out instead of sending it twice.
+    static func newMessageID(from address: String, id: UUID = UUID()) -> String {
         let domain = address.split(separator: "@").last.map(String.init) ?? "mailern.local"
-        return "<\(UUID().uuidString)@\(domain)>"
+        return "<\(id.uuidString.lowercased())@\(domain)>"
     }
     /// Sets the headers of a reply to `message`.
     mutating func answer(_ message: MailMessage) {
@@ -113,6 +116,8 @@ struct Conversation: Codable, Identifiable, Equatable {
     var followUp: FollowUp?
     /// Connects a group of blocked replies in Junk to the conversation they answered.
     var blockedReplySourceID: UUID?
+    /// The state the mail server last confirmed. Nil for demo mail and for changes the server has not seen.
+    var synced: RemoteState?
     var messages: [MailMessage]
     var latest: MailMessage { messages[messages.count - 1] }
     var effectiveSubject: String { subject(at: latest) }
