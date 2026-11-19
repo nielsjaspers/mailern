@@ -81,6 +81,8 @@ struct DraftThreadView: View {
                     VStack(alignment: .leading, spacing: 22) {
                         Text(draft.title).font(.title2.bold()).textSelection(.enabled)
                         DraftCard(draft: draft, edit: { mode = .draft(id) }, discard: {
+                            // The dock must not reopen a draft while it is being discarded.
+                            if drafts.docked?.id == id { drafts.docked = nil }
                             Task {
                                 deleting = true
                                 defer { deleting = false }

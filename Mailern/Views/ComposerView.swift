@@ -187,6 +187,11 @@ struct ComposerView: View {
             if frame.width != sheetWidth { sheetWidth = frame.width; restingTop = frame.minY }
             restingTop = min(restingTop, frame.minY)
             // A pull that cannot dismiss the sheet leaves the keyboard alone.
+            // A pull right after typing waits for the save, so start it now instead of after the pause.
+            if frame.minY - restingTop > 4, dirty, savesInFlight == 0, !completed, !finishing, !importing {
+                autosave?.cancel()
+                Task { await saveDraft() }
+            }
             if !pull.active, frame.minY - restingTop > 24, canPull {
                 pull = (true, editor.view?.isFirstResponder == true ? .body : subjectFocused ? .subject : focus.map(Editing.address))
                 editor.view?.window?.endEditing(true)
@@ -232,7 +237,11 @@ struct ComposerView: View {
             drafts.composerOpen = false
             if drafts.preview == draft.id { drafts.preview = nil }
             autosave?.cancel()
-            if !completed { recordDockPosition() }
+            guard !completed else { return }
+            // Ending editing during a pull can still commit text, such as an input method's composition, after the
+            // pull was allowed. Save what the editor holds now.
+            if dirty, let content = try? snapshot(input) { Task { await drafts.save(content) } }
+            recordDockPosition()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background && !completed && dirty { Task { await saveDraft() } }
@@ -397,7 +406,7 @@ struct ComposerView: View {
         }
         editor.text = text
         // A replaced signature moves the text, so the saved position no longer fits.
-        let resume = missingAccount ? nil : drafts.docked.flatMap { $0.id == draft.id ? $0.position : nil }
+        let resume = missingAccount ? nil : drafts.docked.flatMap { $0.id == draft.id ? $0 : nil }
         let selections: [NSRange] = resume?.selections.map { range in
             let start = min(range.location, text.length)
             return NSRange(location: start, length: min(range.length, text.length - start))
@@ -442,9 +451,11 @@ struct ComposerView: View {
         result.updatedAt = .now
         return result
     }
-    /// Closes the draft for good, and takes it out of the dock.
+    /// Closes the draft for good, and takes it out of the dock. Any draft minimized before shows again under the
+    /// closing sheet.
     private func complete() {
         completed = true
+        drafts.sheetOverDock = false
         if drafts.preview == draft.id { drafts.preview = nil }
         if drafts.docked?.id == draft.id { drafts.docked = nil }
     }
@@ -464,9 +475,7 @@ struct ComposerView: View {
         let selections: [NSRange]
         if #available(iOS 26, *), let view = editor.view { selections = view.selectedRanges }
         else { selections = [editor.view?.selectedRange ?? editor.selection] }
-        drafts.docked = DraftStore.Docked(id: draft.id, position: .init(selections: selections,
-                                                                         typing: editor.view?.typingAttributes ?? editor.typing))
-        drafts.preview = nil
+        drafts.docked = DraftStore.Docked(id: draft.id, selections: selections, typing: editor.view?.typingAttributes ?? editor.typing)
     }
     private enum AfterSave { case stay, close, minimize }
     private func saveDraft(then after: AfterSave = .stay, submitted: DraftInput? = nil) async {

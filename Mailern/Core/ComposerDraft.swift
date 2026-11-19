@@ -172,12 +172,9 @@ final class DraftStore {
     var reopening: UUID?
     /// The minimized draft and where its editor was, so the composer can resume there. Snoozing it clears the dock.
     struct Docked {
-        struct Position {
-            var selections: [NSRange]
-            var typing: [NSAttributedString.Key: Any]
-        }
         var id: UUID
-        var position: Position?
+        var selections: [NSRange]
+        var typing: [NSAttributedString.Key: Any]
     }
     var docked: Docked?
     /// The saved draft of the open composer. The dock shows it under the sheet, so a pull reveals it in place, and
