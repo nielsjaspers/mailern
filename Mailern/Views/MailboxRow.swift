@@ -147,12 +147,12 @@ struct ConversationRow: View {
         let content = MailboxRow(
             avatar: SenderAvatar(name: conversation.avatarName),
             title: conversation.participants, count: conversation.messages.count, date: conversation.latest.date,
-            subject: conversation.subject, snippet: cachedSnippet ?? String(conversation.latest.body.prefix(180)).snippet, account: store.account(conversation.accountID),
+            subject: conversation.subject, snippet: cachedSnippet ?? String(conversation.latest.body.drop(while: \.isWhitespace).prefix(180)).snippet, account: store.account(conversation.accountID),
             unread: conversation.unread, draft: hasDraft, pinned: conversation.pinned, muted: conversation.muted == true,
             followUp: conversation.followUp, snoozedUntil: conversation.snoozedUntil
         )
         .accessibilityValue(conversation.unread ? "Unread" : "Read")
-        if query.isEmpty { content }
+        if query.isEmpty { content.onAppear { result = nil } }
         else {
             content.task(id: request) {
                 let thread = conversation

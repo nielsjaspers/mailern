@@ -10,7 +10,7 @@ struct ConversationContent: View {
     @State private var query = ""
     @State private var matches: [MessageMatch] = []
     @State private var matchIndex = 0
-    @State private var matchedQuery = ""
+    @State private var completedFind: FindRequest?
     @State private var openingResult = false
     @FocusState private var findFocused: Bool
     var drafts: [ComposerDraft] = []
@@ -36,6 +36,8 @@ struct ConversationContent: View {
     private struct FindRequest: Equatable { let query: String; let latest: UUID }
 
     var body: some View {
+        let request = FindRequest(query: query, latest: latest.id)
+        let resultsReady = completedFind == request
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -85,22 +87,22 @@ struct ConversationContent: View {
                         if !query.isEmpty {
                             Button("Clear find", systemImage: "xmark.circle.fill") { query = ""; findFocused = true }
                         }
-                        if !query.isEmpty && matchedQuery == query { Text(matches.isEmpty ? "No matches" : "\(matchIndex + 1) of \(matches.count)").font(.caption) }
-                        Button("Previous match", systemImage: "chevron.up") { matchIndex -= 1 }.disabled(matchedQuery != query || matchIndex == 0)
-                        Button("Next match", systemImage: "chevron.down") { matchIndex += 1 }.disabled(matchedQuery != query || matchIndex + 1 >= matches.count)
+                        if !query.isEmpty { Text(matches.isEmpty ? "No matches" : "\(matchIndex + 1) of \(matches.count)").font(.caption).opacity(resultsReady ? 1 : 0).accessibilityHidden(!resultsReady) }
+                        Button("Previous match", systemImage: "chevron.up") { matchIndex -= 1 }.disabled(!resultsReady || matchIndex == 0)
+                        Button("Next match", systemImage: "chevron.down") { matchIndex += 1 }.disabled(!resultsReady || matchIndex + 1 >= matches.count)
                         Button("Done") { finishFind(proxy) }.accessibilityIdentifier("Close find")
                     }.labelStyle(.iconOnly).padding(10).background(.bar)
                 }
             }
             .onChange(of: finding.wrappedValue) { _, active in findFocused = active }
-            .task(id: FindRequest(query: query, latest: latest.id)) {
+            .task(id: request) {
                 let previous = match
-                guard !query.isEmpty else { matches = []; matchedQuery = ""; matchIndex = 0; return }
+                guard !query.isEmpty else { matches = []; completedFind = nil; matchIndex = 0; return }
                 let thread = conversation, term = query
                 let worker = Task.detached(priority: .userInitiated) { thread.messageMatches(term) }
                 let found = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
                 guard !Task.isCancelled, query == term else { return }
-                matchedQuery = term
+                completedFind = request
                 matches = found
                 matchIndex = previous.flatMap { found.firstIndex(of: $0) } ?? 0
                 if openingResult && found.isEmpty { openNormally(proxy) }
