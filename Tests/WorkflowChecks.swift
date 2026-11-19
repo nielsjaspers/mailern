@@ -1250,6 +1250,12 @@ import os
         }
         let lost = await store.sendNow(draft)
         assert(!lost && store.hasPendingRemoteSend(draft.id))
+        // The draft holds the only Retry Send, so it cannot be deleted while the send is unconfirmed.
+        let drafts = DraftStore(url: directory.appending(path: "drafts.json"), mail: store)
+        let saved = await drafts.save(draft)
+        let deleted = await drafts.delete(draft.id)
+        assert(saved && !deleted && drafts.all.contains { $0.id == draft.id })
+        drafts.error = nil
         // A retry repeats the first submission, which may already be out, and says that later changes were not sent.
         var edited = draft
         edited.to = "sam@example.test"

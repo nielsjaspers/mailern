@@ -307,6 +307,11 @@ final class DraftStore {
         }
     }
     @discardableResult func delete(_ id: UUID) async -> Bool {
+        // The draft holds the only Retry Send for a send that may not have gone out.
+        if mail?.hasPendingRemoteSend(id) == true {
+            error = "This message may already be sent. Retry Send confirms it."
+            return false
+        }
         deleting.insert(id)
         defer { deleting.remove(id) }
         let deleted = await enqueue {

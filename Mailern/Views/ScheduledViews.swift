@@ -90,8 +90,13 @@ struct ScheduledMailboxView: View {
                             NavigationLink(value: MailboxRoute.scheduledMessage(draft.id)) { ScheduledRow(draft: draft) }
                                 .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                                 .swipeActions(edge: .trailing) {
-                                    Button("Cancel Send", systemImage: "xmark") { Task { await drafts.unschedule(draft.id) } }.tint(.orange)
-                                    Button("Send Now", systemImage: "paperplane") { Task { await drafts.sendNow(draft.id, through: store) } }.tint(.blue)
+                                    // An unconfirmed send may already be out, so it can only be retried.
+                                    if store.hasPendingRemoteSend(draft.id) {
+                                        Button("Retry Send", systemImage: "arrow.clockwise") { Task { await drafts.sendNow(draft.id, through: store) } }.tint(.blue)
+                                    } else {
+                                        Button("Cancel Send", systemImage: "xmark") { Task { await drafts.unschedule(draft.id) } }.tint(.orange)
+                                        Button("Send Now", systemImage: "paperplane") { Task { await drafts.sendNow(draft.id, through: store) } }.tint(.blue)
+                                    }
                                 }
                         }
                     } footer: {

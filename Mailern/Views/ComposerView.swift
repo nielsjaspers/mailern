@@ -319,7 +319,8 @@ struct ComposerView: View {
     }
 
     @ViewBuilder private var closeControl: some View {
-        if completed {
+        if completed || awaitingConfirmation {
+            // An unconfirmed send stays in Drafts for Retry Send, so closing keeps it.
             Button("Cancel", systemImage: "xmark") { panel.close() }.labelStyle(.iconOnly).tint(.primary)
         } else if dirty || saved {
             Menu {
