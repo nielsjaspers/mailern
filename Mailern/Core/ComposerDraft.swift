@@ -159,7 +159,9 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
         switch mode {
         case .reply, .replyAll:
             draft.answering = target.id
-            draft.to = target.outgoing ? target.to.joined(separator: ", ") : target.address
+            // Answering your own message goes to its other recipients, not back to you.
+            let others = target.to.filter { address in !accounts.contains { $0.owns(address) } }
+            draft.to = target.outgoing ? (others.isEmpty ? target.to : others).joined(separator: ", ") : target.address
             draft.subject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
             if case .replyAll = mode {
                 var seen = Set(accounts.flatMap(\.addresses).map { $0.lowercased() } + addresses(draft.to).map { $0.lowercased() })

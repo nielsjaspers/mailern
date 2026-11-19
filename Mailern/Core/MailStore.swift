@@ -769,6 +769,11 @@ final class MailStore {
             error = "The sending account no longer exists. Choose another From address."
             return nil
         }
+        // An alias removed from the server config must not turn into a send from the main address.
+        if let chosen = draft.fromAddress, !from.owns(chosen) {
+            error = "\(chosen) is no longer an address of this account. Choose another From address."
+            return nil
+        }
         var source: MailMessage?
         if let id = draft.mode.replyID {
             if let thread = conversation(id), thread.accountID == from.id {
