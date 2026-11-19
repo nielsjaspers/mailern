@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,9 +23,17 @@ type Service struct {
 }
 
 type wireAccount struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Address string `json:"address"`
+	ID                string          `json:"id"`
+	Name              string          `json:"name"`
+	Address           string          `json:"address"`
+	MailboxIdentities map[Role]string `json:"mailboxIdentities,omitempty"`
+}
+
+func mailboxToken(identity mailboxIdentity) string {
+	if identity.name == "" || identity.validity == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d:%s", identity.validity, identity.name))))
 }
 
 type wireMessage struct {
@@ -159,7 +168,16 @@ func (s *Service) changes(st *State, since uint64) syncResponse {
 		since = 0
 	}
 	for _, a := range s.accounts {
-		resp.Accounts = append(resp.Accounts, wireAccount{a.cfg.ID, a.cfg.Name, a.cfg.Address})
+		account := wireAccount{ID: a.cfg.ID, Name: a.cfg.Name, Address: a.cfg.Address}
+		if state := st.Accounts[a.cfg.ID]; state != nil {
+			account.MailboxIdentities = map[Role]string{}
+			for _, role := range []Role{RoleTrash, RoleJunk} {
+				if token := mailboxToken(identityFor(state, role)); token != "" {
+					account.MailboxIdentities[role] = token
+				}
+			}
+		}
+		resp.Accounts = append(resp.Accounts, account)
 	}
 	for _, c := range st.Conversations {
 		if c.Revision > since && !c.Deleting && len(c.Keys) > 0 {
@@ -266,6 +284,7 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 		ExpectedWorkflow Workflow `json:"expectedWorkflow"`
 		ExpectedRemoval  Role     `json:"expectedRemoval"`
 		Removal          Role     `json:"removal"`
+		MailboxIdentity  string   `json:"mailboxIdentity"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -292,6 +311,9 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conflict := errors.New("the messages or their placement changed before deletion")
+	matchesMailbox := func(identity mailboxIdentity) bool {
+		return request.MailboxIdentity != "" && request.MailboxIdentity == mailboxToken(identity)
+	}
 	err := func() error {
 		account.mu.Lock()
 		defer account.mu.Unlock()
@@ -311,6 +333,9 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 		})
 		if !active {
 			return errNotFound
+		}
+		if !matchesMailbox(previousIdentities[request.Removal]) {
+			return conflict
 		}
 		// The first pass may move only the confirmed members. The second pass checks the
 		// resulting placement and membership before making the expunge eligible to run.
@@ -367,7 +392,7 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 				}
 				slices.Sort(ids)
 				if moveConflict || !matchesPlacement || !slices.Equal(ids, request.MessageIDs) || len(ids) != len(c.Keys) ||
-					identities[request.Removal] != previousIdentities[request.Removal] {
+					!matchesMailbox(identities[request.Removal]) {
 					return conflict
 				}
 				for _, m := range messages {

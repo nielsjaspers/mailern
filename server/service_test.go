@@ -9,11 +9,13 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/google/uuid"
 )
 
@@ -63,14 +65,23 @@ func (h *harness) sync() {
 	}
 }
 
+type observedConversation struct {
+	wireConversation
+	mailboxIdentities map[Role]string
+}
+
 // conversations returns every conversation the phone would hold, keyed by subject.
-func (h *harness) conversations() map[string]wireConversation {
+func (h *harness) conversations() map[string]observedConversation {
 	h.t.Helper()
 	var resp syncResponse
 	h.request("GET", "/v1/sync?since=0", nil, &resp)
-	out := map[string]wireConversation{}
+	identities := map[string]map[Role]string{}
+	for _, a := range resp.Accounts {
+		identities[a.ID] = a.MailboxIdentities
+	}
+	out := map[string]observedConversation{}
 	for _, c := range resp.Conversations {
-		out[c.Subject] = c
+		out[c.Subject] = observedConversation{c, identities[c.AccountID]}
 	}
 	return out
 }
@@ -95,7 +106,7 @@ func (h *harness) request(method, path string, body any, out any) int {
 	return resp.StatusCode
 }
 
-func (h *harness) set(c wireConversation, change func(*ConversationState)) {
+func (h *harness) set(c observedConversation, change func(*ConversationState)) {
 	h.t.Helper()
 	state := ConversationState{Workflow: c.Workflow, SnoozedUntil: c.SnoozedUntil, Removal: c.Removal,
 		Unread: c.Unread, Pinned: c.Pinned, Muted: c.Muted}
@@ -289,7 +300,7 @@ func TestMutedReplyStaysSettled(t *testing.T) {
 	}
 }
 
-func (h *harness) delete(c wireConversation, target Role) int {
+func (h *harness) delete(c observedConversation, target Role) int {
 	h.t.Helper()
 	ids := make([]string, 0, len(c.Messages))
 	for _, m := range c.Messages {
@@ -297,6 +308,7 @@ func (h *harness) delete(c wireConversation, target Role) int {
 	}
 	return h.request("DELETE", "/v1/conversations/"+c.ID, map[string]any{
 		"messageIDs": ids, "expectedWorkflow": c.Workflow, "expectedRemoval": c.Removal, "removal": target,
+		"mailboxIdentity": c.mailboxIdentities[target],
 	}, nil)
 }
 
@@ -316,6 +328,9 @@ func TestTrashRestoreAndDelete(t *testing.T) {
 	if code := h.delete(c, c.Removal); code != http.StatusNoContent {
 		t.Fatalf("delete: %d", code)
 	}
+	if code := h.delete(c, c.Removal); code != http.StatusNotFound {
+		t.Fatalf("retry after a lost delete acknowledgment: %d", code)
+	}
 	h.sync()
 	if len(h.mailbox("Trash")) != 0 {
 		t.Fatal("delete should expunge the message")
@@ -324,6 +339,92 @@ func TestTrashRestoreAndDelete(t *testing.T) {
 	h.request("GET", fmt.Sprintf("/v1/sync?since=%d", c.Revision), nil, &resp)
 	if !slices.Contains(resp.Deleted, c.ID) {
 		t.Fatal("the phone should learn about the deletion")
+	}
+}
+
+func TestDeleteRejectsRemapAlreadySeenByBackgroundSync(t *testing.T) {
+	h := newHarness(t)
+	var remapped atomic.Bool
+	if err := h.lab.users[labAddress].Create("New Trash", nil); err != nil {
+		t.Fatal(err)
+	}
+	serveProvider(t, h, imap.CapSet{imap.CapIMAP4rev2: {}, imap.CapSpecialUse: {}}, func(s imapserver.Session) imapserver.Session {
+		return remappedTrashSession{fixedUIDValiditySession{s.(imapserver.SessionIMAP4rev2)}, &remapped}
+	})
+	h.deliver("INBOX", "Offline Trash", "")
+	h.deliver("Trash", "Confirmed in Trash", "")
+	client, err := h.account.dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Select("Trash", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Copy(imap.UIDSetNum(1), "New Trash").Wait(); err != nil {
+		t.Fatal(err)
+	}
+	h.sync()
+	observed := h.conversations()
+	remapped.Store(true)
+	h.sync()
+	current := h.conversations()
+	for subject, before := range observed {
+		after := current[subject]
+		if after.ID != before.ID || after.Removal != before.Removal || after.Messages[0].ID != before.Messages[0].ID {
+			t.Fatalf("the same conversation and placement should survive the remap: %+v", after)
+		}
+		if token := before.mailboxIdentities[RoleTrash]; token == "" || after.mailboxIdentities[RoleTrash] == "" || after.mailboxIdentities[RoleTrash] == token {
+			t.Fatalf("expected a different token after the folder changed for %q", subject)
+		}
+		if code := h.delete(before, RoleTrash); code != http.StatusConflict {
+			t.Fatalf("stale delete of %q returned %d", subject, code)
+		}
+	}
+	h.sync()
+	if len(h.mailbox("INBOX")) != 1 || len(h.mailbox("Trash")) != 1 || len(h.mailbox("New Trash")) != 1 {
+		t.Fatal("stale confirmations moved or deleted mail")
+	}
+}
+
+func TestDeleteRejectsJunkUIDValidityChangeAlreadySeenByBackgroundSync(t *testing.T) {
+	h := newHarness(t)
+	h.deliver("Junk", "Confirmed in Junk", "")
+	h.sync()
+	before := h.conversations()["Confirmed in Junk"]
+	user := h.lab.users[labAddress]
+	if err := user.Rename("Junk", "Old Junk", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := user.Create("Junk", nil); err != nil {
+		t.Fatal(err)
+	}
+	client, err := h.account.dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Select("Old Junk", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Copy(imap.UIDSetNum(1), "Junk").Wait(); err != nil {
+		t.Fatal(err)
+	}
+	h.sync()
+	after := h.conversations()[before.Subject]
+	if after.ID != before.ID || after.Removal != RoleJunk || after.Messages[0].ID != before.Messages[0].ID ||
+		after.mailboxIdentities[RoleJunk] == before.mailboxIdentities[RoleJunk] {
+		t.Fatalf("expected the same message in a new generation of Junk: %+v", after)
+	}
+	if code := h.delete(before, RoleJunk); code != http.StatusConflict {
+		t.Fatalf("stale Junk delete returned %d", code)
+	}
+	if code := h.delete(after, RoleJunk); code != http.StatusNoContent {
+		t.Fatalf("fresh Junk delete returned %d", code)
+	}
+	h.sync()
+	if len(h.mailbox("Junk")) != 0 || len(h.mailbox("Old Junk")) != 1 {
+		t.Fatal("fresh confirmation should delete only the tracked copy in Junk")
 	}
 }
 
@@ -337,7 +438,7 @@ func TestDeleteOutsideTrashIsRefused(t *testing.T) {
 }
 
 func TestDeleteRejectsStaleConfirmation(t *testing.T) {
-	for _, change := range []string{"reply", "different ID", "restore", "junk"} {
+	for _, change := range []string{"reply", "different ID", "missing mailbox identity", "restore", "junk"} {
 		t.Run(change, func(t *testing.T) {
 			h := newHarness(t)
 			parent := h.deliver("Trash", "Dinner", "")
@@ -348,6 +449,8 @@ func TestDeleteRejectsStaleConfirmation(t *testing.T) {
 				h.deliver("Trash", "New reply", parent)
 			case "different ID":
 				c.Messages[0].ID = uuid.NewString()
+			case "missing mailbox identity":
+				delete(c.mailboxIdentities, RoleTrash)
 			default:
 				client, err := h.account.dial()
 				if err != nil {

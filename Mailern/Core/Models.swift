@@ -47,6 +47,7 @@ struct MailAccount: Codable, Identifiable, Hashable {
     var address: String
     var color: AccountColor
     var signature = ""
+    var mailboxIdentities: RemovedMailboxIdentities?
     /// Seed data for a new or reset store. The first account is the default sender for new mail.
     static let demo = [
         Self(id: "icloud", name: "Personal", address: "morgan@personal.example.com", color: .blue, signature: "Morgan"),

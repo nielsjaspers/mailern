@@ -513,13 +513,14 @@ import os
         let store = MailStore(persistence: disk)
         // The server's JSON: UTC dates, and null lists from Go.
         let json = """
-        {"revision":4,"reset":true,"accounts":[{"id":"gmail","name":"Gmail","address":"morgan@mail.example.com"}],
+        {"revision":4,"reset":true,"accounts":[{"id":"gmail","name":"Gmail","address":"morgan@mail.example.com","mailboxIdentities":{"trash":"trash-fixture","junk":"junk-fixture"}}],
          "conversations":[{"id":"6F1D1D2E-6C4B-4E0A-9C1E-1B3A0A6E2B10","accountID":"gmail","subject":"Dinner","workflow":"inbox",
            "unread":true,"pinned":false,"muted":false,"revision":3,"messages":[{"id":"0B7C5B0E-0E9A-4B8E-8B57-4A1E0F2C6D11",
            "sender":"Sam","address":"sam@example.com","to":["morgan@mail.example.com"],"cc":null,"date":"2026-11-19T14:16:51Z",
            "body":"Saturday?","outgoing":false,"subject":"Dinner","hasHTML":true,"messageID":"<a@example.com>"}]}],"deleted":[]}
         """
         var sync = try RemoteJSON.decoder.decode(RemoteSync.self, from: Data(json.utf8))
+        assert(sync.accounts.first?.mailboxIdentities?[.trash] == "trash-fixture")
         store.mergeRemote(sync)
         // A reset replaces the demo mail and accounts with the server's.
         assert(store.conversations.count == 1 && store.accounts.map(\.id) == ["gmail"])
@@ -608,7 +609,8 @@ import os
         func delete(_ id: UUID, _ request: RemoteDelete) async throws -> Bool { try await remove(id, request) }
     }
 
-    private static let remoteAccount = RemoteAccount(id: "fixture", name: "Fixture", address: "me@example.test")
+    private static let remoteAccount = RemoteAccount(id: "fixture", name: "Fixture", address: "me@example.test",
+                                                     mailboxIdentities: .init(trash: "trash-fixture", junk: "junk-fixture"))
 
     private static func remoteThread() -> RemoteConversation {
         let message = RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
@@ -619,8 +621,8 @@ import os
     }
 
     private static func remoteBatch(_ revision: UInt64, _ threads: [RemoteConversation], reset: Bool = false,
-                                    deleted: [UUID] = []) -> RemoteSync {
-        RemoteSync(revision: revision, reset: reset, accounts: [remoteAccount], conversations: threads, deleted: deleted)
+                                    deleted: [UUID] = [], account: RemoteAccount = remoteAccount) -> RemoteSync {
+        RemoteSync(revision: revision, reset: reset, accounts: [account], conversations: threads, deleted: deleted)
     }
 
     @MainActor private static func remoteStore(at url: URL) throws -> MailStore {
@@ -782,6 +784,11 @@ import os
         changed.messages.append(reply)
         assert(store.mergeRemote(remoteBatch(2, [changed])))
         assert(!store.deletePermanently(original) && store.conversation(id)?.messages.count == 2)
+        let beforeRemap = store.prepareDelete([id], from: .trash)!
+        var remapped = remoteAccount
+        remapped.mailboxIdentities?.trash = "remapped-trash"
+        assert(store.mergeRemote(remoteBatch(2, [], account: remapped)))
+        assert(!store.deletePermanently(beforeRemap) && store.conversation(id)?.messages.count == 2)
         store.loadRemoteHTML = { _ in "<p>Cached message</p>" }
         await store.loadHTML(message: thread.messages[0].id, in: id)
         let confirmed = store.prepareDelete([id], from: .trash)!
@@ -791,14 +798,17 @@ import os
         let request = reopened.pendingRemoteDeletes[id]!.request
         assert(reopened.conversation(id) == nil && request.removal == .trash && request.expectedRemoval == nil)
         assert(request.expectedWorkflow == .inbox && request.messageIDs == Set(changed.messages.map(\.id)))
+        assert(request.mailboxIdentity == "remapped-trash" && reopened.accounts.first?.mailboxIdentities?[.trash] == "remapped-trash")
         let body = try RemoteJSON.encoder.encode(request)
         let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
         assert(Set(json["messageIDs"] as! [String]) == Set(changed.messages.map { $0.id.uuidString.lowercased() }))
+        assert(json["mailboxIdentity"] as? String == "remapped-trash")
         let client = RemoteMailboxStub()
         let sync = ServerSync(client: client, store: reopened)
         client.fetch = { _, _ in remoteBatch(3, [changed], reset: true) }
         try await sync.pull(wait: 0)
-        assert(reopened.conversation(id) == nil)
+        assert(reopened.conversation(id) == nil && reopened.pendingRemoteDeletes[id]?.request == request)
+        assert(reopened.accounts.first?.mailboxIdentities?[.trash] == "trash-fixture")
 
         var deletes = 0
         client.remove = { target, actual in
@@ -828,7 +838,7 @@ import os
 
         assert(refreshed.deletePermanently([id], from: .junk))
         client.remove = { target, request in
-            assert(target == id && request.expectedRemoval == .junk && request.removal == .junk)
+            assert(target == id && request.expectedRemoval == .junk && request.removal == .junk && request.mailboxIdentity == "junk-fixture")
             return true
         }
         await ServerSync(client: client, store: refreshed).push()
@@ -847,12 +857,13 @@ import os
         var deletedAfterPut = false
         client.remove = { target, request in
             assert(target == id && request.expectedRemoval == .trash && request.messageIDs == [thread.messages[0].id])
+            assert(request.mailboxIdentity == "trash-fixture")
             deletedAfterPut = true
             return true
         }
         await ServerSync(client: client, store: saved).push()
         assert(deletedAfterPut && saved.pendingRemoteDeletes.isEmpty)
-        print("PASS: delete keeps the confirmed IDs and placement across restart, avoids PUT, and refreshes a rejected delete without retrying it.")
+        print("PASS: delete keeps confirmed IDs and mailbox identity across pulls, restart, and PUT acknowledgment. A conflict refreshes the mailbox.")
     }
 
     @MainActor static func checkRemoteSending() async throws {

@@ -40,8 +40,13 @@ struct RemoteStateWrite: Encodable {
 }
 
 struct DeleteConfirmation {
+    struct Member: Equatable {
+        let messageIDs: Set<UUID>
+        let mailboxIdentity: String?
+    }
+
     let mailbox: RemovedMailbox
-    let members: [UUID: Set<UUID>]
+    let members: [UUID: Member]
 
     var ids: Set<UUID> { Set(members.keys) }
 }
@@ -51,8 +56,9 @@ struct RemoteDelete: Codable, Equatable {
     var expectedWorkflow: Workflow
     var expectedRemoval: RemovedMailbox?
     let removal: RemovedMailbox
+    let mailboxIdentity: String?
 
-    private enum CodingKeys: String, CodingKey { case messageIDs, expectedWorkflow, expectedRemoval, removal }
+    private enum CodingKeys: String, CodingKey { case messageIDs, expectedWorkflow, expectedRemoval, removal, mailboxIdentity }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -60,6 +66,7 @@ struct RemoteDelete: Codable, Equatable {
         try container.encode(expectedWorkflow, forKey: .expectedWorkflow)
         try container.encodeIfPresent(expectedRemoval, forKey: .expectedRemoval)
         try container.encode(removal, forKey: .removal)
+        try container.encodeIfPresent(mailboxIdentity, forKey: .mailboxIdentity)
     }
 }
 
@@ -114,10 +121,23 @@ extension Conversation {
     }
 }
 
+struct RemovedMailboxIdentities: Codable, Hashable {
+    var trash: String?
+    var junk: String?
+
+    subscript(_ mailbox: RemovedMailbox) -> String? {
+        switch mailbox {
+        case .trash: trash
+        case .junk: junk
+        }
+    }
+}
+
 struct RemoteAccount: Decodable, Equatable {
     var id: String
     var name: String
     var address: String
+    var mailboxIdentities: RemovedMailboxIdentities?
 }
 
 struct RemoteMessage: Decodable, Equatable {
@@ -214,6 +234,7 @@ extension MailStore {
                 ?? MailAccount(id: remote.id, name: remote.name, address: remote.address,
                                color: AccountColor.allCases[index % AccountColor.allCases.count])
             account.address = remote.address
+            account.mailboxIdentities = remote.mailboxIdentities
             return account
         }
         if accounts.isEmpty { accounts = self.accounts }

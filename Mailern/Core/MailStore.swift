@@ -401,15 +401,22 @@ final class MailStore {
             error = "The mailbox changed. Review the selection before deleting."
             return nil
         }
-        return DeleteConfirmation(mailbox: mailbox, members: Dictionary(uniqueKeysWithValues: selected.map {
-            ($0.id, Set($0.messages.map(\.id)))
-        }))
+        var members: [UUID: DeleteConfirmation.Member] = [:]
+        for conversation in selected {
+            let identity = account(conversation.accountID).mailboxIdentities?[mailbox]
+            guard !isServerMailbox || identity != nil else {
+                error = "Sync this mailbox before deleting these messages."
+                return nil
+            }
+            members[conversation.id] = .init(messageIDs: Set(conversation.messages.map(\.id)), mailboxIdentity: identity)
+        }
+        return DeleteConfirmation(mailbox: mailbox, members: members)
     }
 
     @discardableResult func deletePermanently(_ confirmation: DeleteConfirmation, discarding drafts: Set<UUID> = []) -> Bool {
         guard let current = prepareDelete(confirmation.ids, from: confirmation.mailbox) else { return false }
         guard current.members == confirmation.members else {
-            error = "The messages changed. Review the selection before deleting."
+            error = "The messages or mailbox changed. Review the selection before deleting."
             return false
         }
         return commitPermanentDelete(confirmation.ids, discarding: drafts)
@@ -431,12 +438,13 @@ final class MailStore {
         var pending = pendingRemoteDeletes
         if isServerMailbox {
             for conversation in conversations where ids.contains(conversation.id) {
-                guard let removal = conversation.removal?.mailbox, let synced = conversation.synced else {
+                guard let removal = conversation.removal?.mailbox, let synced = conversation.synced,
+                      let identity = account(conversation.accountID).mailboxIdentities?[removal] else {
                     error = "Sync this mailbox before deleting these messages."
                     return false
                 }
                 let request = RemoteDelete(messageIDs: Set(conversation.messages.map(\.id)), expectedWorkflow: synced.workflow,
-                                           expectedRemoval: synced.removal, removal: removal)
+                                           expectedRemoval: synced.removal, removal: removal, mailboxIdentity: identity)
                 pending[conversation.id] = PendingRemoteDelete(request: request, cached: conversation)
             }
         }
