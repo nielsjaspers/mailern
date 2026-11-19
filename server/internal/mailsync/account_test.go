@@ -401,6 +401,31 @@ func TestReplyDatedBeforeItsParentJoinsTheThread(t *testing.T) {
 	}
 }
 
+func TestRepliesWithTheSameDateKeepArrivalOrder(t *testing.T) {
+	h := newHarness(t)
+	now := time.Now().Truncate(time.Second)
+	parent := maillab.Message("Sam <sam@example.com>", labAddress, "Plans", "Free Friday?", "", now.Add(-time.Hour))
+	if err := h.lab.Deliver(labAddress, "INBOX", parent); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 6 {
+		reply := maillab.Message("Alex <alex@example.com>", labAddress, "Re: Plans", fmt.Sprintf("Reply %d", i), maillab.MessageID(parent), now)
+		if err := h.lab.Deliver(labAddress, "INBOX", reply); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.sync()
+	messages := h.conversations()["Plans"].Messages
+	if len(messages) != 7 {
+		t.Fatalf("got %d messages, want 7", len(messages))
+	}
+	for i, m := range messages[1:] {
+		if want := fmt.Sprintf("Reply %d", i); !strings.Contains(m.Body, want) {
+			t.Fatalf("message %d is %q, want %q", i+1, m.Body, want)
+		}
+	}
+}
+
 func TestDeletedFlagChangeReachesIncrementalSync(t *testing.T) {
 	h := newHarness(t)
 	root := h.deliver("INBOX", "Dinner", "")

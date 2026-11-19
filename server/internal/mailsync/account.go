@@ -1,6 +1,7 @@
 package mailsync
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -683,7 +684,10 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 			changed[m.ConversationID] = true
 		}
 	}
-	slices.SortStableFunc(fresh, func(x, y *parsedArrival) int { return x.Date.Compare(y.Date) })
+	// Mail with the same Date keeps the mailbox's arrival order, so the last reply stays the latest one.
+	slices.SortFunc(fresh, func(x, y *parsedArrival) int {
+		return cmp.Or(x.Date.Compare(y.Date), cmp.Compare(x.role, y.role), cmp.Compare(x.Locations[x.role], y.Locations[y.role]))
+	})
 	// A reply can sort before its parent, for example when the sender's clock is behind. Threading the parent
 	// first keeps them in one conversation.
 	waiting := map[string]*parsedArrival{}
