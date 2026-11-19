@@ -26,7 +26,7 @@ Before permanent deletion, Mailern checks the thread members and their mailbox. 
 
 1. Create an app password for each account:
    - Gmail: turn on 2-Step Verification, then create one at [App passwords](https://myaccount.google.com/apppasswords). Some work, school, and Advanced Protection accounts cannot create them.
-   - iCloud: create one at [account.apple.com](https://account.apple.com) under Sign-In and Security, App-Specific Passwords.
+   - iCloud: create one at [account.apple.com](https://account.apple.com) under Sign-In and Security, App-Specific Passwords. iCloud signs in only with your `@icloud.com`, `@me.com`, or `@mac.com` address. If you send from a custom domain, set `address` to that domain's address and `username` to your iCloud Mail address.
    - Proton: run Proton Mail Bridge on the same computer and copy the username and password it shows for your account. Bridge requires a paid plan. Match the IMAP and SMTP ports and connection security in Bridge’s Mailbox details. If SMTP uses SSL/TLS, set the account’s `smtp` endpoint to the displayed host and port with `"security": "tls"`.
 2. Save each password in its own file, readable only by you (`chmod 600`).
 3. Copy `config.example.json` to `config.json` and fill in your addresses, password files, and your Tailscale login name in `allowedUsers`. Relative paths are relative to the config file.
@@ -44,7 +44,7 @@ Only the Tailscale users in `allowedUsers` can use the service. Keep the service
 | `pollSeconds` | How often each account checks for changes. Defaults to 60. Changes from Mailern sync at once. |
 | `windowDays` | How many days of archived and sent mail to keep. Defaults to 90. |
 | `accounts[].provider` | `gmail`, `icloud`, `proton-bridge`, or `imap` with `imap` and `smtp` endpoints (`host`, `port`, `security`: `tls` or `starttls`). |
-| `accounts[].username` | Defaults to the address. |
+| `accounts[].username` | Defaults to the address. iCloud needs its own iCloud Mail address here when `address` is a custom domain. |
 | `accounts[].passwordFile`, `passwordEnv` | Where to read the app password. |
 | `accounts[].appendSent` | Saves a copy of sent mail in Sent. On by default for iCloud, which does not save mail sent over SMTP. |
 | `accounts[].mailboxes` | Mailbox names for `archive`, `sent`, `junk`, and `trash`, for servers that do not mark them. |
