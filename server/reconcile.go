@@ -261,7 +261,14 @@ func (a *Account) supportedPlans(plans []plan, caps imap.CapSet) ([]plan, error)
 	}
 	for i := range plans {
 		p := &plans[i]
+		if a.sentUnavailable {
+			p.flags = slices.DeleteFunc(p.flags, func(f flagChange) bool { return f.at.role == RoleSent })
+			p.expunges = nil
+		}
 		p.moves = slices.DeleteFunc(p.moves, func(m move) bool {
+			if a.sentUnavailable && (m.from.role == RoleSent || m.to == RoleSent) {
+				return true
+			}
 			if err := a.checkMove(m, caps); err != nil {
 				blocked = err
 				return true
@@ -331,7 +338,8 @@ func (a *Account) applyPlans(c *imapclient.Client, plans []plan, identities map[
 		if len(flags[role])+len(moves[role])+len(expunges[role]) == 0 {
 			continue
 		}
-		if _, err := a.selectMailbox(c, role, identities[role], false); err != nil {
+		sel, err := a.selectMailbox(c, role, identities[role], false)
+		if err != nil {
 			return err
 		}
 		for change, uids := range flags[role] {
@@ -364,23 +372,54 @@ func (a *Account) applyPlans(c *imapclient.Client, plans []plan, identities map[
 				return fmt.Errorf("move to %s: %w", a.mailboxes[to], err)
 			}
 		}
+		if len(expunges[role]) == 0 {
+			continue
+		}
+		unchanged, err := a.deleteScanCurrent(c, role, sel.UIDNext, identities)
+		if err != nil {
+			return err
+		}
+		if !unchanged {
+			continue
+		}
 		for _, uids := range expunges[role] {
 			set := imap.UIDSetNum(uids...)
-			found, err := c.UIDSearch(&imap.SearchCriteria{UID: []imap.UIDSet{set}}, nil).Wait()
+			found, err := c.Fetch(set, &imap.FetchOptions{UID: true, Flags: true}).Collect()
 			if err != nil {
 				return fmt.Errorf("revalidate delete in %s: %w", a.mailboxes[role], err)
 			}
-			present, _ := found.All.(imap.UIDSet)
-			if slices.ContainsFunc(uids, func(uid imap.UID) bool { return !present.Contains(uid) }) {
+			if len(found) != len(uids) {
 				// A restore may leave only some members here. Let the next scan reconcile the whole thread.
 				continue
 			}
-			if err := expungeUIDs(c, set); err != nil {
+			if err := a.expungeOwned(c, identities[role], set, found); err != nil {
 				return err
 			}
 		}
 	}
 	return a.applyCopyMoves(c, copies, sources, identities, validate)
+}
+
+func (a *Account) deleteScanCurrent(c *imapclient.Client, selected Role, uidNext imap.UID, identities map[Role]mailboxIdentity) (bool, error) {
+	// A new member can arrive in any scanned mailbox, including one outside the delete target.
+	if uidNext == 0 || uidNext != a.scannedUIDNext[selected] {
+		return false, nil
+	}
+	for _, role := range syncedRoles {
+		expected, ok := a.scannedUIDNext[role]
+		identity := identities[role]
+		if !ok || identity.name == identities[selected].name {
+			continue
+		}
+		status, err := c.Status(identity.name, &imap.StatusOptions{UIDNext: true, UIDValidity: true}).Wait()
+		if err != nil {
+			return false, fmt.Errorf("revalidate scan of %s: %w", identity.name, err)
+		}
+		if expected == 0 || status.UIDNext != expected || status.UIDValidity != identity.validity {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func expungeUIDs(c *imapclient.Client, set imap.UIDSet) error {

@@ -296,42 +296,49 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 		account.mu.Lock()
 		defer account.mu.Unlock()
 
-		previousRoles := map[string]Role{}
+		previousLocations := map[string]location{}
+		var previousIdentities map[Role]mailboxIdentity
 		active := false
 		s.store.Read(func(st *State) {
 			if c := st.Conversations[id]; c != nil && c.AccountID == account.cfg.ID && !c.Deleting {
 				active = true
+				previousIdentities = mailboxIdentities(st.account(c.AccountID))
 				for _, m := range st.messages(c) {
 					at, _ := placeOf(m)
-					previousRoles[m.ID] = at.role
+					previousLocations[m.ID] = at
 				}
 			}
 		})
 		if !active {
 			return errNotFound
 		}
-		client, err := account.connect()
-		if err != nil {
-			return err
-		}
 		// The first pass may move only the confirmed members. The second pass checks the
 		// resulting placement and membership before making the expunge eligible to run.
 		moveConflict := false
+		var recoverKeys []string
 		for moved := false; ; moved = true {
-			if err := account.read(client); err != nil {
+			client, err := account.connect()
+			if err != nil {
+				return err
+			}
+			if err := account.read(client, recoverKeys...); err != nil {
 				account.disconnect()
 				return err
+			}
+			if account.sentUnavailable {
+				return conflict
 			}
 			queued := false
 			var movement plan
 			var identities map[Role]mailboxIdentity
 			var movementRevision uint64
-			err := s.store.Update(func(st *State) error {
+			err = s.store.Update(func(st *State) error {
 				c := st.Conversations[id]
 				if c == nil || c.Deleting || c.AccountID != account.cfg.ID {
 					return errNotFound
 				}
 				messages := st.messages(c)
+				identities = mailboxIdentities(st.account(c.AccountID))
 				matchesConfirmation := func() bool {
 					return c.Workflow == request.ExpectedWorkflow && (c.Removal == request.ExpectedRemoval || c.Removal == request.Removal)
 				}
@@ -359,12 +366,15 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 					ids = append(ids, m.ID)
 				}
 				slices.Sort(ids)
-				if moveConflict || !matchesPlacement || !slices.Equal(ids, request.MessageIDs) || len(ids) != len(c.Keys) {
+				if moveConflict || !matchesPlacement || !slices.Equal(ids, request.MessageIDs) || len(ids) != len(c.Keys) ||
+					identities[request.Removal] != previousIdentities[request.Removal] {
 					return conflict
 				}
 				for _, m := range messages {
 					at, ok := placeOf(m)
-					if !ok || (!moved && at.role != previousRoles[m.ID]) {
+					previous := previousLocations[m.ID]
+					if !ok || ((!moved || previous.role == request.Removal) &&
+						(at != previous || identities[at.role] != previousIdentities[at.role])) {
 						return conflict
 					}
 					if at.role == request.Removal {
@@ -374,12 +384,14 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 						return conflict
 					}
 					movement.moves = append(movement.moves, move{at, request.Removal})
+					if at.role == RoleArchive && account.archiveIsAll {
+						recoverKeys = append(recoverKeys, m.Key)
+					}
 				}
 				if !client.Caps().Has(imap.CapUIDPlus) {
 					return errDeleteUnsupported
 				}
 				if !movement.empty() {
-					identities = mailboxIdentities(st.account(c.AccountID))
 					movementRevision = c.Revision
 					return nil
 				}

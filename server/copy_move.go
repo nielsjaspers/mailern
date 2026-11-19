@@ -56,6 +56,7 @@ func (a *Account) copyMoveSources(plans []plan) map[location]copyMoveSource {
 }
 
 var errMoveChanged = errors.New("move placement changed")
+var errCopyUnconfirmed = errors.New("could not confirm the destination copy")
 
 func (a *Account) applyCopyMoves(c *imapclient.Client, moves []move, sources map[location]copyMoveSource, identities map[Role]mailboxIdentity, validate func(*State) error) error {
 	if len(moves) == 0 {
@@ -113,6 +114,9 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 	if checkErr != nil {
 		return checkErr
 	}
+	if pending != nil && (pending.From.Role != m.from.role || pending.From.UID != m.from.uid || pending.From.identity() != from) {
+		return errMoveChanged
+	}
 	save := func(value *copyMove) error {
 		return a.store.Update(func(st *State) error {
 			msg := st.account(a.cfg.ID).Messages[key]
@@ -125,6 +129,16 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 		})
 	}
 
+	if pending != nil && pending.To.Role != m.to {
+		// Retire the previous copy while its original is still available.
+		if err := a.discardSupersededCopy(source, destination, pending); err != nil {
+			return err
+		}
+		if err := save(nil); err != nil {
+			return err
+		}
+		pending = nil
+	}
 	if pending == nil {
 		data, err := a.selectMailbox(destination, m.to, to, true)
 		if err != nil {
@@ -176,9 +190,8 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 			}
 		}
 	}
-	if pending.From.Role != m.from.role || pending.From.UID != m.from.uid || pending.From.identity() != from ||
-		pending.To.Role != m.to || pending.To.identity() != to {
-		return fmt.Errorf("unfinished copy has a different source or destination")
+	if pending.To.identity() != to {
+		return errMoveChanged
 	}
 	flags, err := source.Fetch(sourceUIDs, &imap.FetchOptions{UID: true, Flags: true}).Collect()
 	if err != nil || len(flags) == 0 {
@@ -207,7 +220,45 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 	if checkErr != nil {
 		return checkErr
 	}
-	return expungeCopiedSource(source, sourceUIDs, slices.Contains(flags[0].Flags, imap.FlagDeleted))
+	return a.expungeOwned(source, from, sourceUIDs, flags)
+}
+
+func (a *Account) discardSupersededCopy(source, destination *imapclient.Client, pending *copyMove) error {
+	// Expunging from All Mail can also remove the original.
+	if pending.To.Role == RoleArchive && a.archiveIsAll {
+		return nil
+	}
+	section := &imap.FetchItemBodySection{Peek: true}
+	msgs, err := source.Fetch(imap.UIDSetNum(pending.From.UID), &imap.FetchOptions{
+		UID: true, Flags: true, BodySection: []*imap.FetchItemBodySection{section},
+	}).Collect()
+	if err != nil {
+		return err
+	}
+	if len(msgs) != 1 || msgs[0].UID != pending.From.UID || slices.Contains(msgs[0].Flags, imap.FlagDeleted) ||
+		sha256.Sum256(msgs[0].FindBodySection(section)) != pending.Digest {
+		return errMoveChanged
+	}
+	data, err := a.selectMailbox(destination, pending.To.Role, pending.To.identity(), false)
+	if err != nil {
+		return err
+	}
+	uid, err := pending.confirmCopy(destination, data.UIDNext)
+	if errors.Is(err, errCopyUnconfirmed) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	set := imap.UIDSetNum(uid)
+	flags, err := destination.Fetch(set, &imap.FetchOptions{UID: true, Flags: true}).Collect()
+	if err != nil {
+		return err
+	}
+	if len(flags) != 1 || flags[0].UID != uid || slices.Contains(flags[0].Flags, imap.FlagDeleted) {
+		return nil
+	}
+	return a.expungeOwned(destination, pending.To.identity(), set, flags)
 }
 
 func (p *copyMove) confirmCopy(c *imapclient.Client, uidNext imap.UID) (imap.UID, error) {
@@ -215,7 +266,7 @@ func (p *copyMove) confirmCopy(c *imapclient.Client, uidNext imap.UID) (imap.UID
 	if p.To.UID == 0 {
 		// Without COPYUID, only a unique byte-for-byte match created after the attempt is usable.
 		if uidNext <= p.UIDNext {
-			return 0, fmt.Errorf("COPY result is unknown and no destination copy was found")
+			return 0, errCopyUnconfirmed
 		}
 		set := imap.UIDSet{{Start: p.UIDNext, Stop: uidNext - 1}}
 		found, err := c.UIDSearch(&imap.SearchCriteria{UID: []imap.UIDSet{set}}, nil).Wait()
@@ -236,28 +287,82 @@ func (p *copyMove) confirmCopy(c *imapclient.Client, uidNext imap.UID) (imap.UID
 				continue
 			}
 			if match != 0 || slices.Contains(msg.Flags, imap.FlagDeleted) {
-				return 0, fmt.Errorf("COPY destination is ambiguous or marked deleted")
+				return 0, fmt.Errorf("%w: ambiguous or marked deleted", errCopyUnconfirmed)
 			}
 			match = msg.UID
 		}
 	}
 	if match == 0 {
-		return 0, fmt.Errorf("could not confirm the destination copy")
+		return 0, errCopyUnconfirmed
 	}
 	return match, nil
 }
 
-func expungeCopiedSource(c *imapclient.Client, set imap.UIDSet, wasDeleted bool) error {
-	err := expungeUIDs(c, set)
-	if err != nil && !wasDeleted {
+// deletedFlags records which flags this account may have added before losing a STORE or EXPUNGE response.
+// It survives the conversation and its placement intent.
+type deletedFlags struct {
+	Mailbox  string      `json:"mailbox"`
+	Validity uint32      `json:"validity"`
+	UIDs     imap.UIDSet `json:"uids"`
+}
+
+func (a *Account) saveOwnedDeleted(mark *deletedFlags) error {
+	return a.store.Update(func(st *State) error {
+		st.account(a.cfg.ID).OwnedDeleted = mark
+		st.Revision++
+		return nil
+	})
+}
+
+func (a *Account) expungeOwned(c *imapclient.Client, mailbox mailboxIdentity, set imap.UIDSet, present []*imapclient.FetchMessageBuffer) error {
+	var owned imap.UIDSet
+	for _, msg := range present {
+		if set.Contains(msg.UID) && !slices.Contains(msg.Flags, imap.FlagDeleted) {
+			owned.AddNum(msg.UID)
+		}
+	}
+	if len(owned) == 0 {
+		return expungeUIDs(c, set)
+	}
+	if err := a.saveOwnedDeleted(&deletedFlags{mailbox.name, mailbox.validity, owned}); err != nil {
+		return err
+	}
+	if err := expungeUIDs(c, set); err != nil {
 		select {
 		case <-c.Closed():
 			return err
 		default:
+			return errors.Join(err, a.clearOwnedDeleted(c, owned))
 		}
-		// If the session is still usable, undo our flag after a failed expunge.
-		restore := &imap.StoreFlags{Op: imap.StoreFlagsDel, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}
-		err = errors.Join(err, c.Store(set, restore, nil).Close())
 	}
-	return err
+	return a.saveOwnedDeleted(nil)
+}
+
+func (a *Account) clearOwnedDeleted(c *imapclient.Client, set imap.UIDSet) error {
+	restore := &imap.StoreFlags{Op: imap.StoreFlagsDel, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}
+	if err := c.Store(set, restore, nil).Close(); err != nil {
+		return fmt.Errorf("clear interrupted delete flags: %w", err)
+	}
+	return a.saveOwnedDeleted(nil)
+}
+
+func (a *Account) recoverOwnedDeleted(c *imapclient.Client) error {
+	var mark *deletedFlags
+	a.store.Read(func(st *State) { mark = st.account(a.cfg.ID).OwnedDeleted })
+	if mark == nil {
+		return nil
+	}
+	// Use the original mailbox even if the provider has reassigned its special-use role.
+	sel, err := c.Select(mark.Mailbox, nil).Wait()
+	if err != nil {
+		var status *imap.Error
+		if errors.As(err, &status) && status.Code == imap.ResponseCodeNonExistent {
+			return a.saveOwnedDeleted(nil)
+		}
+		return fmt.Errorf("recover delete flags in %s: %w", mark.Mailbox, err)
+	}
+	if sel.UIDValidity != mark.Validity {
+		return a.saveOwnedDeleted(nil)
+	}
+	return a.clearOwnedDeleted(c, mark.UIDs)
 }

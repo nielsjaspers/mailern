@@ -23,6 +23,8 @@ const (
 	failExpunge
 	loseCopyResponse
 	loseExpungeResponse
+	loseDeletedStoreResponse
+	loseExpungeBeforeCommit
 )
 
 func (s copyMoveProvider) Copy(set imap.NumSet, dest string) (*imap.CopyData, error) {
@@ -37,12 +39,24 @@ func (s copyMoveProvider) Copy(set imap.NumSet, dest string) (*imap.CopyData, er
 	return data, err
 }
 
+func (s copyMoveProvider) Store(w *imapserver.FetchWriter, set imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
+	err := s.Session.Store(w, set, flags, options)
+	if err == nil && flags.Op == imap.StoreFlagsAdd && slices.Contains(flags.Flags, imap.FlagDeleted) &&
+		s.fault.CompareAndSwap(loseDeletedStoreResponse, 0) {
+		s.conn.Close()
+	}
+	return err
+}
+
 func (s copyMoveProvider) Expunge(w *imapserver.ExpungeWriter, set *imap.UIDSet) error {
 	if set == nil {
 		return &imap.Error{Type: imap.StatusResponseTypeBad, Text: "expected UID EXPUNGE"}
 	}
 	if s.fault.CompareAndSwap(failExpunge, 0) {
 		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "test expunge refused"}
+	}
+	if s.fault.CompareAndSwap(loseExpungeBeforeCommit, 0) {
+		return s.conn.Close()
 	}
 	err := s.Session.Expunge(w, set)
 	if err == nil && s.fault.CompareAndSwap(loseExpungeResponse, 0) {
@@ -159,6 +173,7 @@ func TestProviderUIDPlusMoveRecoversLostResponses(t *testing.T) {
 		fault int32
 	}{
 		{"COPY", loseCopyResponse},
+		{"STORE", loseDeletedStoreResponse},
 		{"UID EXPUNGE", loseExpungeResponse},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
