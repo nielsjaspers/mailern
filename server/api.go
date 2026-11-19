@@ -326,7 +326,7 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 				active = true
 				previousIdentities = mailboxIdentities(st.account(c.AccountID))
 				for _, m := range st.messages(c) {
-					at, _ := observedPlace(c, m)
+					at, _ := observedPlace(c, m, account.archiveIsAll)
 					previousLocations[m.ID] = at
 				}
 			}
@@ -370,7 +370,7 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 				matchesPlacement := matchesConfirmation()
 				if !c.PendingPlacement {
 					observed := *c
-					adopt(&observed, messages)
+					adopt(&observed, messages, account.archiveIsAll)
 					if c.PendingRead && observed.Workflow != WorkflowSettled {
 						observed.Unread = c.Unread
 					}
@@ -396,7 +396,7 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 					return conflict
 				}
 				for _, m := range messages {
-					at, ok := observedPlace(c, m)
+					at, ok := observedPlace(c, m, account.archiveIsAll)
 					if moved {
 						at, ok = firstLocation(m, request.Removal)
 					}
@@ -479,7 +479,7 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 			for _, m := range state.Messages {
 				if m.ID == id {
 					account = s.account(accountID)
-					at, found = observedPlace(st.Conversations[m.ConversationID], m)
+					at, found = observedPlace(st.Conversations[m.ConversationID], m, state.ArchiveIsAll)
 					validity = state.UIDValidity[at.role]
 					mailbox = state.Mailboxes[at.role]
 				}

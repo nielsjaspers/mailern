@@ -177,3 +177,68 @@ func TestUndoRecoversFlagsWhenUnrelatedFolderRejectsSelect(t *testing.T) {
 		}
 	})
 }
+
+func TestRestoreSettledWithIndependentInboxCopy(t *testing.T) {
+	h := newHarness(t)
+	const subject = "Settled with a second copy"
+	raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
+	if err := h.lab.Deliver(labAddress, "Archive", raw); err != nil {
+		t.Fatal(err)
+	}
+	h.sync()
+	h.set(h.conversations()[subject], func(s *ConversationState) { s.Removal = RoleTrash })
+	h.sync()
+	if err := h.lab.Deliver(labAddress, "INBOX", raw); err != nil {
+		t.Fatal(err)
+	}
+	h.sync()
+	source := h.conversations()[subject]
+	h.set(source, func(s *ConversationState) { s.Removal = "" })
+	h.sync()
+	restartCopyMoveAccount(t, h)
+	h.sync()
+	h.account.store.Read(func(st *State) {
+		thread := st.Conversations[source.ID]
+		if thread == nil || thread.Removal != "" || thread.Workflow != WorkflowSettled || thread.Unread {
+			t.Fatalf("settled restore lost its archive placement: %+v", thread)
+		}
+	})
+}
+
+type refuseSentHeaderSearch struct {
+	imapserver.SessionIMAP4rev2
+	selected string
+	refusals *atomic.Int32
+}
+
+func (s *refuseSentHeaderSearch) Select(name string, options *imap.SelectOptions) (*imap.SelectData, error) {
+	s.selected = name
+	return s.SessionIMAP4rev2.Select(name, options)
+}
+
+func (s *refuseSentHeaderSearch) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error) {
+	if s.selected == "Sent" && len(criteria.Header) != 0 {
+		s.refusals.Add(1)
+		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "Header search unavailable"}
+	}
+	return s.SessionIMAP4rev2.Search(kind, criteria, options)
+}
+
+func TestSentHeaderSearchRefusalAllowsInboxSync(t *testing.T) {
+	h := newHarness(t)
+	var refusals atomic.Int32
+	serveProvider(t, h, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}}, func(s imapserver.Session) imapserver.Session {
+		return &refuseSentHeaderSearch{SessionIMAP4rev2: s.(imapserver.SessionIMAP4rev2), refusals: &refusals}
+	})
+	h.deliver("Sent", "Cached sent", "")
+	h.deliver("INBOX", "To archive", "")
+	h.sync()
+	h.set(h.conversations()["To archive"], func(s *ConversationState) { s.Workflow = WorkflowSettled })
+	h.sync()
+	h.deliver("INBOX", "Later delivery", "")
+	h.sync()
+	got := h.conversations()
+	if refusals.Load() == 0 || got["Cached sent"].ID == "" || got["Later delivery"].ID == "" || got["To archive"].Workflow != WorkflowSettled {
+		t.Fatal("expected Inbox, cached Sent, and archived mail after the refused recovery search")
+	}
+}

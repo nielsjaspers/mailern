@@ -56,14 +56,16 @@ func firstLocation(m *Message, roles ...Role) (location, bool) {
 
 // When several mailboxes still hold a copy, keep the conversation's current
 // removal state as long as a copy supports it.
-func observedPlace(c *Conversation, m *Message) (location, bool) {
+func observedPlace(c *Conversation, m *Message, archiveIsAll bool) (location, bool) {
 	at, ok := placeOf(m)
 	if !ok || c == nil || m.PendingMove != nil && m.PendingMove.From.location() == at {
 		return at, ok
 	}
 	var preferred location
 	var found bool
-	if c.Removal == "" {
+	if c.Removal == "" && c.Workflow == WorkflowSettled && !archiveIsAll {
+		preferred, found = firstLocation(m, RoleArchive, RoleSent, RoleInbox)
+	} else if c.Removal == "" {
 		preferred, found = firstLocation(m, RoleInbox, RoleSent, RoleArchive)
 	} else {
 		preferred, found = firstLocation(m, c.Removal)
@@ -86,14 +88,14 @@ func (a *Account) reconcile(st *State) []plan {
 		if c.Deleting && (c.Removal != RoleTrash && c.Removal != RoleJunk ||
 			!slices.Equal(c.Keys, c.DeleteKeys) || len(msgs) != len(c.DeleteKeys) ||
 			slices.ContainsFunc(msgs, func(m *Message) bool {
-				at, ok := observedPlace(c, m)
+				at, ok := observedPlace(c, m, a.archiveIsAll)
 				return !ok || at.uid == 0 || at.role != c.Removal
 			})) {
 			cancelDelete(c)
 			st.Touch(c)
 		}
 		if !c.Pending {
-			if adopt(c, msgs) {
+			if adopt(c, msgs, a.archiveIsAll) {
 				st.Touch(c)
 			}
 			continue
@@ -108,7 +110,7 @@ func (a *Account) reconcile(st *State) []plan {
 			continue
 		}
 		c.Pending, c.PendingPlacement, c.PendingRead, c.PendingPin = false, false, false, false
-		adopt(c, msgs)
+		adopt(c, msgs, a.archiveIsAll)
 		st.Touch(c)
 	}
 	return plans
@@ -126,7 +128,7 @@ func incoming(msgs []*Message) []*Message {
 
 // adopt takes over changes made in other mail clients. Snooze has no server state: snoozed mail stays in
 // the inbox, so a snoozed conversation only changes when its mail leaves the inbox.
-func adopt(c *Conversation, msgs []*Message) bool {
+func adopt(c *Conversation, msgs []*Message, archiveIsAll bool) bool {
 	before := *c
 	in := incoming(msgs)
 	placed := in
@@ -135,7 +137,7 @@ func adopt(c *Conversation, msgs []*Message) bool {
 	}
 	var places []Role
 	for _, m := range placed {
-		if at, ok := observedPlace(c, m); ok {
+		if at, ok := observedPlace(c, m, archiveIsAll); ok {
 			places = append(places, at.role)
 		}
 	}
@@ -198,12 +200,12 @@ func planForMailboxes(c *Conversation, msgs []*Message, archiveIsAll bool) plan 
 		placed := slices.DeleteFunc(in, func(m *Message) bool { return len(m.Locations) == 0 })
 		if c.Unread {
 			if len(placed) > 0 && !slices.ContainsFunc(placed, func(m *Message) bool { return !m.Seen }) {
-				p.flags = appendFlag(p.flags, c, placed[len(placed)-1], imap.FlagSeen, false)
+				p.flags = appendFlag(p.flags, archiveIsAll, c, placed[len(placed)-1], imap.FlagSeen, false)
 			}
 		} else {
 			for _, m := range placed {
 				if !m.Seen {
-					p.flags = appendFlag(p.flags, c, m, imap.FlagSeen, true)
+					p.flags = appendFlag(p.flags, archiveIsAll, c, m, imap.FlagSeen, true)
 				}
 			}
 		}
@@ -212,12 +214,12 @@ func planForMailboxes(c *Conversation, msgs []*Message, archiveIsAll bool) plan 
 		placed := slices.DeleteFunc(slices.Clone(msgs), func(m *Message) bool { return len(m.Locations) == 0 })
 		if c.Pinned {
 			if len(placed) > 0 && !slices.ContainsFunc(placed, func(m *Message) bool { return m.Flagged }) {
-				p.flags = appendFlag(p.flags, c, placed[len(placed)-1], imap.FlagFlagged, true)
+				p.flags = appendFlag(p.flags, archiveIsAll, c, placed[len(placed)-1], imap.FlagFlagged, true)
 			}
 		} else {
 			for _, m := range placed {
 				if m.Flagged {
-					p.flags = appendFlag(p.flags, c, m, imap.FlagFlagged, false)
+					p.flags = appendFlag(p.flags, archiveIsAll, c, m, imap.FlagFlagged, false)
 				}
 			}
 		}
@@ -269,8 +271,8 @@ func planMoves(c *Conversation, msgs, in []*Message, archiveIsAll bool) []move {
 	return moves
 }
 
-func appendFlag(changes []flagChange, c *Conversation, m *Message, flag imap.Flag, add bool) []flagChange {
-	if at, ok := observedPlace(c, m); ok {
+func appendFlag(changes []flagChange, archiveIsAll bool, c *Conversation, m *Message, flag imap.Flag, add bool) []flagChange {
+	if at, ok := observedPlace(c, m, archiveIsAll); ok {
 		return append(changes, flagChange{at, flag, add})
 	}
 	return changes

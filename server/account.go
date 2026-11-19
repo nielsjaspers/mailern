@@ -463,35 +463,42 @@ func (a *Account) findOldMoves(c *imapclient.Client, snapshots map[Role]mailboxS
 		if !ok || snap.unavailable {
 			continue
 		}
-		sel, err := a.selectMailbox(c, role, snap.mailboxIdentity, true)
-		if err != nil {
+		if err := a.recoverMailboxMoves(c, role, snap, searches, lost); err != nil {
 			if a.unreadableSent(role, err) {
 				snapshots[role] = mailboxSnapshot{unavailable: true}
 				continue
 			}
 			return err
 		}
-		if sel.NumMessages == 0 {
-			continue
+	}
+	return nil
+}
+
+func (a *Account) recoverMailboxMoves(c *imapclient.Client, role Role, snap mailboxSnapshot, searches []imap.SearchCriteria, lost map[string]bool) error {
+	sel, err := a.selectMailbox(c, role, snap.mailboxIdentity, true)
+	if err != nil {
+		return err
+	}
+	if sel.NumMessages == 0 {
+		return nil
+	}
+	for _, criteria := range searches {
+		found, err := c.UIDSearch(&criteria, nil).Wait()
+		if err != nil {
+			return fmt.Errorf("search tracked mail in %s: %w", snap.name, err)
 		}
-		for _, criteria := range searches {
-			found, err := c.UIDSearch(&criteria, nil).Wait()
+		uids := slices.DeleteFunc(found.AllUIDs(), func(uid imap.UID) bool {
+			_, ok := snap.flags[uid]
+			return ok
+		})
+		for batch := range slices.Chunk(uids, 100) {
+			msgs, err := c.Fetch(imap.UIDSetNum(batch...), &imap.FetchOptions{UID: true, Envelope: true, Flags: true}).Collect()
 			if err != nil {
-				return fmt.Errorf("search tracked mail in %s: %w", snap.name, err)
+				return fmt.Errorf("fetch tracked mail in %s: %w", snap.name, err)
 			}
-			uids := slices.DeleteFunc(found.AllUIDs(), func(uid imap.UID) bool {
-				_, ok := snap.flags[uid]
-				return ok
-			})
-			for batch := range slices.Chunk(uids, 100) {
-				msgs, err := c.Fetch(imap.UIDSetNum(batch...), &imap.FetchOptions{UID: true, Envelope: true, Flags: true}).Collect()
-				if err != nil {
-					return fmt.Errorf("fetch tracked mail in %s: %w", snap.name, err)
-				}
-				for _, m := range msgs {
-					if key := envelopeKey(m.Envelope); lost[key] {
-						snap.keys[m.UID], snap.flags[m.UID] = key, m.Flags
-					}
+			for _, m := range msgs {
+				if key := envelopeKey(m.Envelope); lost[key] {
+					snap.keys[m.UID], snap.flags[m.UID] = key, m.Flags
 				}
 			}
 		}
@@ -527,6 +534,10 @@ func envelopeKey(e *imap.Envelope) string {
 // reconcile moves the reply back out.
 func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 	account := st.account(a.cfg.ID)
+	if account.ArchiveIsAll != a.archiveIsAll {
+		account.ArchiveIsAll = a.archiveIsAll
+		st.Revision++
+	}
 	changed := map[string]bool{}
 	locationsChanged := map[string]bool{}
 	arrived := map[string]bool{}
@@ -627,7 +638,7 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 				}
 			}
 		}
-		at, ok := observedPlace(st.Conversations[m.ConversationID], m)
+		at, ok := observedPlace(st.Conversations[m.ConversationID], m, a.archiveIsAll)
 		if !ok {
 			continue
 		}

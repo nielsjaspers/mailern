@@ -85,6 +85,7 @@ type Conversation struct {
 }
 
 type AccountState struct {
+	ArchiveIsAll bool                  `json:"archiveIsAll,omitempty"`
 	OwnedDeleted *deletedFlags         `json:"ownedDeleted,omitempty"`
 	Submitting   map[string]submission `json:"submitting,omitempty"`
 	Login        string                `json:"login"`
