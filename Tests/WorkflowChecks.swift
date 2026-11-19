@@ -513,6 +513,7 @@ import os
         try await checkUnconfirmedSendRetry()
         try await checkAccountAliases()
         try await checkReplyDuringSend()
+        try await checkLateConfirmation()
         try await checkReplyWinsOverUnsyncedMove()
         try await checkOutboxBackoffAndReplyTo()
         try checkOverdueAndOwnRichText()
@@ -1170,6 +1171,32 @@ import os
         let c = store.conversation(thread.id)!
         assert(sent && c.messages.count == 3 && c.workflow == .inbox && c.unread)
         print("PASS: a reply that arrives during a send keeps the thread in Inbox, unread")
+    }
+
+    @MainActor static func checkLateConfirmation() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-late-confirmation-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        let thread = remoteThread()
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        var draft = ComposerDraft.make(mode: .reply(thread.id), conversation: store.conversation(thread.id), accounts: store.accounts)
+        draft.text = "Any news?"
+        draft.richText = Data("rich".utf8)
+        // The send is confirmed after its reminder date, and sync finds the sent copy with its HTML first.
+        draft.followUp = .now.addingTimeInterval(-60)
+        store.sendRemote = { prepared in
+            var sent = thread
+            sent.messages.append(RemoteMessage(id: prepared.draft.id, sender: "Me", address: remoteAccount.address, date: .now,
+                                               body: prepared.draft.text, outgoing: true, subject: "Re: Plans", hasHTML: true))
+            assert(store.mergeRemote(remoteBatch(2, [sent])))
+        }
+        let sent = await store.sendNow(draft)
+        assert(sent)
+        let c = store.conversation(thread.id)!
+        let own = c.messages.first { $0.id == draft.id }!
+        assert(own.richText != nil && own.remoteHTML == nil && own.html == nil)
+        assert(c.workflow == .inbox && c.followUp == .noReply)
+        print("PASS: a late confirmation keeps the reminder due and the composer's rich text")
     }
 
     @MainActor static func checkAccountAliases() async throws {

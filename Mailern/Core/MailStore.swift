@@ -513,7 +513,9 @@ final class MailStore {
         do {
             let html = try await loadRemoteHTML(id)
             guard let c = conversations.firstIndex(where: { $0.id == conversationID }),
-                  let m = conversations[c].messages.firstIndex(where: { $0.id == id }) else { return }
+                  let m = conversations[c].messages.firstIndex(where: { $0.id == id }),
+                  // The send can be filed with its own rich text while the download runs.
+                  conversations[c].messages[m].richText == nil else { return }
             conversations[c].messages[m].html = html.isEmpty ? nil : html
             conversations[c].messages[m].remoteHTML = nil
             save()
@@ -862,6 +864,11 @@ final class MailStore {
             updated[index].messages[messageIndex].bcc = bcc.isEmpty ? nil : bcc
             updated[index].messages[messageIndex].richText = draft.richText
             updated[index].messages[messageIndex].attachments = attachments
+            // Sync can find the sent copy first. Its server HTML would show over the composer's rich text and quote.
+            if draft.richText != nil {
+                updated[index].messages[messageIndex].html = nil
+                updated[index].messages[messageIndex].remoteHTML = nil
+            }
         } else {
             var message = MailMessage(id: draft.id, sender: accepted.from.name, address: draft.sender(in: accepted.from),
                                       to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
@@ -881,6 +888,11 @@ final class MailStore {
             if let followUp = draft.followUp, followUp > .now {
                 updated[index].move(to: .snoozed, until: followUp)
                 updated[index].followUp = .waiting
+            } else if let followUp = draft.followUp {
+                // The send was confirmed after its reminder date. The reminder is due now, as if it had waited.
+                updated[index].move(to: .inbox)
+                updated[index].returnedFromSnoozeAt = followUp
+                updated[index].followUp = .noReply
             } else {
                 updated[index].move(to: .settled)
             }
