@@ -541,9 +541,10 @@ private struct SystemEmailPicker: UIViewControllerRepresentable {
         picker.predicateForSelectionOfContact = NSPredicate(value: false)
         picker.predicateForSelectionOfProperty = NSPredicate(format: "key == %@", CNContactEmailAddressesKey)
         host.present(picker, animated: true)
+        picker.presentationController?.delegate = context.coordinator
     }
 
-    final class Coordinator: NSObject, CNContactPickerDelegate {
+    final class Coordinator: NSObject, CNContactPickerDelegate, UIAdaptivePresentationControllerDelegate {
         var presenting = false
         var finish: ((String?) -> Void)?
         private func complete(_ address: String?) {
@@ -551,6 +552,7 @@ private struct SystemEmailPicker: UIViewControllerRepresentable {
             finish = nil
             callback?(address)
         }
+        func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { complete(nil) }
         func contactPickerDidCancel(_ picker: CNContactPickerViewController) { complete(nil) }
         func contactPicker(_ picker: CNContactPickerViewController, didSelect property: CNContactProperty) {
             complete(property.value as? String)

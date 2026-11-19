@@ -212,6 +212,11 @@ final class RecipientSearchUITests: MailernUITestCase {
         screenshot.name = "native-email-picker"
         screenshot.lifetime = .keepAlways
         add(screenshot)
+        let bar = app.navigationBars["Contacts"]
+        bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1, thenDragTo:
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        XCTAssertTrue(app.navigationBars["Contacts"].waitForNonExistence(timeout: 5))
+        app.buttons["Contacts"].tap()
         app.navigationBars["Contacts"].buttons["Cancel"].tap()
         XCTAssertTrue(app.navigationBars["Recipients"].waitForExistence(timeout: 5))
         let search = app.searchFields["Search recipients"]
