@@ -260,7 +260,13 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 		}
 		if slices.Contains(state.Fields, "workflow") && (c.Workflow != state.Workflow || !sameTime(c.SnoozedUntil, state.SnoozedUntil)) {
 			c.PendingPlacement = true
-			c.Workflow, c.SnoozedUntil, c.ReturnedFromSnoozeAt = state.Workflow, state.SnoozedUntil, nil
+			// The phone can wake a due snooze before the service does. That is still a wake, with its time.
+			woke := c.Workflow == WorkflowSnoozed && state.Workflow == WorkflowInbox && c.SnoozedUntil != nil && !c.SnoozedUntil.After(time.Now())
+			returned := (*time.Time)(nil)
+			if woke {
+				returned = c.SnoozedUntil
+			}
+			c.Workflow, c.SnoozedUntil, c.ReturnedFromSnoozeAt = state.Workflow, state.SnoozedUntil, returned
 			if state.Workflow == WorkflowSettled {
 				c.Unread, c.PendingRead = false, true
 			}

@@ -155,3 +155,17 @@ func TestRemovedAliasKeepsSentMailOutgoing(t *testing.T) {
 		t.Fatal("removing an alias must not turn mail sent from it into incoming mail")
 	}
 }
+
+func TestPhoneWakeKeepsTheReturnTime(t *testing.T) {
+	h := newHarness(t)
+	h.deliver("INBOX", "Dinner", "")
+	h.sync()
+	soon := time.Now().Add(time.Second).Truncate(time.Second)
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Workflow, s.SnoozedUntil = WorkflowSnoozed, &soon })
+	time.Sleep(time.Until(soon) + 100*time.Millisecond)
+	// The phone wakes the snooze before the service's timer does.
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Workflow, s.SnoozedUntil = WorkflowInbox, nil })
+	if c := h.conversations()["Dinner"]; c.ReturnedFromSnoozeAt == nil || !c.ReturnedFromSnoozeAt.Equal(soon) {
+		t.Fatalf("an early wake should keep its return time, got %v", c.ReturnedFromSnoozeAt)
+	}
+}
