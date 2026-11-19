@@ -165,8 +165,10 @@ struct ComposerView: View {
             // The top inset is the navigation bar, with the large title while it shows: the panel's pull zone.
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.top } action: { _, top in panel.pullZone = top }
             .scrollBounceBehavior(.always)
+            // Dragging the content hides the keyboard, which the scroll view does not do by itself here. A drag that
+            // the body handles, such as one that extends a selection, keeps the keyboard and the selection.
             .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { value in
-                guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                guard abs(value.translation.height) > abs(value.translation.width), editor.view?.isTrackingTouch != true else { return }
                 focus = nil
                 subjectFocused = false
                 editor.view?.window?.endEditing(true)
