@@ -103,11 +103,13 @@ extension Conversation {
                 var start = folded.startIndex
                 while start < folded.endIndex,
                       let hit = folded.range(of: term, options: ascii ? [.caseInsensitive] : [.literal], range: start..<folded.endIndex) {
+                    if Task.isCancelled { return [] }
                     let range: Range<String.Index>
                     if ascii { range = hit }
                     else {
                         if positions.isEmpty {
                             for i in field.indices {
+                                if Task.isCancelled { return [] }
                                 let length = String(field[i]).folding(options: .caseInsensitive, locale: nil)
                                     .precomposedStringWithCanonicalMapping.utf8.count
                                 positions.append(contentsOf: repeatElement(i, count: length))

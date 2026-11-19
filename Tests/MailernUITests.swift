@@ -855,7 +855,8 @@ final class ReaderSearchUITests: MailernUITestCase {
         field.tap()
         field.typeText("Sounds good")
         let result = row("Dinner on Saturday?", in: app)
-        XCTAssertTrue(result.label.localizedCaseInsensitiveContains("sounds good"))
+        let snippet = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS[c] %@", "Sounds good"), object: result)
+        XCTAssertEqual(XCTWaiter.wait(for: [snippet], timeout: 5), .completed)
         result.tap()
         let passage = app.staticTexts["matching-passage"]
         XCTAssertTrue(passage.wait(for: \.isHittable, toEqual: true, timeout: 8))
@@ -878,6 +879,7 @@ final class ReaderSearchUITests: MailernUITestCase {
         add(proof)
         app.buttons["Close find"].tap()
         waitForAbsence(passage)
+        XCTAssertFalse(app.buttons["15 earlier messages"].exists)
     }
     @MainActor
     func testChevronsReplaceTheThread() {

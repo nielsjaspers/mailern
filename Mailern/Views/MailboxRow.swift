@@ -131,6 +131,8 @@ extension AccountColor {
 
 struct ConversationRow: View {
     var query = ""
+    private struct SnippetRequest: Equatable { let query: String; let thread: UUID; let latest: UUID }
+    @State private var result: (request: SnippetRequest, snippet: String?)?
     static let unreadBackground = Color(uiColor: UIColor { traits in
         UIColor.systemBlue.resolvedColor(with: traits).withAlphaComponent(traits.userInterfaceStyle == .dark ? 0.22 : 0.07)
     })
@@ -139,14 +141,24 @@ struct ConversationRow: View {
     let conversation: Conversation
     var hasDraft = false
     var body: some View {
-        MailboxRow(
+        let request = SnippetRequest(query: query, thread: conversation.id, latest: conversation.latest.id)
+        let content = MailboxRow(
             avatar: SenderAvatar(name: conversation.avatarName),
             title: conversation.participants, count: conversation.messages.count, date: conversation.latest.date,
-            subject: conversation.subject, snippet: conversation.messageMatches(query, firstOnly: true).first?.snippet ?? conversation.latest.body.snippet, account: store.account(conversation.accountID),
+            subject: conversation.subject, snippet: (result?.request == request ? result?.snippet : nil) ?? conversation.latest.body.snippet, account: store.account(conversation.accountID),
             unread: conversation.unread, draft: hasDraft, pinned: conversation.pinned, muted: conversation.muted == true,
             followUp: conversation.followUp, snoozedUntil: conversation.snoozedUntil
         )
         .accessibilityValue(conversation.unread ? "Unread" : "Read")
+        if query.isEmpty { content }
+        else {
+            content.task(id: request) {
+                let thread = conversation
+                let worker = Task.detached(priority: .userInitiated) { thread.messageMatches(request.query, firstOnly: true).first?.snippet }
+                let snippet = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+                if !Task.isCancelled { result = (request, snippet) }
+            }
+        }
     }
 }
 

@@ -10,6 +10,7 @@ struct ConversationContent: View {
     @State private var query = ""
     @State private var matches: [MessageMatch] = []
     @State private var matchIndex = 0
+    @State private var openingResult = false
     @FocusState private var findFocused: Bool
     var drafts: [ComposerDraft] = []
     var scheduled: [ComposerDraft] = []
@@ -86,30 +87,29 @@ struct ConversationContent: View {
                         if !query.isEmpty { Text(matches.isEmpty ? "No matches" : "\(matchIndex + 1) of \(matches.count)").font(.caption) }
                         Button("Previous match", systemImage: "chevron.up") { matchIndex -= 1 }.disabled(matchIndex == 0)
                         Button("Next match", systemImage: "chevron.down") { matchIndex += 1 }.disabled(matchIndex + 1 >= matches.count)
-                        Button("Close find", systemImage: "xmark") { finding.wrappedValue = false; query = "" }
+                        Button("Done") { finishFind(proxy) }.accessibilityLabel("Close find")
                     }.labelStyle(.iconOnly).padding(10).background(.bar)
                 }
             }
             .onChange(of: finding.wrappedValue) { _, active in findFocused = active }
             .task(id: FindRequest(query: query, latest: latest.id)) {
                 let previous = match
-                matchIndex = 0
-                matches = []
-                guard !query.isEmpty else { return }
+                guard !query.isEmpty else { matches = []; matchIndex = 0; return }
                 let thread = conversation, term = query
                 let worker = Task.detached(priority: .userInitiated) { thread.messageMatches(term) }
                 let found = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
                 guard !Task.isCancelled, query == term else { return }
                 matches = found
                 matchIndex = previous.flatMap { found.firstIndex(of: $0) } ?? 0
+                if openingResult && found.isEmpty { openNormally(proxy) }
+                openingResult = false
                 revealMatch(proxy)
             }
             .onChange(of: matchIndex) { _, _ in revealMatch(proxy) }
             // A long thread opens on its latest message, or on a draft below it.
             .onAppear {
-                if !initialQuery.isEmpty, !conversation.messageMatches(initialQuery, firstOnly: true).isEmpty { query = initialQuery }
-                else if let id = (drafts + scheduled).last?.id { proxy.scrollTo(id, anchor: .bottom) }
-                else if !isPreview, !earlier.isEmpty { proxy.scrollTo(latest.id, anchor: .top) }
+                if initialQuery.isEmpty { openNormally(proxy) }
+                else { openingResult = true; query = initialQuery }
             }
             // A new message opens and the one it replaces folds, whatever the reader did to it.
             .onChange(of: latest.id) { old, new in
@@ -124,6 +124,21 @@ struct ConversationContent: View {
     }
 
     private var match: MessageMatch? { matches.indices.contains(matchIndex) ? matches[matchIndex] : nil }
+    private func openNormally(_ proxy: ScrollViewProxy) {
+        if let id = (drafts + scheduled).last?.id { proxy.scrollTo(id, anchor: .bottom) }
+        else if !isPreview, !earlier.isEmpty { proxy.scrollTo(latest.id, anchor: .top) }
+    }
+    private func finishFind(_ proxy: ScrollViewProxy) {
+        let id = match?.messageID
+        if let id {
+            if conversation.messages.dropFirst().dropLast(2).contains(where: { $0.id == id }) { showsMiddle = true }
+            if id == latest.id { toggled.remove(id) } else { toggled.insert(id) }
+        }
+        finding.wrappedValue = false
+        matches = []
+        query = ""
+        if let id { Task { @MainActor in await Task.yield(); proxy.scrollTo(id, anchor: .top) } }
+    }
     private func revealMatch(_ proxy: ScrollViewProxy) {
         guard let match else { return }
         let id = match.messageID
@@ -182,7 +197,7 @@ struct ConversationContent: View {
                                 quoteStart: folded ? nil : conversation.quoteStart(of: message),
                                 answered: folded ? nil : conversation.answered(by: message),
                                 ownAddresses: ownAddresses, margin: margin, expanded: !folded,
-                                toggle: conversation.messages.count > 1 ? { toggle(message) } : nil,
+                                toggle: conversation.messages.count > 1 && match?.messageID != message.id ? { toggle(message) } : nil,
                                 compose: compose.map { compose in { compose($0, message.id) } }, showSender: showSender
                             )
                         }
