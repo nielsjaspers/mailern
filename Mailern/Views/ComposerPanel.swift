@@ -85,7 +85,8 @@ import SwiftUI
     }
     func followDock(_ translation: CGFloat) {
         guard request != nil, !settled, !docking else { return }
-        offset = max(0, dragOrigin + translation)
+        // Between the open position and the dock: the panel never sinks below the dock it came from.
+        offset = min(dragOrigin, max(0, dragOrigin + translation))
     }
     /// Ends a drag on the dock. A drag the system canceled goes back to the dock.
     func endDockDrag(translation: CGFloat = 0, predicted: CGFloat = 0, velocity: CGFloat = 0) {
@@ -121,10 +122,11 @@ import SwiftUI
     /// Slides the panel off the screen, after a send, a discard, or Save Draft.
     func close() {
         guard request != nil else { return }
+        // An untouched message pulled only part of the way leaves as a composer, not through the dock's header. A pull
+        // already aimed the spring at the dock, so the release position decides.
+        if (docking ? released : offset) < dockOffset * 0.55 { morphing = false }
         docking = false
         settled = false
-        // An untouched message pulled only part of the way leaves as a composer, not through the dock's header.
-        if (docking ? released : offset) < dockOffset * 0.55 { morphing = false }
         withAnimation(.smooth(duration: 0.3)) { covering = false }
         move(to: height, until: .removed) { [weak self] in self?.leave() }
     }
@@ -176,9 +178,8 @@ import SwiftUI
         moveToDock(velocity: 0)
     }
     private func moveToDock(velocity: CGFloat) {
-        fadeBase = max(1, dockOffset)
         // The real dock replaces the panel when it stops, so it must stop exactly there, not when it is merely close.
-        move(to: dockOffset, velocity: velocity, until: .removed) { [weak self] in
+        move(to: dockOffset, fade: max(1, dockOffset), velocity: velocity, until: .removed) { [weak self] in
             self?.arrived = true
             self?.finishDocking()
         }
@@ -203,13 +204,16 @@ import SwiftUI
         offset = 0
         withAnimation(.smooth(duration: 0.3)) { hidesToolbar = false }
     }
-    private func move(to target: CGFloat, velocity: CGFloat = 0, until criteria: AnimationCompletionCriteria = .logicallyComplete,
+    /// Springs the panel to `target`. A new `fade` base moves with it, so the fades blend into the new dock place.
+    private func move(to target: CGFloat, fade: CGFloat? = nil, velocity: CGFloat = 0,
+                      until criteria: AnimationCompletionCriteria = .logicallyComplete,
                       then done: @escaping () -> Void) {
         generation += 1
         let current = generation
         // Test runs turn animations off. The panel then moves at once, as UIKit views do.
         guard UIView.areAnimationsEnabled else {
             offset = target
+            if let fade { fadeBase = fade }
             DispatchQueue.main.async { if self.generation == current { done() } }
             return
         }
@@ -218,6 +222,7 @@ import SwiftUI
         let relative = abs(distance) > 1 ? velocity / distance : 0
         withAnimation(.interpolatingSpring(duration: 0.4, bounce: 0, initialVelocity: relative), completionCriteria: criteria) {
             offset = target
+            if let fade { fadeBase = fade }
         } completion: { [weak self] in
             guard self?.generation == current else { return }
             done()
@@ -334,13 +339,13 @@ struct ComposerPanelHost: View {
 /// offset would play side by side, so both headers would show during a spring.
 private struct PanelMotion<Content: View, Header: View>: View, Animatable {
     var offset: CGFloat
-    let dockOffset: CGFloat
+    var dockOffset: CGFloat
     let morphing: Bool
     @ViewBuilder let content: Content
     @ViewBuilder let header: Header
-    var animatableData: CGFloat {
-        get { offset }
-        set { offset = newValue }
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(offset, dockOffset) }
+        set { offset = newValue.first; dockOffset = newValue.second }
     }
     var body: some View {
         // 0 while open, 1 at the dock. Near the dock the composer fades out, and only then the dock's header fades
@@ -367,10 +372,10 @@ private struct PanelMotion<Content: View, Header: View>: View, Animatable {
 /// the panel covers most of the screen, so taps reach the mailbox while the panel heads for the dock.
 private struct PanelDim: View, Animatable {
     var offset: CGFloat
-    let dockOffset: CGFloat
-    var animatableData: CGFloat {
-        get { offset }
-        set { offset = newValue }
+    var dockOffset: CGFloat
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(offset, dockOffset) }
+        set { offset = newValue.first; dockOffset = newValue.second }
     }
     var body: some View {
         let docking = min(1, max(0, offset / dockOffset))
