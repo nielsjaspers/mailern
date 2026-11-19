@@ -313,7 +313,10 @@ extension MailStore {
             return m
         }
         if c.messages.isEmpty, let local { c.messages = local.messages }
-        let replied = remote.messages.contains { !$0.outgoing && $0.deleted != true && !known.contains($0.id) } && local != nil
+        let replies = local == nil ? [] : remote.messages.filter { !$0.outgoing && $0.deleted != true && !known.contains($0.id) }
+        let replied = !replies.isEmpty
+        // The reminder this sync may end, judged before the server's wake can turn it into No Reply.
+        let deadline = c.followUp == .waiting ? c.snoozedUntil : nil
         // A new reply wins over a move the server has not confirmed, as an arrival does in Mailern: it returns the
         // thread to Inbox, rescues it from Trash, and ends its reminder.
         var keeping = fields
@@ -324,8 +327,12 @@ extension MailStore {
             if c.removal?.mailbox == .trash { keeping.remove(.removal) }
         }
         c.adoptRemoteState(remote, keeping: keeping)
-        // A reply that answers a reminder on a muted thread settles it quietly, as in Mailern.
-        if replied && muted {
+        // A reply that answers a reminder on a muted thread settles it quietly, as in Mailern, even when this sync
+        // also brings the reminder's wake. A reply after the deadline only clears the No Reply mark.
+        if replied && muted, let deadline, replies.contains(where: { $0.date <= deadline }) {
+            c.move(to: .settled)
+            c.followUp = nil
+        } else if replied && muted {
             c.endReminder()
         } else if replied {
             c.followUp = nil
