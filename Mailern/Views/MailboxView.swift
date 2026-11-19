@@ -6,6 +6,7 @@ struct MailboxView: View {
     @Environment(MailStore.self) private var store
     @State private var selection: Workflow = .inbox
     @State private var search = ""
+    @State private var searchSession = 0
     @AppStorage("mailboxFilters") private var filterData = Data()
     @State private var filtering: Workflow?
     @State private var settling: DraftDiscard?
@@ -91,7 +92,10 @@ struct MailboxView: View {
             peeking = nil
             endSelection()
         }
-        .onChange(of: search) { _, _ in pruneSelection() }
+        .onChange(of: search) { _, value in
+            if value.isEmpty { searchSession += 1 }
+            pruneSelection()
+        }
         .onChange(of: filterData) { _, _ in peeking = nil; pruneSelection() }
         .onChange(of: drafts.drafts) { _, saved in
             store.clearWorkflowUndo(involving: Set(saved.compactMap { $0.mode.replyID }))
@@ -424,7 +428,7 @@ struct MailboxView: View {
             }
         } label: {
             switch item {
-            case .thread(let conversation, let replies): ConversationRow(query: search, conversation: conversation, hasDraft: !replies.isEmpty)
+            case .thread(let conversation, let replies): ConversationRow(query: search, searchSession: searchSession, conversation: conversation, hasDraft: !replies.isEmpty)
             case .draft(let draft): DraftRow(draft: draft)
             }
         }

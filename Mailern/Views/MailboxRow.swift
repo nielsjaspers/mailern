@@ -131,7 +131,8 @@ extension AccountColor {
 
 struct ConversationRow: View {
     var query = ""
-    private struct SnippetRequest: Equatable { let query: String; let thread: UUID; let latest: UUID }
+    var searchSession = 0
+    private struct SnippetRequest: Equatable { let query: String; let session: Int; let thread: UUID; let latest: UUID }
     @State private var result: (request: SnippetRequest, snippet: String?)?
     static let unreadBackground = Color(uiColor: UIColor { traits in
         UIColor.systemBlue.resolvedColor(with: traits).withAlphaComponent(traits.userInterfaceStyle == .dark ? 0.22 : 0.07)
@@ -141,8 +142,8 @@ struct ConversationRow: View {
     let conversation: Conversation
     var hasDraft = false
     var body: some View {
-        let request = SnippetRequest(query: query, thread: conversation.id, latest: conversation.latest.id)
-        let cachedSnippet = !query.isEmpty && result?.request.thread == request.thread && result?.request.latest == request.latest
+        let request = SnippetRequest(query: query, session: searchSession, thread: conversation.id, latest: conversation.latest.id)
+        let cachedSnippet = !query.isEmpty && result?.request.session == request.session && result?.request.thread == request.thread && result?.request.latest == request.latest
             ? result?.snippet : nil
         let content = MailboxRow(
             avatar: SenderAvatar(name: conversation.avatarName),
@@ -152,7 +153,7 @@ struct ConversationRow: View {
             followUp: conversation.followUp, snoozedUntil: conversation.snoozedUntil
         )
         .accessibilityValue(conversation.unread ? "Unread" : "Read")
-        if query.isEmpty { content.onAppear { result = nil } }
+        if query.isEmpty { content }
         else {
             content.task(id: request) {
                 let thread = conversation

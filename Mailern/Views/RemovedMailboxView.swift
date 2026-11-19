@@ -7,6 +7,7 @@ struct RemovedMailboxView: View {
     let mailbox: RemovedMailbox
     let open: (UUID, [UUID], String) -> Void
     @State private var search = ""
+    @State private var searchSession = 0
     @State private var selecting = false
     @State private var selectedIDs: Set<UUID> = []
     // Conversations waiting for confirmation before permanent deletion.
@@ -76,7 +77,10 @@ struct RemovedMailboxView: View {
             .onDisappear { visible = false }
             // Bulk actions apply only to visible conversations.
             .onChange(of: store.conversations) { _, _ in pruneSelection() }
-            .onChange(of: search) { _, _ in pruneSelection() }
+            .onChange(of: search) { _, value in
+                if value.isEmpty { searchSession += 1 }
+                pruneSelection()
+            }
     }
 
     @ViewBuilder private var content: some View {
@@ -93,10 +97,10 @@ struct RemovedMailboxView: View {
                     ForEach(conversations) { conversation in
                         Group {
                             if selecting {
-                                ConversationRow(query: search, conversation: conversation, hasDraft: false)
+                                ConversationRow(query: search, searchSession: searchSession, conversation: conversation, hasDraft: false)
                             } else {
                                 Button { open(conversation.id, conversations.map(\.id), search) } label: {
-                                    ConversationRow(query: search, conversation: conversation, hasDraft: false)
+                                    ConversationRow(query: search, searchSession: searchSession, conversation: conversation, hasDraft: false)
                                 }.buttonStyle(.plain)
                             }
                         }

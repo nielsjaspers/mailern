@@ -87,7 +87,13 @@ struct ConversationContent: View {
                         if !query.isEmpty {
                             Button("Clear find", systemImage: "xmark.circle.fill") { query = ""; findFocused = true }
                         }
-                        if !query.isEmpty { Text(matches.isEmpty ? "No matches" : "\(matchIndex + 1) of \(matches.count)").font(.caption).opacity(resultsReady ? 1 : 0).accessibilityHidden(!resultsReady) }
+                        if !query.isEmpty {
+                            ZStack {
+                                Text("No matches").hidden().accessibilityHidden(true)
+                                Text(matches.isEmpty ? "No matches" : "\(matchIndex + 1) of \(matches.count)")
+                                    .opacity(resultsReady ? 1 : 0).accessibilityHidden(!resultsReady)
+                            }.font(.caption).monospacedDigit()
+                        }
                         Button("Previous match", systemImage: "chevron.up") { matchIndex -= 1 }.disabled(!resultsReady || matchIndex == 0)
                         Button("Next match", systemImage: "chevron.down") { matchIndex += 1 }.disabled(!resultsReady || matchIndex + 1 >= matches.count)
                         Button("Done") { finishFind(proxy) }.accessibilityIdentifier("Close find")

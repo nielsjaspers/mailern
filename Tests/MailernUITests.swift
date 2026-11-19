@@ -857,6 +857,13 @@ final class ReaderSearchUITests: MailernUITestCase {
         let result = row("Dinner on Saturday?", in: app)
         let snippet = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS[c] %@", "Sounds good"), object: result)
         XCTAssertEqual(XCTWaiter.wait(for: [snippet], timeout: 5), .completed)
+        field.buttons["Clear text"].tap()
+        field.typeText("Personal")
+        let fallback = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label NOT CONTAINS[c] %@", "Sounds good"), object: result)
+        XCTAssertEqual(XCTWaiter.wait(for: [fallback], timeout: 5), .completed)
+        field.buttons["Clear text"].tap()
+        field.typeText("Sounds good")
+        XCTAssertTrue(result.waitForExistence(timeout: 5))
         result.tap()
         let passage = app.staticTexts["matching-passage"]
         XCTAssertTrue(passage.wait(for: \.isHittable, toEqual: true, timeout: 8))
@@ -873,6 +880,9 @@ final class ReaderSearchUITests: MailernUITestCase {
         XCTAssertTrue(app.buttons["Next match"].wait(for: \.isEnabled, toEqual: true, timeout: 5))
         app.buttons["Next match"].tap()
         XCTAssertTrue(app.staticTexts["2 of 15"].existsOrWait(timeout: 5))
+        app.buttons["More actions"].tap()
+        app.buttons["Simulate incoming reply"].tap()
+        XCTAssertTrue(app.staticTexts["2 of 16"].existsOrWait(timeout: 5))
         let proof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         proof.name = "find-in-conversation"
         proof.lifetime = .keepAlways
