@@ -375,14 +375,14 @@ func (a *Account) applyPlans(c *imapclient.Client, plans []plan, identities map[
 		if len(expunges[role]) == 0 {
 			continue
 		}
-		unchanged, err := a.deleteScanCurrent(c, role, sel.UIDNext, identities)
-		if err != nil {
-			return err
-		}
-		if !unchanged {
-			continue
-		}
 		for _, uids := range expunges[role] {
+			unchanged, err := a.deleteScanCurrent(c, role, sel.UIDNext, identities)
+			if err != nil {
+				return err
+			}
+			if !unchanged {
+				break
+			}
 			set := imap.UIDSetNum(uids...)
 			found, err := c.Fetch(set, &imap.FetchOptions{UID: true, Flags: true}).Collect()
 			if err != nil {
@@ -419,7 +419,21 @@ func (a *Account) deleteScanCurrent(c *imapclient.Client, selected Role, uidNext
 			return false, nil
 		}
 	}
-	return true, nil
+	mailboxes, _, err := a.discover(c)
+	if err != nil {
+		return false, err
+	}
+	for _, role := range syncedRoles {
+		if mailboxes[role] != identities[role].name {
+			return false, nil
+		}
+	}
+	// Check the target again after the other mailboxes. A reply can arrive during STATUS.
+	current, err := a.selectMailbox(c, selected, identities[selected], false)
+	if err != nil {
+		return false, err
+	}
+	return current.UIDNext == uidNext, nil
 }
 
 func expungeUIDs(c *imapclient.Client, set imap.UIDSet) error {

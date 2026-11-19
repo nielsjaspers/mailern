@@ -278,8 +278,12 @@ type mailboxSnapshot struct {
 }
 
 func (a *Account) read(c *imapclient.Client, recoverKeys ...string) error {
-	if err := a.recoverOwnedDeleted(c); err != nil {
-		return err
+	recoveryErr := a.recoverOwnedDeleted(c)
+	if recoveryErr != nil {
+		var status *imap.Error
+		if !errors.As(recoveryErr, &status) || status.Type != imap.StatusResponseTypeNo {
+			return recoveryErr
+		}
 	}
 	snapshots := make(map[Role]mailboxSnapshot)
 	since := time.Now().Add(-a.window)
@@ -308,10 +312,12 @@ func (a *Account) read(c *imapclient.Client, recoverKeys ...string) error {
 			a.scannedUIDNext[role] = snap.uidNext
 		}
 	}
-	return a.store.Update(func(st *State) error {
+	err := a.store.Update(func(st *State) error {
 		a.merge(st, snapshots)
 		return nil
 	})
+	// Publish readable mail even when an interrupted flag write still blocks provider mutations.
+	return errors.Join(err, recoveryErr)
 }
 
 func (a *Account) unreadableSent(role Role, err error) bool {

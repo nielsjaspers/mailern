@@ -335,3 +335,97 @@ func TestProviderUnreadableConfiguredSentPreservesCacheAndSyncsInbox(t *testing.
 		t.Fatalf("Sent recovery lost a cached ID or missed the reply: %+v", got)
 	}
 }
+
+func TestUnreadableSentDuringFlagRecoveryStillPublishesInbox(t *testing.T) {
+	h := newHarness(t)
+	h.account.cfg.Mailboxes = map[Role]string{RoleSent: "Sent"}
+	var unavailable atomic.Bool
+	serveProvider(t, h, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}}, func(s imapserver.Session) imapserver.Session {
+		return beforeSelectSession{s.(imapserver.SessionIMAP4rev2), func(name string, _ bool) error {
+			if name == "Sent" && unavailable.Load() {
+				return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "Sent unavailable"}
+			}
+			return nil
+		}}
+	})
+	h.deliver("Sent", "Interrupted move", "", imap.FlagDeleted)
+	h.sync()
+	var sent mailboxIdentity
+	h.account.store.Read(func(st *State) { sent = identityFor(st.account(h.account.cfg.ID), RoleSent) })
+	if err := h.account.saveOwnedDeleted(&deletedFlags{Mailbox: sent.name, Validity: sent.validity, UIDs: imap.UIDSetNum(1)}); err != nil {
+		t.Fatal(err)
+	}
+	unavailable.Store(true)
+	h.deliver("INBOX", "New during recovery", "")
+	if err := h.account.Sync(); err == nil {
+		t.Fatal("expected the pending recovery to report the Sent outage")
+	}
+	if h.conversations()["New during recovery"].ID == "" {
+		t.Fatal("pending flag recovery blocked Inbox")
+	}
+	unavailable.Store(false)
+	h.sync()
+	if slices.Contains(h.mailbox("Sent")["Interrupted move"], imap.FlagDeleted) {
+		t.Fatal("recovery did not resume when Sent became readable")
+	}
+}
+
+type beforeStatusSession struct {
+	imapserver.SessionIMAP4rev2
+	before func(string) error
+}
+
+func (s beforeStatusSession) Status(name string, options *imap.StatusOptions) (*imap.StatusData, error) {
+	if err := s.before(name); err != nil {
+		return nil, err
+	}
+	return s.SessionIMAP4rev2.Status(name, options)
+}
+
+func TestProviderDeleteRechecksTrashAfterOtherMailboxStatus(t *testing.T) {
+	h := newHarness(t)
+	const subject = "Parent in Trash"
+	root := h.deliver("Trash", subject, "")
+	reply := LabMessage("sam@example.com", labAddress, "Late reply", "Hello", root, time.Now())
+	var armed atomic.Bool
+	serveProvider(t, h, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}}, func(s imapserver.Session) imapserver.Session {
+		return beforeStatusSession{s.(imapserver.SessionIMAP4rev2), func(name string) error {
+			if name == "INBOX" && armed.CompareAndSwap(true, false) {
+				return h.lab.Deliver(labAddress, "Trash", reply)
+			}
+			return nil
+		}}
+	})
+	h.sync()
+	queueProviderDelete(t, h, h.conversations()[subject].ID)
+	armed.Store(true)
+	h.sync()
+	if armed.Load() || len(h.mailbox("Trash")) != 2 {
+		t.Fatal("late reply must preserve both messages")
+	}
+}
+
+func TestProviderRemapDuringWritableSelectKeepsFormerTrash(t *testing.T) {
+	h := newHarness(t)
+	if err := h.lab.users[labAddress].Create("New Trash", nil); err != nil {
+		t.Fatal(err)
+	}
+	var armed, remapped atomic.Bool
+	serveProvider(t, h, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}, imap.CapSpecialUse: {}}, func(s imapserver.Session) imapserver.Session {
+		return beforeSelectSession{remappedTrashSession{s.(imapserver.SessionIMAP4rev2), &remapped}, func(name string, readOnly bool) error {
+			if name == "Trash" && !readOnly && armed.CompareAndSwap(true, false) {
+				remapped.Store(true)
+			}
+			return nil
+		}}
+	})
+	const subject = "Former Trash message"
+	h.deliver("Trash", subject, "")
+	h.sync()
+	queueProviderDelete(t, h, h.conversations()[subject].ID)
+	armed.Store(true)
+	h.sync()
+	if !remapped.Load() || len(h.mailbox("Trash")) != 1 {
+		t.Fatal("expunged from the former Trash after a role remap")
+	}
+}

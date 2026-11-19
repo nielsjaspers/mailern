@@ -14,11 +14,13 @@ It speaks IMAP and SMTP, so it works with Gmail and iCloud Mail through app pass
 | Pin | flagged (a star in Gmail) |
 | Read and unread | the read flag on each message |
 | Trash and Junk | the whole thread moves to Trash or Junk |
-| Delete permanently | moved to Trash, then expunged |
+| Delete permanently | expunges the confirmed copies in Trash or Junk |
 
 Changes you make in other mail apps come back to Mailern: archiving a thread in Gmail on the web settles it, and moving it back to the inbox returns it. A new reply returns a settled or snoozed thread to Inbox, unless the thread is muted. Snoozes, mutes, and reminders exist only in Mailern.
 
 The service keeps your inbox and the last 90 days of archived, sent, junk, and deleted mail. It loads HTML only when you open a message.
+
+Before permanent deletion, Mailern checks the thread members and their mailbox. IMAP handles these checks and deletion as separate commands. A reply that arrives after the last check can survive while the confirmed messages are deleted.
 
 ## Set up
 
