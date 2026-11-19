@@ -260,7 +260,8 @@ func planMoves(c *Conversation, msgs, in []*Message, archiveIsAll bool) []move {
 			continue
 		}
 		at, ok := observedPlace(c, m, archiveIsAll)
-		settleInbox := c.MoveFromRemoval == "" && c.Removal == "" && c.Workflow == WorkflowSettled && !m.Outgoing && m.Locations[RoleInbox] != 0
+		// Settling empties the Inbox, also of your own mail that arrived there, such as a reply with yourself in CC.
+		settleInbox := c.MoveFromRemoval == "" && c.Removal == "" && c.Workflow == WorkflowSettled && m.Locations[RoleInbox] != 0
 		if m.PendingMove == nil && settleInbox {
 			at, ok = firstLocation(m, RoleInbox)
 		} else if m.PendingMove == nil && c.MoveFromRemoval != "" {
@@ -278,6 +279,9 @@ func planMoves(c *Conversation, msgs, in []*Message, archiveIsAll bool) []move {
 		case m.Outgoing:
 			if at.role == RoleTrash || at.role == RoleJunk {
 				target = RoleSent
+			} else if settleInbox && at.role == RoleInbox {
+				// The Sent copy stays where it is.
+				target = RoleArchive
 			}
 		case m == primary && c.Workflow != WorkflowSettled:
 			target = RoleInbox

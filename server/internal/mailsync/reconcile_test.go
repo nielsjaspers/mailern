@@ -318,6 +318,30 @@ func TestSettleArchivesAndInboxRestores(t *testing.T) {
 	}
 }
 
+func TestSettleArchivesYourOwnReplyFromTheInbox(t *testing.T) {
+	h := newHarness(t)
+	parent := h.deliver("INBOX", "Dinner", "")
+	// A reply with yourself in CC lands in Sent and in the Inbox.
+	own := maillab.Message("Me <"+labAddress+">", labAddress, "Re: Dinner", "Count me in.", parent, time.Now())
+	for _, mailbox := range []string{"Sent", "INBOX"} {
+		if err := h.lab.Deliver(labAddress, mailbox, own, imap.FlagSeen); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.sync()
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Workflow, s.Unread = WorkflowSettled, false })
+	h.sync()
+	if inbox := h.mailbox("INBOX"); len(inbox) != 0 {
+		t.Fatalf("settled mail is still in the inbox: %v", inbox)
+	}
+	if _, ok := h.mailbox("Sent")["Re: Dinner"]; !ok {
+		t.Fatal("settling must keep the Sent copy")
+	}
+	if _, ok := h.mailbox("Archive")["Re: Dinner"]; !ok {
+		t.Fatal("the Inbox copy of your reply should be archived")
+	}
+}
+
 func TestChangesFromOtherClientsAreAdopted(t *testing.T) {
 	h := newHarness(t)
 	h.deliver("INBOX", "Dinner", "")
