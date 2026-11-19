@@ -203,9 +203,6 @@ func (a *Account) sync() error {
 		if err := a.ensureArchive(c); err != nil {
 			return err
 		}
-		if err := a.fileSent(c); err != nil {
-			return err
-		}
 		if err := a.read(c); err != nil {
 			return err
 		}
@@ -221,7 +218,7 @@ func (a *Account) sync() error {
 			return err
 		}
 		if len(plans) == 0 {
-			return nil
+			return a.fileSent(c)
 		}
 		if err := a.apply(c, plans, validity); err != nil {
 			return err
@@ -231,6 +228,7 @@ func (a *Account) sync() error {
 }
 
 type mailboxSnapshot struct {
+	name     string
 	validity uint32
 	flags    map[imap.UID][]imap.Flag
 	// Messages new to this mailbox, by UID: their key, and the raw message when the account has never seen the key.
@@ -262,7 +260,7 @@ func (a *Account) read(c *imapclient.Client) error {
 }
 
 func (a *Account) readMailbox(c *imapclient.Client, role Role, name string, since time.Time) (mailboxSnapshot, error) {
-	snap := mailboxSnapshot{flags: map[imap.UID][]imap.Flag{}, keys: map[imap.UID]string{}, raw: map[imap.UID][]byte{}}
+	snap := mailboxSnapshot{name: name, flags: map[imap.UID][]imap.Flag{}, keys: map[imap.UID]string{}, raw: map[imap.UID][]byte{}}
 	sel, err := c.Select(name, &imap.SelectOptions{ReadOnly: true}).Wait()
 	if err != nil {
 		return snap, err
@@ -283,7 +281,7 @@ func (a *Account) readMailbox(c *imapclient.Client, role Role, name string, sinc
 	keys := map[string]bool{}
 	a.store.Read(func(st *State) {
 		account := st.account(a.cfg.ID)
-		current := account.UIDValidity[role] == snap.validity
+		current := account.Mailboxes[role] == snap.name && account.UIDValidity[role] == snap.validity
 		for key, m := range account.Messages {
 			keys[key] = true
 			if uid, ok := m.Locations[role]; ok && current {
@@ -356,7 +354,7 @@ func (a *Account) findOldMoves(c *imapclient.Client, snapshots map[Role]mailboxS
 				if !ok {
 					continue
 				}
-				if _, present := snap.flags[imap.UID(uid)]; present && account.UIDValidity[role] == snap.validity {
+				if _, present := snap.flags[imap.UID(uid)]; present && account.Mailboxes[role] == snap.name && account.UIDValidity[role] == snap.validity {
 					continue
 				}
 				missingLocation = true
@@ -475,7 +473,7 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 		if !ok {
 			continue
 		}
-		if account.UIDValidity[role] != snap.validity {
+		if account.Mailboxes[role] != snap.name || account.UIDValidity[role] != snap.validity {
 			for _, m := range account.Messages {
 				if _, ok := m.Locations[role]; ok {
 					delete(m.Locations, role)
@@ -483,6 +481,7 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 					changed[m.ConversationID] = true
 				}
 			}
+			account.Mailboxes[role] = snap.name
 			account.UIDValidity[role] = snap.validity
 		}
 		located := byUID(role)

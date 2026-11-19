@@ -265,6 +265,7 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 	var account *Account
 	var at location
 	var validity uint32
+	var mailbox string
 	found := false
 	s.store.Read(func(st *State) {
 		for accountID, state := range st.Accounts {
@@ -273,6 +274,7 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 					account = s.account(accountID)
 					at, found = placeOf(m)
 					validity = state.UIDValidity[at.role]
+					mailbox = state.Mailboxes[at.role]
 				}
 			}
 		}
@@ -281,7 +283,7 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errNotFound)
 		return
 	}
-	html, err := account.FetchHTML(at, validity)
+	html, err := account.FetchHTML(at, mailbox, validity)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -353,17 +355,12 @@ func (s *Service) WakeSnoozed(ctx context.Context) {
 }
 
 // FetchHTML reads one message's HTML on its own connection, so opening mail does not wait for a sync pass.
-func (a *Account) FetchHTML(at location, validity uint32) (string, error) {
+func (a *Account) FetchHTML(at location, name string, validity uint32) (string, error) {
 	c, err := a.dial()
 	if err != nil {
 		return "", err
 	}
 	defer c.Close()
-	mailboxes, _, err := a.discover(c)
-	if err != nil {
-		return "", err
-	}
-	name := mailboxes[at.role]
 	if name == "" {
 		return "", errNotFound
 	}

@@ -424,7 +424,7 @@ func TestHTMLRejectsStaleMailboxIdentity(t *testing.T) {
 			validity = account.UIDValidity[at.role]
 		}
 	})
-	if _, err := h.account.FetchHTML(at, validity+1); err != errNotFound {
+	if _, err := h.account.FetchHTML(at, "INBOX", validity+1); err != errNotFound {
 		t.Fatalf("stale mailbox identity returned %v", err)
 	}
 }
@@ -437,7 +437,7 @@ func TestReconfiguredMailboxDropsOldMailFromSync(t *testing.T) {
 	h.request("GET", "/v1/sync?since=0", nil, &before)
 	id := before.Conversations[0].ID
 	err := h.account.store.Update(func(st *State) error {
-		st.configureAccounts([]AccountConfig{{ID: "lab", Address: "new@example.com"}})
+		st.configureAccounts([]AccountConfig{{ID: "lab", Address: "new@example.com", IMAP: h.account.cfg.IMAP}})
 		return nil
 	})
 	if err != nil {

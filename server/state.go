@@ -84,6 +84,9 @@ type Conversation struct {
 }
 
 type AccountState struct {
+	Login     string          `json:"login"`
+	IMAP      string          `json:"imap"`
+	Mailboxes map[Role]string `json:"mailboxes"`
 	// A receipt outlives the synced message. Its bytes are kept only until Sent filing succeeds.
 	Receipts    map[string][]byte `json:"receipts,omitempty"`
 	Address     string            `json:"address"`
@@ -185,12 +188,12 @@ func (s *Store) saveLocked() error {
 
 // Removed mailboxes must disappear from both the cache and clients that already synced them.
 func (st *State) configureAccounts(accounts []AccountConfig) {
-	active := make(map[string]string, len(accounts))
+	active := make(map[string]AccountConfig, len(accounts))
 	for _, cfg := range accounts {
-		active[cfg.ID] = cfg.Address
+		active[cfg.ID] = cfg
 	}
 	for id, cached := range st.Accounts {
-		if address, ok := active[id]; ok && cached.Address == address {
+		if cfg, ok := active[id]; ok && cached.Address == cfg.Address && cached.Login == cfg.Username && cached.IMAP == cfg.IMAP.Address() {
 			continue
 		}
 		for threadID, c := range st.Conversations {
@@ -201,9 +204,10 @@ func (st *State) configureAccounts(accounts []AccountConfig) {
 		delete(st.Accounts, id)
 		st.Revision++
 	}
-	for id, address := range active {
+	for id, cfg := range active {
 		if st.Accounts[id] == nil {
-			st.account(id).Address = address
+			a := st.account(id)
+			a.Address, a.Login, a.IMAP = cfg.Address, cfg.Username, cfg.IMAP.Address()
 			st.Revision++
 		}
 	}
@@ -212,7 +216,7 @@ func (st *State) configureAccounts(accounts []AccountConfig) {
 func (st *State) account(id string) *AccountState {
 	a := st.Accounts[id]
 	if a == nil {
-		a = &AccountState{UIDValidity: map[Role]uint32{}, Messages: map[string]*Message{}}
+		a = &AccountState{Mailboxes: map[Role]string{}, UIDValidity: map[Role]uint32{}, Messages: map[string]*Message{}}
 		st.Accounts[id] = a
 	}
 	return a
