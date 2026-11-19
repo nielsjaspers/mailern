@@ -244,7 +244,7 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 		}
 		previousRemoval, wasMoving := c.Removal, c.PendingPlacement
 		// A reply the phone has not seen yet wins, as an arrival does in Mailern: the change neither moves the
-		// thread out of Inbox nor marks it read. The response brings the reply to the phone. Replies to a muted
+		// thread out of Inbox or into Trash, nor marks it read. The response brings the reply to the phone. Replies to a muted
 		// thread do not move it, so they do not stop the change either.
 		muted := c.Muted
 		if slices.Contains(state.Fields, "muted") {
@@ -254,7 +254,8 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 			return !m.Outgoing && !slices.Contains(state.MessageIDs, m.ID)
 		}) {
 			state.Fields = slices.DeleteFunc(slices.Clone(state.Fields), func(field string) bool {
-				return (field == "workflow" && state.Workflow != WorkflowInbox) || (field == "unread" && !state.Unread)
+				return (field == "workflow" && state.Workflow != WorkflowInbox) || (field == "unread" && !state.Unread) ||
+					(field == "removal" && state.Removal == RoleTrash)
 			})
 		}
 		if slices.Contains(state.Fields, "workflow") && (c.Workflow != state.Workflow || !sameTime(c.SnoozedUntil, state.SnoozedUntil)) {

@@ -312,9 +312,15 @@ extension MailStore {
         }
         if c.messages.isEmpty, let local { c.messages = local.messages }
         let replied = c.messages.contains { !$0.outgoing && !known.contains($0.id) } && local != nil
-        if replied, c.followUp == .waiting { c.followUp = nil }
-        // A new reply wins over a move the server has not confirmed, as an arrival does in Mailern.
-        c.adoptRemoteState(remote, keeping: replied && !remote.muted ? fields.subtracting([.workflow, .unread]) : fields)
+        // A new reply wins over a move the server has not confirmed, as an arrival does in Mailern: it returns the
+        // thread to Inbox, rescues it from Trash, and ends its reminder.
+        var keeping = fields
+        if replied && !remote.muted {
+            keeping.subtract([.workflow, .unread])
+            if c.removal?.mailbox == .trash { keeping.remove(.removal) }
+        }
+        c.adoptRemoteState(remote, keeping: keeping)
+        if replied { c.followUp = nil }
         return c
     }
 }

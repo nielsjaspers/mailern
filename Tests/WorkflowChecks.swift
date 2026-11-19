@@ -790,6 +790,8 @@ import os
         var changed = thread
         var reply = thread.messages[0]
         reply.id = UUID()
+        // A sent copy, so the thread stays in Trash; an incoming reply would rescue it instead.
+        reply.outgoing = true
         changed.messages.append(reply)
         assert(store.mergeRemote(remoteBatch(2, [changed])))
         assert(!store.deletePermanently(original) && store.conversation(id)?.messages.count == 2)
@@ -890,6 +892,16 @@ import os
         assert(store.mergeRemote(remoteBatch(2, [answered])))
         let c = store.conversation(thread.id)!
         assert(c.workflow == .inbox && c.unread && !c.remoteWriteFields.contains(.workflow))
+        // A pending Trash gives way to a new reply too, and the reply ends a reminder even after it turned overdue.
+        assert(store.apply(ids: [thread.id], action: .remove(.trash)))
+        var overdue = store.conversation(thread.id)!
+        overdue.followUp = .noReply
+        store.replaceRemote(conversations: [overdue], accounts: store.accounts, invalidatingUndo: [])
+        answered.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                               date: .now, body: "And another", outgoing: false, subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(3, [answered])))
+        let rescued = store.conversation(thread.id)!
+        assert(rescued.removal == nil && rescued.workflow == .inbox && rescued.followUp == nil)
         // A send from an alias the server no longer lists is refused instead of going out from the main address.
         var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
         draft.to = "alex@example.test"
@@ -949,6 +961,11 @@ import os
         c.messages[0].to = ["Hello@example.test", "sam@example.test"]
         let own = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
         assert(own.to == "sam@example.test")
+        // With only your own addresses in To, Reply All goes to Cc and leaves To empty.
+        c.messages[0].to = ["Hello@example.test"]
+        c.messages[0].cc = ["sam@example.test"]
+        let toCc = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
+        assert(toCc.to.isEmpty && toCc.cc == "sam@example.test")
         var other = reply
         other.fromAddress = nil
         assert(!reply.hasSameSubmission(as: other))
@@ -1484,6 +1501,9 @@ import os
         assert(retryMail.discardedDraftIDs.isEmpty && retryMail.conversations.flatMap(\.messages).filter { $0.id == immediate.id }.count == 1)
         let staleEditorScheduled = await reopened.schedule(immediate, at: deadline)
         assert(!staleEditorScheduled && reopened.outbox.isEmpty)
+        // Save Draft from a stale editor does not bring back a draft for mail that already went out.
+        let staleEditorSaved = await reopened.save(immediate)
+        assert(staleEditorSaved && reopened.all.isEmpty)
         let current = DraftStore(url: draftURL, mail: retryMail)
         assert(current.outbox == [pending] && current.drafts == [writing])
         let persisted = try AttachmentJSON.load([ComposerDraft].self, from: draftURL)

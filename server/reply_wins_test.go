@@ -81,3 +81,21 @@ func TestUnseenReplyDoesNotStopSettlingAMutedThread(t *testing.T) {
 		t.Fatalf("a muted thread should settle despite an unseen reply: %s unread=%v", c.Workflow, c.Unread)
 	}
 }
+
+func TestUnseenReplyStopsAStaleTrash(t *testing.T) {
+	h := newHarness(t)
+	root := h.deliver("INBOX", "Dinner", "")
+	h.sync()
+	seen := h.conversations()["Dinner"]
+	h.deliver("INBOX", "Re: Dinner", root)
+	h.sync()
+	state := ConversationState{Fields: []string{"removal"}, Workflow: WorkflowInbox, Removal: RoleTrash,
+		MessageIDs: []string{seen.Messages[0].ID}}
+	if code := h.request("PUT", "/v1/conversations/"+seen.ID, state, nil); code != http.StatusOK {
+		t.Fatalf("set state: %d", code)
+	}
+	h.sync()
+	if c := h.conversations()["Dinner"]; c.Removal != "" || h.count("Trash") != 0 {
+		t.Fatalf("an unseen reply must not go to Trash: removal %q, Trash %d", c.Removal, h.count("Trash"))
+	}
+}
