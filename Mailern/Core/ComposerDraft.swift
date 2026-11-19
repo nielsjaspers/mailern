@@ -397,6 +397,7 @@ final class DraftStore {
             updated[i].sendAt = nil
             updated[i].holdingForUndo = nil
             guard await self.persist(updated) else { return false }
+            self.automaticRetries[id] = nil
             if self.undoable == id { self.undoable = nil }
             return true
         }
@@ -406,11 +407,10 @@ final class DraftStore {
         if await unschedule(id) { reopening = id }
     }
     /// When each automatic send that failed may try again. Other due mail, such as a fresh Undo Send, does not wait.
-    @ObservationIgnored private var retryAfter: [UUID: Date] = [:]
-    @ObservationIgnored private var automaticFailureReported = false
+    @ObservationIgnored private var automaticRetries: [UUID: (after: Date, message: String)] = [:]
     /// Sends outbox mail that is due.
     func sendDue(through store: MailStore, now: Date = .now, whileActive: @escaping @MainActor () -> Bool = { true }) async {
-        let due = { (draft: ComposerDraft) in (draft.sendAt ?? .distantFuture) <= now && (self.retryAfter[draft.id] ?? .distantPast) <= now }
+        let due = { (draft: ComposerDraft) in (draft.sendAt ?? .distantFuture) <= now && (self.automaticRetries[draft.id]?.after ?? .distantPast) <= now }
         guard all.contains(where: due) else { return }
         _ = await deliver(through: store, automatic: true, now: now) { whileActive() && due($0) }
     }
@@ -421,39 +421,45 @@ final class DraftStore {
     /// Sends the scheduled mail that `pick` selects. Each message goes out with its draft's ID, so a retry after a
     /// failed draft write removes the draft without sending it again. Mail the store refuses goes back to Drafts.
     private func deliver(through store: MailStore, automatic: Bool = false, now: Date = .now, pick: @escaping (ComposerDraft) -> Bool) async -> Bool {
-        await enqueue {
+        let started = ProcessInfo.processInfo.systemUptime
+        return await enqueue {
             // A failed reload can leave an obsolete outbox snapshot in memory.
             guard self.hasReadableManifest, !store.needsReload else { return false }
             // Standalone draft stores bind to their mailbox the first time they deliver.
             if self.mail == nil { self.mail = store }
             let queued = Set(self.all.lazy.filter { $0.sendAt != nil && pick($0) }.map(\.id))
             guard !queued.isEmpty else { return true }
-            var failure: String?
-            let errorBefore = store.error
-            // Only sends that stay queued retry. Refused ones are back in Drafts and are always reported.
-            var retrying = false
-            var refusedTitles: [String] = []
-            var refusalReason = ""
+            var failed = false
+            var alerts: [String] = []
             var updated: [ComposerDraft] = []
             for var draft in self.all {
                 guard queued.contains(draft.id) else {
                     updated.append(draft)
                     continue
                 }
+                let previousError = store.error
                 switch await store.deliver(draft) {
                 case .filed:
-                    self.retryAfter[draft.id] = nil
+                    self.automaticRetries[draft.id] = nil
                     continue
                 case .waitingToFile:
-                    failure = store.error ?? "Mailern is still finishing this send."
-                    retrying = true
-                    if automatic { self.retryAfter[draft.id] = now.addingTimeInterval(60) }
+                    failed = true
+                    let message = store.error ?? "Mailern is still finishing this send."
+                    if !automatic || self.automaticRetries[draft.id]?.message != message {
+                        alerts.append("“\(draft.title)”: \(message)")
+                    } else if store.error == message {
+                        store.error = previousError
+                    }
+                    if automatic {
+                        let elapsed = ProcessInfo.processInfo.systemUptime - started
+                        self.automaticRetries[draft.id] = (now.addingTimeInterval(elapsed + 60), message)
+                    }
                 case .refused:
-                    self.retryAfter[draft.id] = nil
+                    failed = true
+                    self.automaticRetries[draft.id] = nil
                     draft.sendAt = nil
                     draft.holdingForUndo = nil
-                    refusedTitles.append("“\(draft.title)”")
-                    refusalReason = store.error ?? ""
+                    alerts.append("“\(draft.title)” could not be sent and is back in Drafts. \(store.error ?? "")")
                 }
                 updated.append(draft)
             }
@@ -468,27 +474,8 @@ final class DraftStore {
                store.hasSentOrDiscarded(undoable) || !self.all.contains(where: { $0.id == undoable && $0.sendAt != nil }) {
                 self.undoable = nil
             }
-            let refused = refusedTitles.isEmpty ? nil : refusedTitles.count == 1
-                ? "\(refusedTitles[0]) could not be sent and is back in Drafts. \(refusalReason)"
-                : "\(ListFormatter.localizedString(byJoining: refusedTitles)) could not be sent and are back in Drafts. \(refusalReason)"
-            if let refused, failure == nil { failure = refused }
-            if automatic {
-                // An outage would fail every second. Failed sends wait a minute between tries, said once.
-                // A repeat failure clears only its own message, so an error from sync during the send stays.
-                if let refused {
-                    store.error = refused
-                } else if let failure {
-                    if !self.automaticFailureReported {
-                        store.error = failure
-                    } else if store.error == failure {
-                        store.error = errorBefore
-                    }
-                }
-                self.automaticFailureReported = retrying
-            } else if let failure {
-                store.error = failure
-            }
-            return saved && failure == nil
+            if !alerts.isEmpty { store.error = alerts.joined(separator: "\n") }
+            return saved && !failed
         }
     }
     func togglePin(_ id: UUID) async {

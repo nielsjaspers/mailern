@@ -932,6 +932,7 @@ import os
         }
         await drafts.sendDue(through: store, now: start.addingTimeInterval(62))
         assert(store.hasPendingRemoteSend(fresh.id) && !store.hasPendingRemoteSend(draft.id))
+        assert(store.error?.contains("Delivery is unconfirmed") == true)
         store.sendRemote = { _ in throw URLError(.cannotConnectToHost) }
         _ = await drafts.sendNow(fresh.id, through: store)
         assert(store.hasPendingRemoteSend(fresh.id), "An offline retry cannot resolve a previous ambiguous send")
@@ -949,6 +950,29 @@ import os
         store.sendRemote = { _ in sent += 1 }
         await drafts.sendDue(through: store, now: start.addingTimeInterval(123))
         assert(sent == 1)
+        var edited = next
+        edited.id = UUID()
+        let initiallyScheduled = await drafts.schedule(edited, at: start)
+        assert(initiallyScheduled)
+        var attempts = 0
+        store.sendRemote = { _ in
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(150))
+            throw URLError(.cannotConnectToHost)
+        }
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(150))
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(210.01))
+        assert(attempts == 1, "Retry delay starts after the request finishes")
+        await drafts.edit(edited.id)
+        edited.text = "Revised fictional note"
+        let rescheduled = await drafts.schedule(edited, at: start.addingTimeInterval(210.02))
+        assert(rescheduled)
+        store.sendRemote = { sent in
+            assert(sent.draft.text == edited.text)
+            attempts += 1
+        }
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(210.03))
+        assert(attempts == 2, "An edited send gets its new deadline")
         // Another client trashing a waiting thread ends its reminder.
         var waiting = store.conversation(thread.id)!
         waiting.move(to: .snoozed, until: .now.addingTimeInterval(3600))
