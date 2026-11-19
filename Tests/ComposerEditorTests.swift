@@ -550,6 +550,21 @@ import SwiftUI
         XCTAssertEqual(font.pointSize, 22)
         XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(.traitBold))
     }
+
+    func testOutgoingHTMLUsesPortableFontsAndClientTextColor() throws {
+        // Written in dark mode, so the default text color is white.
+        let dark = UITraitCollection(userInterfaceStyle: .dark)
+        let text = NSMutableAttributedString(string: "hello, world! ", attributes: [
+            .font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label.resolvedColor(with: dark)])
+        text.append(NSAttributedString(string: "red", attributes: [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.systemRed]))
+        var html = ""
+        dark.performAsCurrent { html = OutgoingHTML.make(text) ?? "" }
+        XCTAssertTrue(html.contains("hello, world!"))
+        XCTAssertFalse(html.contains("#ffffff"), "the dark-mode text color must not reach the recipient")
+        XCTAssertFalse(html.contains("'.S"), "private system font names must not reach the recipient")
+        XCTAssertTrue(html.contains("-apple-system"))
+        XCTAssertTrue(html.contains("color: #"), "an explicit color stays")
+    }
 }
 
 @MainActor final class MailNotificationTests: XCTestCase {

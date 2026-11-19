@@ -121,18 +121,12 @@ extension ServerSync {
             to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc), bcc: ComposerDraft.addresses(draft.bcc),
             subject: draft.subject.isEmpty ? "(No Subject)" : draft.subject,
             text: draft.text,
-            html: draft.richText.flatMap { html(RichText.decode($0, fallback: draft.text)) },
+            // Formatted mail goes out with an HTML part, so other clients show the formatting.
+            html: draft.richText.flatMap { OutgoingHTML.make(RichText.decode($0, fallback: draft.text)) },
             inReplyTo: target?.threadingID,
             references: target?.references,
             attachments: draft.attachments.map { .init(name: $0.name, contentType: $0.contentType, data: $0.data) },
             from: draft.sender(in: prepared.from))
-    }
-
-    /// Formatted mail goes out with an HTML part, so other clients show the formatting.
-    private static func html(_ text: NSAttributedString) -> String? {
-        let range = NSRange(location: 0, length: text.length)
-        guard let data = try? text.data(from: range, documentAttributes: [.documentType: NSAttributedString.DocumentType.html]) else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 }
 
