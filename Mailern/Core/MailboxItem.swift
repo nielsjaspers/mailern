@@ -1,5 +1,12 @@
 import Foundation
 
+struct MailboxSearchInput {
+    private(set) var session = 0
+    var text = "" {
+        didSet { if text.isEmpty && !oldValue.isEmpty { session += 1 } }
+    }
+}
+
 enum MailboxItem: Identifiable {
     case thread(Conversation, [ComposerDraft])
     case draft(ComposerDraft)

@@ -125,6 +125,14 @@ import os
     }
 
     static func checkAllMailSearch() {
+        var input = MailboxSearchInput()
+        input.text = "one"
+        let previousSession = input.session
+        input.text = "one more"
+        assert(input.session == previousSession)
+        input.text = ""
+        input.text = "two"
+        assert(input.session != previousSession)
         let now = Date.now
         var conversations = DemoData.conversations(now: now)
         conversations[1].move(to: .snoozed, until: now.addingTimeInterval(600))

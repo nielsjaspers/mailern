@@ -858,8 +858,8 @@ final class ReaderSearchUITests: MailernUITestCase {
         let snippet = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS[c] %@", "Sounds good"), object: result)
         XCTAssertEqual(XCTWaiter.wait(for: [snippet], timeout: 5), .completed)
         field.buttons["Clear text"].tap()
-        field.typeText("follow-up")
-        let fallback = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS[c] %@", "quick follow-up"), object: result)
+        field.typeText("Jamie")
+        let fallback = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS[c] %@", "Jamie is joining"), object: result)
         XCTAssertEqual(XCTWaiter.wait(for: [fallback], timeout: 5), .completed)
         field.buttons["Clear text"].tap()
         field.typeText("Sounds good")
@@ -880,6 +880,9 @@ final class ReaderSearchUITests: MailernUITestCase {
         XCTAssertTrue(app.buttons["Next match"].wait(for: \.isEnabled, toEqual: true, timeout: 5))
         app.buttons["Next match"].tap()
         XCTAssertTrue(app.staticTexts["2 of 15"].existsOrWait(timeout: 5))
+        let selectedReply = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "matched-reply-")).firstMatch
+        XCTAssertTrue(selectedReply.exists)
+        let selectedID = String(selectedReply.identifier.dropFirst("matched-".count))
         app.buttons["More actions"].tap()
         app.buttons["Simulate incoming reply"].tap()
         XCTAssertTrue(app.staticTexts["2 of 16"].existsOrWait(timeout: 5))
@@ -887,13 +890,11 @@ final class ReaderSearchUITests: MailernUITestCase {
         proof.name = "find-in-conversation"
         proof.lifetime = .keepAlways
         add(proof)
-        let selectedReply = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "matched-reply-")).firstMatch
-        XCTAssertTrue(selectedReply.exists)
-        let selectedID = String(selectedReply.identifier.dropFirst("matched-".count))
+        XCTAssertEqual(selectedReply.identifier, "matched-" + selectedID)
         app.buttons["Close find"].tap()
         XCTAssertTrue(app.buttons[selectedID].wait(for: \.isHittable, toEqual: true, timeout: 5))
         waitForAbsence(passage)
-        XCTAssertFalse(app.buttons["15 earlier messages"].exists)
+        XCTAssertFalse(app.buttons["16 earlier messages"].exists)
     }
     @MainActor
     func testChevronsReplaceTheThread() {
