@@ -199,6 +199,7 @@ struct MailboxView: View {
             path: Binding(get: { paths[status, default: []] }, set: { paths[status] = $0 })
         ) {
             mailboxViewport(status)
+                .safeAreaInset(edge: .bottom, spacing: 0) { minimizedBar }
                 .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner() }
                 .navigationTitle(status.title)
                 .searchable(text: $searchInput.text, isPresented: Binding(
@@ -226,32 +227,35 @@ struct MailboxView: View {
                 }
                 .toolbar(selecting || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
                 .navigationDestination(for: MailboxRoute.self) { route in
-                    switch route {
-                    case .conversation(let id, let depth):
-                        if store.conversation(id) != nil {
-                            let list = readerLists[status]?[depth]
-                            let neighbors = list?.neighbors(of: id, available: readerAvailability(status, depth: depth, list: list))
-                            ThreadView(id: id, inboxAccountID: depth == 1 ? composeInboxAccount : nil,
-                                       initialQuery: list?.query ?? "", previousID: neighbors?.previous, nextID: neighbors?.next,
-                                       next: { neighbors?.next ?? neighbors?.previous }, open: { next in
-                                guard paths[status]?.last == .conversation(id, depth: depth) else { return }
-                                paths[status]?.removeLast()
-                                paths[status]?.append(.conversation(next, depth: depth))
-                            }, showSender: { sender in
-                                paths[status, default: []].append(.sender(sender))
-                            })
-                            // A replaced thread is a new view, so it marks the next conversation read and drops the old one's state.
-                            .id(id)
+                    Group {
+                        switch route {
+                        case .conversation(let id, let depth):
+                            if store.conversation(id) != nil {
+                                let list = readerLists[status]?[depth]
+                                let neighbors = list?.neighbors(of: id, available: readerAvailability(status, depth: depth, list: list))
+                                ThreadView(id: id, inboxAccountID: depth == 1 ? composeInboxAccount : nil,
+                                           initialQuery: list?.query ?? "", previousID: neighbors?.previous, nextID: neighbors?.next,
+                                           next: { neighbors?.next ?? neighbors?.previous }, open: { next in
+                                    guard paths[status]?.last == .conversation(id, depth: depth) else { return }
+                                    paths[status]?.removeLast()
+                                    paths[status]?.append(.conversation(next, depth: depth))
+                                }, showSender: { sender in
+                                    paths[status, default: []].append(.sender(sender))
+                                })
+                                // A replaced thread is a new view, so it marks the next conversation read and drops the old one's state.
+                                .id(id)
+                            }
+                            else { DraftThreadView(id: id) }
+                        case .sender(let sender): SenderHistoryView(sender: sender) { id, order in openSecondary(id, status: status, order: order, query: "") }
+                        case .removed(let mailbox): RemovedMailboxView(mailbox: mailbox) { id, order, query in openSecondary(id, status: status, order: order, query: query) }
+                        case .scheduled: ScheduledMailboxView()
+                        case .scheduledMessage(let id): ScheduledMessageView(id: id)
                         }
-                        else { DraftThreadView(id: id) }
-                    case .sender(let sender): SenderHistoryView(sender: sender) { id, order in openSecondary(id, status: status, order: order, query: "") }
-                    case .removed(let mailbox): RemovedMailboxView(mailbox: mailbox) { id, order, query in openSecondary(id, status: status, order: order, query: query) }
-                    case .scheduled: ScheduledMailboxView()
-                    case .scheduledMessage(let id): ScheduledMessageView(id: id)
-                    }
+                    }.safeAreaInset(edge: .bottom, spacing: 0) { minimizedBar }
                 }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+    }
+    @ViewBuilder private var minimizedBar: some View {
             if let minimized = drafts.minimized, let draft = drafts.all.first(where: { $0.id == minimized.id && $0.sendAt == nil }) {
                 Button {
                     reopened = .draft(draft.id)
@@ -262,7 +266,6 @@ struct MailboxView: View {
                 .accessibilityLabel("Resume draft, \(draft.title)")
                 .background(.bar)
             }
-        }
     }
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {

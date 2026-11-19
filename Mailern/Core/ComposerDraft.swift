@@ -175,7 +175,7 @@ final class DraftStore {
     var reopening: UUID?
     struct Minimized {
         let id: UUID
-        let selection: NSRange
+        let selections: [NSRange]
         let typing: [NSAttributedString.Key: Any]
     }
     var minimized: Minimized?

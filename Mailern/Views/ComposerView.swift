@@ -349,8 +349,11 @@ struct ComposerView: View {
         editor.text = text
         let resume = drafts.minimized.flatMap { $0.id == draft.id ? $0 : nil }
         if resume != nil { drafts.minimized = nil }
-        let start = min(resume?.selection.location ?? 0, text.length)
-        let selection = NSRange(location: start, length: min(resume?.selection.length ?? 0, text.length - start))
+        let selections = resume?.selections.map { range in
+            let start = min(range.location, text.length)
+            return NSRange(location: start, length: min(range.length, text.length - start))
+        } ?? []
+        let selection = selections.first ?? NSRange(location: 0, length: 0)
         editor.selection = selection
         editor.typing = resume?.typing ?? [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
         if missingAccount { replaceSignature(with: account.signature) }
@@ -361,7 +364,8 @@ struct ComposerView: View {
             DispatchQueue.main.async {
                 guard let view = editor.view else { return }
                 view.becomeFirstResponder()
-                view.selectedRange = selection
+                if #available(iOS 26, *), !selections.isEmpty { view.selectedRanges = selections }
+                else { view.selectedRange = selection }
                 view.typingAttributes = resume?.typing ?? [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
             }
         }
@@ -390,7 +394,10 @@ struct ComposerView: View {
     private func minimize() async {
         guard loaded, !completed, !finishing, !importing else { detent = .large; return }
         if mode == .new && !dirty && !saved { completed = true; dismiss(); return }
-        let position = DraftStore.Minimized(id: draft.id, selection: editor.view?.selectedRange ?? editor.selection,
+        let selections: [NSRange]
+        if #available(iOS 26, *), let view = editor.view { selections = view.selectedRanges }
+        else { selections = [editor.view?.selectedRange ?? editor.selection] }
+        let position = DraftStore.Minimized(id: draft.id, selections: selections,
                                             typing: editor.view?.typingAttributes ?? editor.typing)
         autosave?.cancel()
         await saveDraft(dismissAfter: true, minimized: position)

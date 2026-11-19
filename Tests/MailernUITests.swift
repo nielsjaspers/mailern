@@ -348,6 +348,12 @@ final class MinimizedDraftUITests: MailernUITestCase {
         app.buttons["Minimize draft"].tap()
         let replyBar = app.buttons["Resume draft, Re: " + subject]
         XCTAssertTrue(replyBar.waitForExistence(timeout: 5))
+        app.buttons["Reply"].tap()
+        XCTAssertTrue(app.buttons["Reply All"].waitForExistence(timeout: 5))
+        app.buttons["Reply All"].tap()
+        app.buttons["Cancel"].tap()
+        if app.buttons["Save Draft"].exists { app.buttons["Save Draft"].tap() }
+        waitForAbsence(body)
         app.navigationBars.buttons["Inbox"].tap()
         app.buttons["Compose"].tap()
         body.tap()
@@ -471,6 +477,7 @@ final class InboxDraftPreviewEditAndDiscardUITests: MailernUITestCase {
         let app = TestApplication()
         app.launch()
         let subject = "Inbox draft proof"
+        let draftRow = app.collectionViews.buttons.matching(NSPredicate(format: "label CONTAINS %@", subject)).firstMatch
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
         app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(subject)
@@ -479,17 +486,17 @@ final class InboxDraftPreviewEditAndDiscardUITests: MailernUITestCase {
         app.buttons["Sheet Grabber"].firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)), withVelocity: .slow, thenHoldForDuration: 0.1)
         waitForComposerDismissal(in: app)
-        XCTAssertTrue(row(subject, in: app).existsOrWait(timeout: 5))
-        XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
+        XCTAssertTrue(draftRow.existsOrWait(timeout: 5))
+        XCTAssertTrue(draftRow.label.contains("Draft"))
         app.buttons["Select"].tap()
-        XCTAssertFalse(row(subject, in: app).isEnabled)
+        XCTAssertFalse(draftRow.isEnabled)
         row("Dinner on Saturday?", in: app).tap()
         XCTAssertTrue(app.staticTexts["1 selected"].exists)
         app.buttons["Select All"].tap()
         XCTAssertTrue(app.staticTexts["6 selected"].exists)
         app.buttons["Mark"].tap()
         app.buttons["Mark read"].tap()
-        row(subject, in: app).tap()
+        draftRow.tap()
         XCTAssertTrue(app.buttons["Edit draft"].existsOrWait(timeout: 5))
         XCTAssertFalse(app.textViews["Message body"].exists)
         app.buttons["Edit draft"].tap()
@@ -502,7 +509,7 @@ final class InboxDraftPreviewEditAndDiscardUITests: MailernUITestCase {
         XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "with an edit")).firstMatch.existsOrWait(timeout: 5))
         app.buttons["Discard draft"].tap()
         XCTAssertTrue(app.buttons["Compose"].existsOrWait(timeout: 5))
-        XCTAssertFalse(row(subject, in: app).exists)
+        XCTAssertFalse(draftRow.exists)
     }
 }
 
