@@ -34,12 +34,18 @@ struct MailServerClient: RemoteMailboxClient {
         }
         let (data, response) = try await Self.session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(status) else {
-            let message = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if method == "POST", status == 503, (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Mailern-Submission") == "not-accepted" {
-                throw RemoteSendUnavailable(message: message)
+        if method == "POST" {
+            let outcome = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Mailern-Submission")
+            if status == 204 && outcome == "accepted" { return data }
+            if outcome == "not-accepted" {
+                let message = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                if status == 503 { throw RemoteSendUnavailable(message: message) }
+                if status == 400 || status == 422 { throw RemoteSendRejection(message: message) }
             }
-            throw Failure(status: status, message: message)
+            throw Failure(status: status, message: "Mailern did not confirm delivery (HTTP \(status)).")
+        }
+        guard (200..<300).contains(status) else {
+            throw Failure(status: status, message: String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return data
     }
@@ -93,11 +99,7 @@ struct MailServerClient: RemoteMailboxClient {
     }
 
     func send(_ message: Outgoing) async throws {
-        do {
-            _ = try await send("POST", "v1/send", body: RemoteJSON.encoder.encode(message))
-        } catch let failure as Failure where [400, 403, 404, 422].contains(failure.status) {
-            throw RemoteSendRejection(message: failure.localizedDescription)
-        }
+        _ = try await send("POST", "v1/send", body: RemoteJSON.encoder.encode(message))
     }
 }
 

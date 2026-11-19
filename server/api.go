@@ -536,18 +536,25 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 func (s *Service) send(w http.ResponseWriter, r *http.Request) {
 	var req SendRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 40<<20)).Decode(&req); err != nil {
+		w.Header().Set("Mailern-Submission", "not-accepted")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	account := s.account(req.AccountID)
 	if account == nil {
+		w.Header().Set("Mailern-Submission", "not-accepted")
 		http.Error(w, "unknown account", http.StatusBadRequest)
 		return
 	}
 	if err := account.Send(req); err != nil {
+		var bad badRequest
+		if errors.As(err, &bad) {
+			w.Header().Set("Mailern-Submission", "not-accepted")
+		}
 		writeError(w, err)
 		return
 	}
+	w.Header().Set("Mailern-Submission", "accepted")
 	w.WriteHeader(http.StatusNoContent)
 }
 

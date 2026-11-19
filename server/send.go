@@ -417,7 +417,7 @@ func (a *Account) submit(req SendRequest, raw []byte) error {
 	}
 	if err := data.Close(); err != nil {
 		var rejection *smtp.SMTPError
-		if errors.As(err, &rejection) {
+		if errors.As(err, &rejection) && rejection.Code >= 400 && rejection.Code < 600 {
 			return errors.Join(submissionError(err), a.markSubmitting(key, nil))
 		}
 		return uncertainDelivery
