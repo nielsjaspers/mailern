@@ -216,6 +216,7 @@ struct ComposerView: View {
             minimize(velocity: velocity)
         }
         .onChange(of: draft.accountID) { _, id in if loaded { replaceSignature(with: store.account(id).signature) } }
+        .onChange(of: store.account(draft.accountID).addresses) { _, _ in if loaded && !alreadySubmitted { correctSender() } }
         // Sync can confirm an earlier send while the composer is open. The message is out, so the composer closes.
         .onChange(of: store.hasFiledSend(draft.id)) { _, filed in
             guard filed, loaded, !completed, !finishing else { return }
@@ -404,6 +405,12 @@ struct ComposerView: View {
         return store.conversations.flatMap(\.messages).filter { seen.insert($0.address).inserted }
             .map { (name: $0.sender, address: $0.address) }.sorted { $0.name < $1.name }
     }
+    /// An alias can leave the server config while its draft waits or is open. Say which address the draft uses now.
+    private func correctSender() {
+        guard let chosen = draft.fromAddress, !store.account(draft.accountID).owns(chosen) else { return }
+        draft.fromAddress = nil
+        error = "\(chosen) is no longer an address of this account. This message now goes out from \(store.account(draft.accountID).address)."
+    }
     private func load() {
         guard !loaded else { return }
         if case .draft(let id) = mode {
@@ -420,10 +427,10 @@ struct ComposerView: View {
         // A draft can outlive its account, for example after a demo reset. It sends from the default account instead.
         let missingAccount = !store.accounts.contains { $0.id == draft.accountID }
         if missingAccount { draft.accountID = store.accounts.first { $0.id == defaultAccount }?.id ?? store.accounts.first?.id ?? draft.accountID }
-        // An alias can leave the server config while its draft waits. Say which address the draft uses now.
-        if let chosen = draft.fromAddress, !store.account(draft.accountID).owns(chosen) {
-            draft.fromAddress = nil
-            error = "\(chosen) is no longer an address of this account. This message now goes out from \(store.account(draft.accountID).address)."
+        correctSender()
+        // Recipients only in Cc or Bcc stay visible.
+        if ComposerDraft.addresses(draft.to).isEmpty && !(ComposerDraft.addresses(draft.cc) + ComposerDraft.addresses(draft.bcc)).isEmpty {
+            expanded = true
         }
         let text = NSMutableAttributedString(attributedString: RichText.decode(draft.richText, fallback: draft.text))
         if !saved, draft.richText == nil, let sourceID = draft.mode.sourceID, let source = store.conversation(sourceID), text.length > 2 {

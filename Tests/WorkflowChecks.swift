@@ -909,6 +909,16 @@ import os
                                                date: .now, body: "Still there?", outgoing: false, subject: "Re: Plans", hasHTML: false))
         assert(store.mergeRemote(remoteBatch(4, [answered])))
         assert(store.conversation(thread.id)!.workflow == .settled)
+        // A reply that answers a reminder on a muted thread settles it quietly instead of leaving it snoozed.
+        var waiting = store.conversation(thread.id)!
+        waiting.move(to: .snoozed, until: .now.addingTimeInterval(3600))
+        waiting.followUp = .waiting
+        store.replaceRemote(conversations: [waiting], accounts: store.accounts, invalidatingUndo: [])
+        answered.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                               date: .now, body: "Done", outgoing: false, subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(5, [answered])))
+        let quiet = store.conversation(thread.id)!
+        assert(quiet.workflow == .settled && quiet.followUp == nil && quiet.snoozedUntil == nil)
         // A send from an alias the server no longer lists is refused instead of going out from the main address.
         var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
         draft.to = "alex@example.test"
@@ -973,6 +983,10 @@ import os
         c.messages[0].cc = ["sam@example.test"]
         let toCc = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
         assert(toCc.to.isEmpty && toCc.cc == "sam@example.test")
+        // With only your own addresses anywhere, Reply All addresses nobody until you add someone.
+        c.messages[0].cc = []
+        let nobody = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
+        assert(nobody.to.isEmpty && nobody.cc.isEmpty && !nobody.canSend)
         var other = reply
         other.fromAddress = nil
         assert(!reply.hasSameSubmission(as: other))

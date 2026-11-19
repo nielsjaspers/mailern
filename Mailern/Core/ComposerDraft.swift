@@ -166,8 +166,8 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
             if case .replyAll = mode {
                 var seen = Set(accounts.flatMap(\.addresses).map { $0.lowercased() } + addresses(draft.to).map { $0.lowercased() })
                 draft.cc = (target.to + target.cc).filter { seen.insert($0.lowercased()).inserted }.joined(separator: ", ")
-                // To falls back to your own address only when nobody else would get the reply.
-                if target.outgoing && others.isEmpty && !draft.cc.isEmpty { draft.to = "" }
+                // Reply All never addresses only you. Without other recipients, To stays empty for you to fill in.
+                if target.outgoing && others.isEmpty { draft.to = "" }
             }
             draft.text += "\n\n\(QuotedText.attribution(for: target))\n\(target.body)"
         case .forward:
