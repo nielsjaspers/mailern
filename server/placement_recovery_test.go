@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-imap/v2/imapserver"
 )
 
@@ -347,6 +348,23 @@ func TestSettleAfterUndoOfLostArchiveCopy(t *testing.T) {
 	}
 }
 
+func (h *harness) count(mailbox string) uint32 {
+	h.t.Helper()
+	c, err := imapclient.DialInsecure(h.lab.IMAP.Address(), nil)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Login(labAddress, "lab").Wait(); err != nil {
+		h.t.Fatal(err)
+	}
+	status, err := c.Status(mailbox, &imap.StatusOptions{NumMessages: true}).Wait()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return *status.NumMessages
+}
+
 func TestResettleAfterLostCopyKeepsNewPin(t *testing.T) {
 	h := newHarness(t)
 	serveCopyMoveProvider(t, h, loseCopyResponse)
@@ -368,5 +386,22 @@ func TestResettleAfterLostCopyKeepsNewPin(t *testing.T) {
 	h.sync()
 	if !slices.Contains(h.mailbox("Archive")[subject], imap.FlagFlagged) || !h.conversations()[subject].Pinned {
 		t.Fatal("the reused Archive copy must take the pin set after Undo")
+	}
+}
+
+func TestNativeMoveReusesExistingArchiveCopy(t *testing.T) {
+	h := newHarness(t)
+	const subject = "Copy in Inbox and Archive"
+	raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
+	for _, mailbox := range []string{"INBOX", "Archive"} {
+		if err := h.lab.Deliver(labAddress, mailbox, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.sync()
+	h.set(h.conversations()[subject], func(s *ConversationState) { s.Workflow = WorkflowSettled })
+	h.sync()
+	if h.count("INBOX") != 0 || h.count("Archive") != 1 {
+		t.Fatalf("Settle must leave one Archive copy: Inbox %d, Archive %d", h.count("INBOX"), h.count("Archive"))
 	}
 }

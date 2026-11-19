@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 
 	"github.com/emersion/go-imap/v2"
@@ -40,6 +41,8 @@ type copyMove struct {
 type copyMoveSource struct {
 	key     string
 	pending bool
+	// Roles where the message already has a copy. Native MOVE would add a second one there.
+	copies map[Role]uint32
 }
 
 func (a *Account) copyMoveSources(plans []plan) map[location]copyMoveSource {
@@ -57,7 +60,7 @@ func (a *Account) copyMoveSources(plans []plan) map[location]copyMoveSource {
 			for role, uid := range msg.Locations {
 				at := location{role, imap.UID(uid)}
 				if _, need := wanted[at]; need {
-					wanted[at] = copyMoveSource{key, msg.PendingMove != nil}
+					wanted[at] = copyMoveSource{key, msg.PendingMove != nil, maps.Clone(msg.Locations)}
 				}
 			}
 		}

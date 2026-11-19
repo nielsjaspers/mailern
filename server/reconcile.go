@@ -381,7 +381,9 @@ func (a *Account) applyPlans(c *imapclient.Client, plans []plan, identities map[
 			if err := a.checkMove(m, caps); err != nil {
 				return err
 			}
-			if m.to == m.from.role || (!(m.from.role == RoleArchive && a.archiveIsAll) && (!caps.Has(imap.CapMove) || sources[m.from].pending)) {
+			// A target that already holds a copy goes through the copy path, which reuses it instead of adding a duplicate.
+			hasCopy := !a.archiveIsAll && caps.Has(imap.CapUIDPlus) && sources[m.from].copies[m.to] != 0
+			if m.to == m.from.role || (!(m.from.role == RoleArchive && a.archiveIsAll) && (!caps.Has(imap.CapMove) || sources[m.from].pending || hasCopy)) {
 				if !caps.Has(imap.CapUIDPlus) {
 					return fmt.Errorf("unfinished move requires UIDPLUS")
 				}
