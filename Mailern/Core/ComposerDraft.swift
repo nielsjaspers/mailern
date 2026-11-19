@@ -404,8 +404,11 @@ final class DraftStore {
         if await unschedule(id) { reopening = id }
     }
     /// Sends outbox mail that is due.
+    /// Automatic sends that failed wait until this time before they try again.
+    @ObservationIgnored private var automaticRetryAfter: Date?
+    @ObservationIgnored private var automaticFailureReported = false
     func sendDue(through store: MailStore, now: Date = .now, whileActive: @escaping @MainActor () -> Bool = { true }) async {
-        guard all.contains(where: { ($0.sendAt ?? .distantFuture) <= now }) else { return }
+        guard all.contains(where: { ($0.sendAt ?? .distantFuture) <= now }), (automaticRetryAfter ?? .distantPast) <= now else { return }
         _ = await deliver(through: store, automatic: true) { whileActive() && ($0.sendAt ?? .distantFuture) <= now }
     }
     /// Sends one scheduled message at once.
@@ -423,6 +426,7 @@ final class DraftStore {
             let queued = Set(self.all.lazy.filter { $0.sendAt != nil && pick($0) }.map(\.id))
             guard !queued.isEmpty else { return true }
             var failure: String?
+            let errorBefore = store.error
             var updated: [ComposerDraft] = []
             for var draft in self.all {
                 guard queued.contains(draft.id) else {
@@ -452,7 +456,16 @@ final class DraftStore {
                store.hasSentOrDiscarded(undoable) || !self.all.contains(where: { $0.id == undoable && $0.sendAt != nil }) {
                 self.undoable = nil
             }
-            if let failure { store.error = failure }
+            if automatic {
+                // An outage would fail every second. Wait a minute between tries and say it once.
+                self.automaticRetryAfter = failure == nil ? nil : .now.addingTimeInterval(60)
+                if let failure {
+                    store.error = self.automaticFailureReported ? errorBefore : failure
+                }
+                self.automaticFailureReported = failure != nil
+            } else if let failure {
+                store.error = failure
+            }
             return saved && failure == nil
         }
     }

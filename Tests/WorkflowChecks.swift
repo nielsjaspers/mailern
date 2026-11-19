@@ -509,6 +509,7 @@ import os
         try checkAccountAliases()
         try await checkReplyDuringSend()
         try await checkReplyWinsOverUnsyncedMove()
+        try await checkOutboxBackoffAndReplyTo()
         try await checkOutboxDuringSourceDelete()
     }
 
@@ -588,8 +589,16 @@ import os
         var waiting = store.conversation(id)!
         waiting.followUp = .waiting
         store.replaceRemote(conversations: [waiting], accounts: store.accounts, invalidatingUndo: [])
-        sync.conversations[0].workflow = .inbox
+        // Another client archiving the waiting thread ends the reminder instead of marking it overdue.
+        sync.conversations[0].workflow = .settled
         sync.conversations[0].snoozedUntil = nil
+        store.mergeRemote(sync)
+        assert(store.conversation(id)!.followUp == nil)
+        waiting = store.conversation(id)!
+        waiting.followUp = .waiting
+        store.replaceRemote(conversations: [waiting], accounts: store.accounts, invalidatingUndo: [])
+        sync.conversations[0].workflow = .inbox
+        sync.conversations[0].returnedFromSnoozeAt = .now
         store.mergeRemote(sync)
         assert(store.conversation(id)!.followUp == .noReply)
         // New mail from a blocked sender goes to Junk and syncs back.
@@ -882,6 +891,38 @@ import os
         await ServerSync(client: client, store: saved).push()
         assert(deletedAfterPut && saved.pendingRemoteDeletes.isEmpty)
         print("PASS: delete keeps confirmed IDs and mailbox identity across pulls, restart, and PUT acknowledgment. A conflict refreshes the mailbox.")
+    }
+
+    @MainActor static func checkOutboxBackoffAndReplyTo() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-backoff-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        var thread = remoteThread()
+        thread.messages[0].replyTo = ["list@example.test"]
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        // A reply goes to Reply-To when the message has one.
+        let reply = ComposerDraft.make(mode: .reply(thread.id), conversation: store.conversation(thread.id), accounts: store.accounts)
+        assert(reply.to == "list@example.test")
+        // The demo's fictional reply is refused in real mail.
+        store.receiveReply(thread.id)
+        assert(store.conversation(thread.id)!.messages.count == 1)
+        // Offline, a due send tries once a minute and reports the problem once.
+        let drafts = DraftStore(url: directory.appending(path: "drafts.json"), mail: store)
+        var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        draft.to = "alex@example.test"
+        let scheduled = await drafts.schedule(draft, at: .now)
+        assert(scheduled)
+        var posts = 0
+        store.sendRemote = { _ in posts += 1; throw URLError(.notConnectedToInternet) }
+        let start = Date.now.addingTimeInterval(1)
+        await drafts.sendDue(through: store, now: start)
+        assert(posts == 1 && store.error != nil)
+        store.error = nil
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(1))
+        assert(posts == 1 && store.error == nil)
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(61))
+        assert(posts == 2 && store.error == nil)
+        print("PASS: replies use Reply-To, the demo reply is refused in real mail, and offline sends back off and report once")
     }
 
     @MainActor static func checkReplyWinsOverUnsyncedMove() async throws {
