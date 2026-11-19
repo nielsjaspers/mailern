@@ -513,9 +513,8 @@ final class MailStore {
             conversations[c].messages[m].html = html.isEmpty ? nil : html
             conversations[c].messages[m].remoteHTML = nil
             save()
-        } catch is CancellationError {
+        } catch where error is CancellationError || (error as? URLError)?.code == .cancelled {
             // The reader closed or folded the message. Nothing failed.
-        } catch let failure as URLError where failure.code == .cancelled {
         } catch {
             self.error = "The message could not be loaded. \(error.localizedDescription)"
         }
