@@ -735,67 +735,16 @@ import os
         let mailURL = directory.appending(path: "mail.sqlite")
         let draftURL = directory.appending(path: "drafts.json")
         let deadline = Date.now.addingTimeInterval(600)
-        let expired = ComposerDraft(subject: "Sent copy expired", sendAt: deadline)
-        let kept = ComposerDraft(subject: "Sent copy still present", sendAt: deadline)
-        let pending = ComposerDraft(subject: "Waiting for its first send", sendAt: deadline)
-        func sentCopy(_ draft: ComposerDraft, removal: Removal? = nil) -> Conversation {
-            let message = MailMessage(id: draft.id, sender: "Morgan", address: MailAccount.demo[0].address,
-                                      to: ["casey@example.com"], date: .now, body: draft.subject, outgoing: true)
-            return Conversation(accountID: draft.accountID, subject: draft.subject, workflow: .settled,
-                                unread: false, removal: removal, messages: [message])
-        }
-        let expiredCopy = sentCopy(expired, removal: .trash(since: deadline.addingTimeInterval(-2 * MailStore.trashRetention)))
-        let keptCopy = sentCopy(kept)
-        let unrelated = sentCopy(ComposerDraft(subject: "Ordinary old sent mail"))
-        // The old version could leave the JSON outbox and the sent messages on disk with no receipts.
-        try SQLitePersistence(url: mailURL).save(MailData(conversations: [expiredCopy, keptCopy, unrelated]))
-        try AttachmentJSON.save([expired, kept, pending], to: draftURL)
-        let first = MailStore(persistence: SQLitePersistence(url: mailURL))
-        assert(first.conversation(expiredCopy.id) == nil && first.discardedDraftIDs == [expired.id])
-        let drafts = DraftStore(url: draftURL, mail: first)
-        assert(drafts.outbox.map(\.id) == [pending.id])
-        assert(first.discardedDraftIDs == [expired.id, kept.id])
-        assert(first.deletePermanently([keptCopy.id, unrelated.id]))
-        assert(first.discardedDraftIDs == [expired.id, kept.id])
-
-        let reopened = MailStore(persistence: SQLitePersistence(url: mailURL))
-        let outbox = DraftStore(url: draftURL, mail: reopened)
-        await outbox.sendDue(through: reopened, now: deadline)
-        assert(reopened.conversations.flatMap(\.messages).map(\.id) == [pending.id])
-        assert(reopened.discardedDraftIDs.isEmpty && DraftStore(url: draftURL).outbox.isEmpty)
-
-        try AttachmentJSON.save([pending], to: draftURL)
-        await outbox.reload()
-        assert(outbox.outbox.isEmpty && DraftStore(url: draftURL).outbox.isEmpty)
-        let retryURL = directory.appending(path: "retry.sqlite")
-        try SQLitePersistence(url: retryURL).save(MailData(conversations: [keptCopy]))
-        try AttachmentJSON.save([kept, pending], to: draftURL)
-        let retryMail = MailStore(persistence: SQLitePersistence(url: retryURL))
-        var db: OpaquePointer?
-        assert(sqlite3_open(retryURL.path, &db) == SQLITE_OK)
-        defer { sqlite3_close(db) }
-        let reject = "CREATE TRIGGER reject_receipt BEFORE INSERT ON settings WHEN NEW.key = 'discardedDraftIDs' BEGIN SELECT RAISE(ABORT, 'busy'); END"
-        assert(sqlite3_exec(db, reject, nil, nil, nil) == SQLITE_OK)
-        let retryDrafts = DraftStore(url: draftURL, mail: retryMail)
-        assert(!retryDrafts.hasReadableManifest)
-        await retryDrafts.recoverAfterMailLoad(now: deadline)
-        assert(sqlite3_exec(db, "DROP TRIGGER reject_receipt", nil, nil, nil) == SQLITE_OK)
-        await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(1))
-        assert(!retryDrafts.hasReadableManifest)
-        assert(retryDrafts.error != nil)
-        retryDrafts.error = nil
-        let manifest = try Data(contentsOf: draftURL)
-        try Data("unreadable manifest".utf8).write(to: draftURL)
-        await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(30))
-        assert(!retryDrafts.hasReadableManifest && retryDrafts.error == nil && retryMail.error == nil)
-        try manifest.write(to: draftURL)
-        await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(31))
-        assert(!retryDrafts.hasReadableManifest)
-        await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(60))
-        assert(retryDrafts.outbox.map(\.id) == [pending.id])
-        await retryDrafts.sendDue(through: retryMail, now: deadline.addingTimeInterval(60))
-        assert(retryMail.conversations.flatMap(\.messages).map(\.id).sorted { $0.uuidString < $1.uuidString } == [kept.id, pending.id].sorted { $0.uuidString < $1.uuidString })
-        assert(retryDrafts.outbox.isEmpty)
+        let pending = ComposerDraft(subject: "Current schedule", sendAt: deadline)
+        var obsolete = ComposerDraft(subject: "Old schedule", sendAt: deadline)
+        obsolete.outboxVersion = nil
+        let writing = ComposerDraft(subject: "Still composing")
+        try AttachmentJSON.save([obsolete, writing, pending], to: draftURL)
+        let retryMail = MailStore(persistence: SQLitePersistence(url: mailURL))
+        let current = DraftStore(url: draftURL, mail: retryMail)
+        assert(current.outbox == [pending] && current.drafts == [writing])
+        let persisted = try AttachmentJSON.load([ComposerDraft].self, from: draftURL)
+        assert(persisted == [writing, pending])
         try Data("unreadable at startup".utf8).write(to: draftURL)
         let cold = DraftStore(url: draftURL, mail: retryMail)
         assert(!cold.hasReadableManifest && cold.error != nil)
@@ -810,13 +759,6 @@ import os
         await cold.sendDue(through: retryMail, now: deadline.addingTimeInterval(30))
         assert(cold.hasReadableManifest && cold.outbox.isEmpty)
         assert(retryMail.conversations.flatMap(\.messages).filter { $0.id == another.id }.count == 1)
-        try AttachmentJSON.save([another], to: draftURL)
-        let blockedCleanup = DraftStore(url: draftURL, mail: retryMail) { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
-        await blockedCleanup.recoverAfterMailLoad(now: deadline)
-        assert(blockedCleanup.error != nil)
-        blockedCleanup.error = nil
-        await blockedCleanup.recoverAfterMailLoad(now: deadline.addingTimeInterval(30))
-        assert(blockedCleanup.error == nil && blockedCleanup.outbox.isEmpty && retryMail.discardedDraftIDs == [another.id])
         let cleanupURL = directory.appending(path: "pending-cleanup.json")
         let blockWrites = directory.appending(path: "block-draft-writes")
         var automatic = pending
@@ -879,7 +821,7 @@ import os
         let duplicates = DraftStore(url: duplicateURL) { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
         await duplicates.wakeDue(now: deadline)
         assert(duplicates.error != nil && duplicates.all == [sleeper, sleeper])
-        print("PASS: existing outbox reconciles before sent mail deletion and survives startup Trash expiry without redelivery")
+        print("PASS: obsolete demo schedules are discarded; current outbox retries preserve pending mail")
     }
 
     @MainActor static func checkTrashAndJunk() throws {
