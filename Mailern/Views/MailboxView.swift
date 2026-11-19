@@ -43,6 +43,18 @@ struct MailboxView: View {
         let pullDistance = pull.distance
         let armCount = pull.armCount
         return tabs
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let minimized = drafts.minimized, let draft = drafts.all.first(where: { $0.id == minimized.id && $0.sendAt == nil }) {
+                Button {
+                    reopened = .draft(draft.id)
+                } label: {
+                    Label(draft.title, systemImage: "square.and.pencil")
+                        .lineLimit(1).frame(maxWidth: .infinity).padding(10)
+                }
+                .accessibilityLabel("Resume draft, \(draft.title)")
+                .background(.bar)
+            }
+        }
         .overlay {
             GeometryReader { geometry in
                 if let overlayTop, selection == .inbox, paths[.inbox, default: []].isEmpty,

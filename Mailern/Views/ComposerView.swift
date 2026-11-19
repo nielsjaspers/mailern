@@ -19,12 +19,12 @@ struct ComposerView: View {
     @State private var editor = RichTextState()
     @State private var loaded = false
     @State private var completed = false
+    @State private var detent = PresentationDetent.large
     @State private var finishing = false
     @State private var savesInFlight = 0
     @State private var autosave: Task<Void, Never>?
     @State private var subjectFocused = false
     @State private var expanded = false
-    @GestureState private var draggingContent = false
     @State private var filePicker = false
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
@@ -137,9 +137,7 @@ struct ComposerView: View {
             .scrollDismissesKeyboard(.immediately)
             .scrollBounceBehavior(.always)
             // A body drag must dismiss editing without also dismissing the sheet.
-            .simultaneousGesture(DragGesture(minimumDistance: 10).updating($draggingContent) { value, state, _ in
-                state = abs(value.translation.height) > abs(value.translation.width)
-            }.onChanged { value in
+            .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { value in
                 guard abs(value.translation.height) > abs(value.translation.width) else { return }
                 focus = nil
                 subjectFocused = false
@@ -149,6 +147,10 @@ struct ComposerView: View {
             .navigationTitle(title).navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importing || finishing) }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Minimize draft", systemImage: "chevron.down") { Task { await minimize() } }
+                        .labelStyle(.iconOnly).disabled(!loaded || importing || finishing || completed)
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     // Hold Send for Send Later and a follow-up reminder, as in Mail.
                     Menu {
@@ -164,9 +166,10 @@ struct ComposerView: View {
         }
         .tint(.blue)
         .writingToolsBehavior(.disabled)
-        .presentationDetents([.large])
+        .presentationDetents([.medium, .large], selection: $detent)
+        .onChange(of: detent) { _, value in if value == .medium { Task { await minimize() } } }
         .presentationDragIndicator(.visible)
-        .interactiveDismissDisabled(draggingContent || importing || finishing || savesInFlight > 0 || (!completed && dirty && savedInput != input))
+        .interactiveDismissDisabled()
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear(perform: load)
         .onChange(of: draft.accountID) { _, id in if loaded { replaceSignature(with: store.account(id).signature) } }
@@ -343,17 +346,21 @@ struct ComposerView: View {
             RichText.markQuote(in: text, from: start, body: bodyRange.location)
         }
         editor.text = text
-        editor.selection = NSRange(location: 0, length: 0)
+        let resume = drafts.minimized.flatMap { $0.id == draft.id ? $0.selection : nil }
+        if resume != nil { drafts.minimized = nil }
+        let start = min(resume?.location ?? 0, text.length)
+        let selection = NSRange(location: start, length: min(resume?.length ?? 0, text.length - start))
+        editor.selection = selection
         editor.typing = [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
         if missingAccount { replaceSignature(with: account.signature) }
         initial = draft
         loaded = true
-        if draft.to.isEmpty { focus = .to }
+        if draft.to.isEmpty && resume == nil { focus = .to }
         else {
             DispatchQueue.main.async {
                 guard let view = editor.view else { return }
                 view.becomeFirstResponder()
-                view.selectedRange = NSRange(location: 0, length: 0)
+                view.selectedRange = selection
                 view.typingAttributes = [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
             }
         }
@@ -379,7 +386,14 @@ struct ComposerView: View {
         result.updatedAt = .now
         return result
     }
-    private func saveDraft(dismissAfter: Bool, submitted: DraftInput? = nil) async {
+    private func minimize() async {
+        guard loaded, !completed, !finishing, !importing else { detent = .large; return }
+        let selection = editor.view?.selectedRange ?? editor.selection
+        autosave?.cancel()
+        await saveDraft(dismissAfter: true, minimizedSelection: selection)
+        if !completed { detent = .large }
+    }
+    private func saveDraft(dismissAfter: Bool, submitted: DraftInput? = nil, minimizedSelection: NSRange? = nil) async {
         guard loaded, !completed, !finishing else { return }
         let activity = DraftSaveActivity()
         defer { activity.end() }
@@ -395,7 +409,11 @@ struct ComposerView: View {
             let content = try snapshot(submitted)
             guard await drafts.save(content) else { return }
             if drafts.drafts.first(where: { $0.id == content.id })?.matchesContent(of: content) == true { savedInput = submitted }
-            if dismissAfter { completed = true; dismiss() }
+            if dismissAfter {
+                if let minimizedSelection { drafts.minimized = (content.id, minimizedSelection) }
+                completed = true
+                dismiss()
+            }
         } catch { self.error = error.localizedDescription }
     }
     /// Sends now, after the Undo Send delay, or at `scheduled`. Delayed mail waits in the outbox as this draft.

@@ -38,6 +38,7 @@ Messages, workflow state, accounts, and blocked senders are saved in a SQLite da
 Drag the composer content to hide the keyboard without closing the message. Tap any field to continue editing.
 
 Tap Add recipient beside To to browse known senders. Search recipients by name or email address, then tap a result to add it to To. Tap Contacts to choose a specific email address from the iPhone contact picker. New messages use the single account selected by an active Inbox filter or the Default From account in Settings. Replies and forwards use the conversation’s account.
+- Pull the composer down by its handle or tap Minimize draft to browse your mail. Tap the draft bar to resume at the same position in the message body. Minimizing another draft replaces the bar and leaves the previous draft saved.
 
 ## Code
 
