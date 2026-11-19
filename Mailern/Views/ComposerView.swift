@@ -177,8 +177,10 @@ struct ComposerView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     // Hold Send for Send Later and a follow-up reminder, as in Mail.
                     Menu {
-                        Button("Send Later…", systemImage: "calendar.badge.clock") { picking = .sendLater }
-                        Button(draft.followUp == nil ? "Remind Me If No Reply…" : "Change Reminder…", systemImage: "hourglass") { picking = .reminder }
+                        if !awaitingConfirmation {
+                            Button("Send Later…", systemImage: "calendar.badge.clock") { picking = .sendLater }
+                            Button(draft.followUp == nil ? "Remind Me If No Reply…" : "Change Reminder…", systemImage: "hourglass") { picking = .reminder }
+                        }
                     } label: {
                         Label(awaitingConfirmation ? "Retry Send" : "Send", systemImage: "arrow.up")
                     } primaryAction: { Task { await send() } }
@@ -543,8 +545,10 @@ struct ComposerView: View {
         editor.view?.window?.endEditing(true)
         do {
             let content = try snapshot(input)
-            let sendAt = scheduled ?? (undoDelay > 0 ? Date.now.addingTimeInterval(TimeInterval(undoDelay)) : nil)
-            if let followUp = content.followUp, followUp <= (sendAt ?? .now) {
+            // Retry Send repeats the saved submission. Its schedule and reminder were checked on the first try.
+            let retrying = awaitingConfirmation
+            let sendAt = retrying ? nil : scheduled ?? (undoDelay > 0 ? Date.now.addingTimeInterval(TimeInterval(undoDelay)) : nil)
+            if !retrying, let followUp = content.followUp, followUp <= (sendAt ?? .now) {
                 error = "Choose a reminder after the message is sent."
                 return
             }
@@ -552,6 +556,8 @@ struct ComposerView: View {
                 guard await drafts.schedule(content, at: sendAt, holdingForUndo: scheduled == nil) else { return }
                 if scheduled == nil { drafts.undoable = content.id }
             } else {
+                // A server send can end unconfirmed. Saving first keeps the message in Drafts for Retry Send.
+                if store.isServerMailbox, !retrying, !(await drafts.save(content)) { return }
                 // The draft's ID makes sending a leftover draft again a no-op if deleting it fails below.
                 guard await store.sendNow(content) else {
                     error = store.error
