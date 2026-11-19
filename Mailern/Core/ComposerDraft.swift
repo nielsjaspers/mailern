@@ -162,8 +162,7 @@ final class DraftStore {
         didSet {
             reminderRevision &+= 1
             // A minimized draft that leaves Drafts, for example when it is sent or discarded, leaves the dock too.
-            if let docked, docked.minimized, oldValue.contains(where: { $0.id == docked.draft.id }),
-               !all.contains(where: { $0.id == docked.draft.id && $0.sendAt == nil }) { self.docked = nil }
+            if let docked, docked.minimized, !all.contains(where: { $0.id == docked.draft.id && $0.sendAt == nil }) { self.docked = nil }
         }
     }
     private(set) var reminderRevision: UInt64 = 0

@@ -132,41 +132,59 @@ struct DraftStorageAlert: ViewModifier {
 }
 
 /// A minimized draft: the composer sheet resting at the bottom of the screen. Its top edge shows above the tab bar or
-/// toolbar, which float over the rest of it.
+/// toolbar, which float over the rest of it. It also sits under an open composer, so pulling that sheet down
+/// reveals it in place.
 struct DraftDock: View {
-    let draft: ComposerDraft
-    let open: () -> Void
+    @Environment(DraftStore.self) private var drafts
+    /// Search raises the keyboard, so the dock steps aside instead of riding above it.
+    var searching: Bool
+    /// A composer opening over a minimized draft hides it, so the rising sheet does not show a second header.
+    var composing: Bool
+    let open: (UUID) -> Void
+    @GestureState private var lift: CGFloat = 0
     private static let radius: CGFloat = 30
     /// The composer sheet's own background, which dark mode lifts above the screen behind it.
     private static let sheet = UIColor { traits in
         UIColor.systemBackground.resolvedColor(with: traits.modifyingTraits { $0.userInterfaceLevel = .elevated })
     }
     var body: some View {
-        VStack(spacing: 0) {
-            Capsule().fill(.tertiary).frame(width: 36, height: 5).padding(.top, 6)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(draft.title).font(.headline).lineLimit(1)
-                Text(draft.to.isEmpty ? "No recipients" : "To: \(draft.to)")
-                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+        if let docked = drafts.docked, !searching {
+            let draft = docked.draft
+            Button { open(draft.id) } label: {
+                VStack(spacing: 0) {
+                    Capsule().fill(.tertiary).frame(width: 36, height: 5).padding(.top, 6)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(draft.title).font(.headline).lineLimit(1)
+                        Text(recipients(draft)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 10)
+                }
+                .background(alignment: .top) {
+                    // The sheet runs past the bottom of the screen, so lifting it never shows a lower edge.
+                    UnevenRoundedRectangle(topLeadingRadius: Self.radius, topTrailingRadius: Self.radius)
+                        .fill(Color(uiColor: Self.sheet))
+                        .shadow(color: .black.opacity(0.15), radius: 12)
+                        .padding(.bottom, -200)
+                        .ignoresSafeArea(edges: .bottom)
+                }
+                .contentShape(.rect)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 10)
+            .buttonStyle(.plain)
+            .disabled(!docked.minimized)
+            .offset(y: lift)
+            // The sheet follows an upward drag, then opens.
+            .simultaneousGesture(DragGesture(minimumDistance: 10)
+                .updating($lift) { value, lift, _ in lift = min(0, value.translation.height) * 0.5 }
+                .onEnded { value in if docked.minimized, value.predictedEndTranslation.height < -40 { open(draft.id) } })
+            .opacity(composing && docked.minimized ? 0 : 1)
+            .animation(.easeOut(duration: 0.15), value: composing)
+            .accessibilityLabel("Resume draft, \(draft.title)")
         }
-        .background(alignment: .top) {
-            UnevenRoundedRectangle(topLeadingRadius: Self.radius, topTrailingRadius: Self.radius)
-                .fill(Color(uiColor: Self.sheet))
-                .shadow(color: .black.opacity(0.15), radius: 12)
-                .ignoresSafeArea(edges: .bottom)
-        }
-        .contentShape(.rect)
-        .onTapGesture(perform: open)
-        // Swiping the sheet up opens the composer again.
-        .simultaneousGesture(DragGesture(minimumDistance: 10).onEnded { value in
-            if value.translation.height < -20 { open() }
-        })
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("Resume draft, \(draft.title)")
-        .accessibilityAction { open() }
+    }
+    private func recipients(_ draft: ComposerDraft) -> String {
+        let fields = [("To", draft.to), ("Cc", draft.cc), ("Bcc", draft.bcc)]
+        guard let (label, value) = fields.first(where: { !$0.1.trimmingCharacters(in: .whitespaces).isEmpty }) else { return "No recipients" }
+        return "\(label): \(value)"
     }
 }

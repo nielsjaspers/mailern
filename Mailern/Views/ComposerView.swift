@@ -62,7 +62,6 @@ struct ComposerView: View {
         return Self.isDirty(input, saved: savedInput, initial: initial)
     }
     private var saved: Bool { drafts.drafts.contains { $0.id == draft.id } }
-    private var title: String { draft.subject.isEmpty ? "New Message" : draft.subject }
     private var account: MailAccount { store.account(draft.accountID) }
     private let attachmentLimit = 25 * 1024 * 1024
     private var importing: Bool { importsInFlight > 0 }
@@ -148,11 +147,15 @@ struct ComposerView: View {
                 editor.view?.window?.endEditing(true)
             })
             .background(Color(uiColor: .systemBackground))
-            .navigationTitle(title).navigationBarTitleDisplayMode(.large)
+            .navigationTitle(draft.title).navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importing || finishing) }
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Minimize draft", systemImage: "chevron.down") { Task { await saveDraft(dismissAfter: true, minimizing: true) } }
+                    Button("Minimize draft", systemImage: "chevron.down") {
+                        // An untouched message has nothing to keep, as when the sheet is pulled down.
+                        if !dirty && !saved { completed = true; dismiss() }
+                        else { Task { await saveDraft(then: .minimize) } }
+                    }
                         .labelStyle(.iconOnly).disabled(!loaded || importing || finishing || completed)
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -179,7 +182,7 @@ struct ComposerView: View {
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
         // Pulling the sheet down minimizes the draft once its edits are saved.
-        .interactiveDismissDisabled(draggingContent || importing || finishing || savesInFlight > 0 || dirty)
+        .interactiveDismissDisabled(draggingContent || importing || finishing || dirty)
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear(perform: load)
         .onChange(of: draft.accountID) { _, id in if loaded { replaceSignature(with: store.account(id).signature) } }
@@ -190,7 +193,7 @@ struct ComposerView: View {
             autosave = Task {
                 do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
                 guard !completed, !finishing, !Task.isCancelled else { return }
-                await saveDraft(dismissAfter: false, submitted: value)
+                await saveDraft(submitted: value)
             }
         }
         .onChange(of: draft) { _, value in if drafts.docked?.draft.id == value.id { drafts.docked?.draft = value } }
@@ -200,7 +203,7 @@ struct ComposerView: View {
             if !completed { minimize() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background && !completed && dirty { Task { await saveDraft(dismissAfter: false) } }
+            if phase == .background && !completed && dirty { Task { await saveDraft() } }
         }
         .fileImporter(isPresented: $filePicker, allowedContentTypes: [.item], allowsMultipleSelection: true, onCompletion: importFiles)
         .photosPicker(isPresented: $photoPicker, selection: $photos, maxSelectionCount: 10, matching: .images)
@@ -261,7 +264,7 @@ struct ComposerView: View {
                         dismiss()
                     }
                 }
-                Button("Save Draft") { Task { await saveDraft(dismissAfter: true) } }
+                Button("Save Draft") { Task { await saveDraft(then: .close) } }
             } label: { Image(systemName: "xmark") }
             .accessibilityLabel("Cancel").tint(.primary).disabled(importing)
         } else {
@@ -335,7 +338,6 @@ struct ComposerView: View {
     }
     private func load() {
         guard !loaded else { return }
-        let resume = drafts.docked.flatMap { docked in docked.minimized && mode == .draft(docked.draft.id) ? docked : nil }
         if case .draft(let id) = mode {
             guard let saved = drafts.drafts.first(where: { $0.id == id }) else {
                 error = "This draft is no longer available."
@@ -362,6 +364,7 @@ struct ComposerView: View {
             RichText.markQuote(in: text, from: start, body: bodyRange.location)
         }
         editor.text = text
+        let resume = drafts.docked.flatMap { docked in docked.minimized && docked.draft.id == draft.id ? docked : nil }
         let selections: [NSRange] = resume?.selections.map { range in
             let start = min(range.location, text.length)
             return NSRange(location: start, length: min(range.length, text.length - start))
@@ -371,7 +374,8 @@ struct ComposerView: View {
         editor.typing = resume?.typing ?? [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
         if missingAccount { replaceSignature(with: account.signature) }
         initial = draft
-        drafts.docked = DraftStore.Docked(draft: draft)
+        // An unsaved message leaves the dock to the minimized draft until it is saved.
+        if saved { drafts.docked = DraftStore.Docked(draft: draft) }
         loaded = true
         if draft.to.isEmpty && resume == nil { focus = .to }
         else {
@@ -414,11 +418,12 @@ struct ComposerView: View {
         drafts.docked = DraftStore.Docked(draft: draft, selections: selections,
                                           typing: editor.view?.typingAttributes ?? editor.typing, minimized: true)
     }
-    /// With `minimizing`, the draft goes to the dock after it is saved, instead of closing.
-    private func saveDraft(dismissAfter: Bool, minimizing: Bool = false, submitted: DraftInput? = nil) async {
+    enum AfterSave { case stay, close, minimize }
+    private func saveDraft(then after: AfterSave = .stay, submitted: DraftInput? = nil) async {
         guard loaded, !completed, !finishing else { return }
         let activity = DraftSaveActivity()
         defer { activity.end() }
+        let dismissAfter = after != .stay
         if dismissAfter { finishing = true }
         if dismissAfter { editor.view?.window?.endEditing(true) }
         savesInFlight += 1
@@ -431,8 +436,10 @@ struct ComposerView: View {
             let content = try snapshot(submitted)
             guard await drafts.save(content) else { return }
             if drafts.drafts.first(where: { $0.id == content.id })?.matchesContent(of: content) == true { savedInput = submitted }
+            // Once saved, this draft takes the dock from any minimized one.
+            if drafts.docked?.draft.id != draft.id { drafts.docked = DraftStore.Docked(draft: draft) }
             if dismissAfter {
-                if !minimizing { completed = true }
+                if after == .close { completed = true }
                 dismiss()
             }
         } catch { self.error = error.localizedDescription }

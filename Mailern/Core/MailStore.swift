@@ -406,14 +406,13 @@ final class MailStore {
     func deleteAccount(_ id: String, drafts: DraftStore) async -> String? {
         guard canWrite(), accounts.count > 1 else { return error ?? "You need at least one account." }
         let removed = drafts.all.filter { $0.accountID == id }
-        let docked = drafts.docked.flatMap { slot in removed.contains { $0.id == slot.draft.id } ? slot : nil }
         guard await drafts.discardDrafts(accountID: id) else {
             defer { drafts.error = nil }
             return drafts.error ?? "The account's drafts could not be deleted."
         }
         guard deleteAccount(id) else {
             let problem = error ?? "This account could not be deleted."
-            if await drafts.restore(removed), drafts.docked == nil { drafts.docked = docked }
+            _ = await drafts.restore(removed)
             return problem
         }
         return nil

@@ -29,7 +29,6 @@ struct MailboxView: View {
     @AppStorage("leftSwipeTertiary") private var leftTertiary: MailboxSwipeAction = .none
     @AppStorage("rightSwipeTertiary") private var rightTertiary: MailboxSwipeAction = .none
     @State private var composer: ComposeMode?
-    @State private var reopened: ComposeMode?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var demo = false
     @State private var snoozing: Conversation?
@@ -107,9 +106,8 @@ struct MailboxView: View {
         .onChange(of: drafts.reopening) { _, id in
             guard let id else { return }
             drafts.reopening = nil
-            reopened = .draft(id)
+            composer = .draft(id)
         }
-        .sheet(item: $reopened) { ComposerView(mode: $0) }
         .sheet(item: $composer) {
             ComposerView(mode: $0, inboxAccountID: composeInboxAccount)
         }
@@ -252,12 +250,8 @@ struct MailboxView: View {
                 }
         }
     }
-    @ViewBuilder private var dock: some View {
-        if let docked = drafts.docked {
-            DraftDock(draft: docked.draft) {
-                if docked.minimized, composer == nil, reopened == nil { reopened = .draft(docked.draft.id) }
-            }
-        }
+    private var dock: some View {
+        DraftDock(searching: searching, composing: composer != nil) { composer = .draft($0) }
     }
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {

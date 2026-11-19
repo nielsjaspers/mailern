@@ -345,15 +345,16 @@ final class MinimizedDraftUITests: MailernUITestCase {
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera")).firstMatch.tap()
         let body = app.textViews["Message body"]
         body.typeText("Earlier reply")
+        for _ in 0..<5 { body.typeKey(.leftArrow, modifierFlags: []) }
         app.buttons["Minimize draft"].tap()
         let replyBar = app.buttons["Resume draft, Re: " + subject]
         XCTAssertTrue(replyBar.waitForExistence(timeout: 5))
-        app.buttons["Reply"].tap()
-        XCTAssertTrue(app.buttons["Reply All"].waitForExistence(timeout: 5))
-        app.buttons["Reply All"].tap()
-        app.buttons["Cancel"].tap()
-        if app.buttons["Save Draft"].exists { app.buttons["Save Draft"].tap() }
-        waitForAbsence(body)
+        // Replying again opens the same draft, at the same place.
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera")).firstMatch.tap()
+        body.typeText("the ")
+        XCTAssertTrue((body.value as? String ?? "").hasPrefix("Earlier the reply"))
+        app.buttons["Minimize draft"].tap()
+        XCTAssertTrue(replyBar.waitForExistence(timeout: 5))
         app.navigationBars.buttons["Inbox"].tap()
         app.buttons["Compose"].tap()
         body.tap()
@@ -364,7 +365,7 @@ final class MinimizedDraftUITests: MailernUITestCase {
         row(subject, in: app).tap()
         app.buttons["Edit draft"].tap()
         let restored = body.value as? String ?? ""
-        XCTAssertTrue(restored.hasPrefix("Earlier reply"))
+        XCTAssertTrue(restored.hasPrefix("Earlier the reply"))
         XCTAssertTrue(restored.contains("Are you free on Saturday?"))
         app.buttons["Cancel"].tap()
         app.buttons["Save Draft"].tap()
@@ -379,6 +380,10 @@ final class MinimizedDraftUITests: MailernUITestCase {
         row("Dinner on Saturday?", in: app).tap()
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera")).firstMatch.tap()
         let body = app.textViews["Message body"]
+        body.typeText("!")
+        // Autosave fails too. Dismiss its alert, then minimize.
+        XCTAssertTrue(app.alerts["Composer"].waitForExistence(timeout: 5))
+        app.alerts.buttons["OK"].tap()
         app.buttons["Minimize draft"].tap()
         XCTAssertTrue(app.alerts["Composer"].waitForExistence(timeout: 5))
         app.alerts.buttons["OK"].tap()
@@ -1524,7 +1529,7 @@ class MailernUITestCase: XCTestCase {
     @MainActor
     func waitForComposerDismissal(in app: XCUIApplication) {
         // Resolve dismissal before the next native action, which otherwise can stall
-        // on XCTest's animation-complete notification after a zoom transition.
+        // on XCTest's animation-complete notification.
         waitForAbsence(app.buttons["Send"])
     }
 
