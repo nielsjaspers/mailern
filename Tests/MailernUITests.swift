@@ -336,6 +336,7 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
 final class MinimizedDraftUITests: MailernUITestCase {
     @MainActor
     func testSecondDraftReplacesBarAndPreservesEarlierReply() {
+        continueAfterFailure = false
         let app = TestApplication()
         app.launch()
         let subject = "Dinner on Saturday?"
@@ -395,6 +396,9 @@ final class MinimizedDraftUITests: MailernUITestCase {
         resume.tap()
         body.typeText(" second")
         XCTAssertTrue((body.value as? String ?? "").contains("First second!"))
+        app.buttons["Cancel"].tap()
+        app.buttons["Save Draft"].tap()
+        waitForAbsence(body)
     }
 }
 
