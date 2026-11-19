@@ -24,6 +24,7 @@ struct ComposerView: View {
     @State private var autosave: Task<Void, Never>?
     @State private var subjectFocused = false
     @State private var expanded = false
+    @State private var subjectComposing = false
     @GestureState private var draggingContent = false
     /// The sheet's highest top edge at its current size, to tell when a pull moves it down.
     @State private var restingTop = CGFloat.infinity
@@ -66,8 +67,11 @@ struct ComposerView: View {
         return Self.isDirty(input, saved: savedInput, initial: initial)
     }
     private var saved: Bool { drafts.drafts.contains { $0.id == draft.id } }
-    /// A pull minimizes the draft. A closed composer is on its way out and does not minimize.
-    private var canPull: Bool { !(completed || draggingContent || importing || finishing || dirty) }
+    /// A pull minimizes the draft, so it waits until every edit is saved, including text the keyboard is still
+    /// composing. A closed composer is on its way out and does not minimize.
+    private var canPull: Bool {
+        !(completed || draggingContent || importing || finishing || dirty || editor.composing || subjectComposing)
+    }
     private var account: MailAccount { store.account(draft.accountID) }
     private let attachmentLimit = 25 * 1024 * 1024
     private var importing: Bool { importsInFlight > 0 }
@@ -118,7 +122,7 @@ struct ComposerView: View {
                     }
                     HStack(spacing: 6) {
                         Text("Subject:").foregroundStyle(.secondary)
-                        ComposerSubjectField(text: $draft.subject, isFocused: subjectFocused) { subjectFocused = $0 }
+                        ComposerSubjectField(text: $draft.subject, composing: $subjectComposing, isFocused: subjectFocused) { subjectFocused = $0 }
                     }.frame(minHeight: 48)
                     Divider()
                     if let followUp = draft.followUp {
@@ -180,18 +184,18 @@ struct ComposerView: View {
             }
         }
         .tint(.blue)
-        // Put the keyboard away as soon as a pull moves the sheet, so it does not stay up over the mailbox after the
-        // sheet has gone.
+        // Watches the sheet's top edge. A pull starts any pending save, puts the keyboard away so it does not stay up
+        // over the mailbox, and reveals this draft in the dock. A canceled pull gives the keyboard back.
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
             // A rotation moves the resting top edge. The height also changes during a pull, so only the width counts.
             if frame.width != sheetWidth { sheetWidth = frame.width; restingTop = frame.minY }
             restingTop = min(restingTop, frame.minY)
-            // A pull that cannot dismiss the sheet leaves the keyboard alone.
             // A pull right after typing waits for the save, so start it now instead of after the pause.
             if frame.minY - restingTop > 4, dirty, savesInFlight == 0, !completed, !finishing, !importing {
                 autosave?.cancel()
                 Task { await saveDraft() }
             }
+            // A pull that cannot close the sheet leaves the keyboard alone.
             if !pull.active, frame.minY - restingTop > 24, canPull {
                 pull = (true, editor.view?.isFirstResponder == true ? .body : subjectFocused ? .subject : focus.map(Editing.address))
                 editor.view?.window?.endEditing(true)
@@ -240,7 +244,12 @@ struct ComposerView: View {
             guard !completed else { return }
             // Ending editing during a pull can still commit text, such as an input method's composition, after the
             // pull was allowed. Save what the editor holds now.
-            if dirty, let content = try? snapshot(input) { Task { await drafts.save(content) } }
+            if dirty {
+                do {
+                    let content = try snapshot(input)
+                    Task { await drafts.save(content) }
+                } catch { drafts.error = error.localizedDescription }
+            }
             recordDockPosition()
         }
         .onChange(of: scenePhase) { _, phase in
@@ -577,6 +586,7 @@ struct ComposerView: View {
 
 private struct ComposerSubjectField: UIViewRepresentable {
     @Binding var text: String
+    @Binding var composing: Bool
     var isFocused: Bool
     var onFocus: (Bool) -> Void
 
@@ -612,10 +622,14 @@ private struct ComposerSubjectField: UIViewRepresentable {
     final class Coordinator: NSObject, UITextFieldDelegate {
         var parent: ComposerSubjectField
         init(_ parent: ComposerSubjectField) { self.parent = parent }
-        @objc func changed(_ view: UITextField) { parent.text = view.text ?? "" }
+        @objc func changed(_ view: UITextField) {
+            parent.text = view.text ?? ""
+            if parent.composing != (view.markedTextRange != nil) { parent.composing.toggle() }
+        }
         func textFieldDidBeginEditing(_ textField: UITextField) { if !parent.isFocused { parent.onFocus(true) } }
         func textFieldDidEndEditing(_ textField: UITextField) {
             if parent.text != textField.text { parent.text = textField.text ?? "" }
+            if parent.composing { parent.composing = false }
             if parent.isFocused { parent.onFocus(false) }
         }
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {

@@ -139,6 +139,8 @@ final class RichTextState {
     var selection = NSRange(location: 0, length: 0)
     var typing: [NSAttributedString.Key: Any] = [:]
     var edited = false
+    /// True while the keyboard holds text it has not committed yet, such as an input method's composition.
+    var composing = false
     /// Set on resume, so the caret shows once the keyboard is up. Later keyboard changes leave the scroll alone.
     @ObservationIgnored var revealOnKeyboard = false
     @ObservationIgnored weak var view: UITextView?
@@ -154,6 +156,7 @@ final class RichTextState {
         text = NSAttributedString(attributedString: view.attributedText)
         selection = view.selectedRange
         typing = view.typingAttributes
+        if composing != (view.markedTextRange != nil) { composing.toggle() }
         didSync()
     }
     func showFormat() {

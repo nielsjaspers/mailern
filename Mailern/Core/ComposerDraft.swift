@@ -180,6 +180,8 @@ final class DraftStore {
     /// The saved draft of the open composer. The dock shows it under the sheet, so a pull reveals it in place, and
     /// shows the minimized draft again once that composer closes.
     var preview: UUID?
+    /// Drafts with a delete in progress. The dock does not reopen them.
+    private(set) var deleting: Set<UUID> = []
     /// True while a composer sheet covers the dock. The dock fades out under a rising sheet, and shows again as soon
     /// as a pull moves the sheet down.
     var sheetOverDock = false
@@ -272,7 +274,9 @@ final class DraftStore {
         }
     }
     @discardableResult func delete(_ id: UUID) async -> Bool {
-        await enqueue {
+        deleting.insert(id)
+        defer { deleting.remove(id) }
+        let deleted = await enqueue {
             guard self.all.contains(where: { $0.id == id }) || self.mail?.discardedDraftIDs.contains(id) == true else {
                 if self.loadFailure == nil {
                     let url = self.url
@@ -282,6 +286,8 @@ final class DraftStore {
             }
             return await self.persist(self.all.filter { $0.id != id })
         }
+        if deleted, docked?.id == id { docked = nil }
+        return deleted
     }
     /// Mail records the discarded IDs in the same transaction as the move. The draft file can catch up after a crash.
     func discardDrafts(for ids: Set<UUID>, scheduled: Bool = false,

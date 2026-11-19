@@ -81,8 +81,6 @@ struct DraftThreadView: View {
                     VStack(alignment: .leading, spacing: 22) {
                         Text(draft.title).font(.title2.bold()).textSelection(.enabled)
                         DraftCard(draft: draft, edit: { mode = .draft(id) }, discard: {
-                            // The dock must not reopen a draft while it is being discarded.
-                            if drafts.docked?.id == id { drafts.docked = nil }
                             Task {
                                 deleting = true
                                 defer { deleting = false }
@@ -155,8 +153,11 @@ struct DraftDock: View {
     var body: some View {
         // The container always exists, so the reset runs even while the keyboard has removed the dock.
         ZStack {
-            if let draft = [drafts.preview, drafts.docked?.id].lazy.compactMap({ id in drafts.drafts.first { $0.id == id } }).first,
-               !SoftwareKeyboard.shared.visible {
+            // The open composer's draft shows under its sheet. Otherwise the dock shows the minimized draft.
+            if !SoftwareKeyboard.shared.visible,
+               let draft = [drafts.composerOpen ? drafts.preview : nil, drafts.docked?.id].compactMap({ $0 })
+                   .filter({ !drafts.deleting.contains($0) })
+                   .lazy.compactMap({ id in drafts.all.first { $0.id == id && $0.sendAt == nil } }).first {
                 let id = draft.id
                 let summary = recipients(draft)
                 Button { resume(id) } label: {
@@ -207,9 +208,11 @@ struct DraftDock: View {
         DispatchQueue.main.async { open(id) }
     }
     private func recipients(_ draft: ComposerDraft) -> String {
-        let fields = [("To", draft.to), ("Cc", draft.cc), ("Bcc", draft.bcc)].map { ($0, ComposerDraft.addresses($1)) }
-        guard let (label, addresses) = fields.first(where: { !$0.1.isEmpty }) else { return "No recipients" }
-        return "\(label): \(addresses.joined(separator: ", "))"
+        let fields = [("To", draft.to), ("Cc", draft.cc), ("Bcc", draft.bcc)].compactMap { label, field in
+            let addresses = ComposerDraft.addresses(field)
+            return addresses.isEmpty ? nil : "\(label): \(addresses.joined(separator: ", "))"
+        }
+        return fields.isEmpty ? "No recipients" : fields.joined(separator: "  ")
     }
 }
 
@@ -218,13 +221,18 @@ struct DraftDock: View {
 @MainActor @Observable final class SoftwareKeyboard {
     static let shared = SoftwareKeyboard()
     private(set) var visible = false
+    private func set(_ visible: Bool) {
+        guard visible != self.visible else { return }
+        withAnimation(.easeOut(duration: 0.25)) { self.visible = visible }
+    }
     private init() {
         let center = NotificationCenter.default
+        // The dock fades in step with the keyboard, so its place is not left empty while the keyboard moves.
         center.addObserver(forName: UIResponder.keyboardWillShowNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { SoftwareKeyboard.shared.visible = true }
+            MainActor.assumeIsolated { SoftwareKeyboard.shared.set(true) }
         }
         center.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { SoftwareKeyboard.shared.visible = false }
+            MainActor.assumeIsolated { SoftwareKeyboard.shared.set(false) }
         }
     }
 }
