@@ -902,6 +902,13 @@ import os
         assert(store.mergeRemote(remoteBatch(3, [answered])))
         let rescued = store.conversation(thread.id)!
         assert(rescued.removal == nil && rescued.workflow == .inbox && rescued.followUp == nil)
+        // A thread muted and settled on the phone stays settled when a reply merges before the server confirms.
+        store.toggleMute(thread.id)
+        assert(store.move(thread.id, to: .settled))
+        answered.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                               date: .now, body: "Still there?", outgoing: false, subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(4, [answered])))
+        assert(store.conversation(thread.id)!.workflow == .settled)
         // A send from an alias the server no longer lists is refused instead of going out from the main address.
         var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
         draft.to = "alex@example.test"

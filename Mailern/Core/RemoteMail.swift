@@ -315,7 +315,9 @@ extension MailStore {
         // A new reply wins over a move the server has not confirmed, as an arrival does in Mailern: it returns the
         // thread to Inbox, rescues it from Trash, and ends its reminder.
         var keeping = fields
-        if replied && !remote.muted {
+        // An unconfirmed mute counts, as it does on the server.
+        let muted = fields.contains(.muted) ? c.muted == true : remote.muted
+        if replied && !muted {
             keeping.subtract([.workflow, .unread])
             if c.removal?.mailbox == .trash { keeping.remove(.removal) }
         }
