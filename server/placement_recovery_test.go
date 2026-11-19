@@ -273,3 +273,54 @@ func TestRetargetFlagsOnlyTheJunkCopy(t *testing.T) {
 		}
 	}
 }
+
+func TestRestoredSentCopyReceivesPin(t *testing.T) {
+	h := newHarness(t)
+	const subject = "Outgoing with an archive copy"
+	raw := LabMessage(labAddress, "sam@example.com", subject, "Hello.", "", time.Now())
+	for _, name := range []string{"Sent", "Archive"} {
+		if err := h.lab.Deliver(labAddress, name, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.sync()
+	thread := h.conversations()[subject]
+	h.set(thread, func(s *ConversationState) { s.Removal = RoleTrash })
+	h.sync()
+	h.set(h.conversations()[subject], func(s *ConversationState) { s.Removal = "" })
+	h.sync()
+	restartCopyMoveAccount(t, h)
+	h.service.store, h.service.accounts = h.account.store, []*Account{h.account}
+	h.set(h.conversations()[subject], func(s *ConversationState) { s.Pinned = true })
+	h.sync()
+	if !slices.Contains(h.mailbox("Sent")[subject], imap.FlagFlagged) || slices.Contains(h.mailbox("Archive")[subject], imap.FlagFlagged) {
+		t.Fatal("expected Pin on the restored Sent copy only")
+	}
+}
+
+func TestUIDPlusRestoreFromJunkWithTrashAndInboxCopies(t *testing.T) {
+	h := newHarness(t)
+	serveCopyMoveProvider(t, h, 0)
+	const subject = "Restore from Junk"
+	raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
+	if err := h.lab.Deliver(labAddress, "Junk", raw); err != nil {
+		t.Fatal(err)
+	}
+	h.sync()
+	for _, name := range []string{"INBOX", "Trash"} {
+		if err := h.lab.Deliver(labAddress, name, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.sync()
+	thread := h.conversations()[subject]
+	if thread.Removal != RoleJunk || thread.Workflow != WorkflowSettled {
+		t.Fatal("expected a settled Junk thread")
+	}
+	h.set(thread, func(s *ConversationState) { s.Removal = "" })
+	restartCopyMoveAccount(t, h)
+	h.sync()
+	if len(h.mailbox("Junk")) != 0 || len(h.mailbox("Archive")) != 1 || len(h.mailbox("Trash")) != 1 || len(h.mailbox("INBOX")) != 1 {
+		t.Fatal("restore should move only the Junk UID to Archive")
+	}
+}

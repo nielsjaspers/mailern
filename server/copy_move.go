@@ -54,9 +54,11 @@ func (a *Account) copyMoveSources(plans []plan) map[location]copyMoveSource {
 	}
 	a.store.Read(func(st *State) {
 		for key, msg := range st.account(a.cfg.ID).Messages {
-			at, ok := placeOf(msg)
-			if _, need := wanted[at]; ok && need {
-				wanted[at] = copyMoveSource{key, msg.PendingMove != nil}
+			for role, uid := range msg.Locations {
+				at := location{role, imap.UID(uid)}
+				if _, need := wanted[at]; need {
+					wanted[at] = copyMoveSource{key, msg.PendingMove != nil}
+				}
 			}
 		}
 	})

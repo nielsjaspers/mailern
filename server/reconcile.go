@@ -63,7 +63,9 @@ func observedPlace(c *Conversation, m *Message, archiveIsAll bool) (location, bo
 	}
 	var preferred location
 	var found bool
-	if c.Removal == "" && c.Workflow == WorkflowSettled && !archiveIsAll {
+	if c.Removal == "" && m.Outgoing {
+		preferred, found = firstLocation(m, RoleSent, RoleInbox, RoleArchive)
+	} else if c.Removal == "" && c.Workflow == WorkflowSettled && !archiveIsAll {
 		preferred, found = firstLocation(m, RoleArchive, RoleSent, RoleInbox)
 	} else if c.Removal == "" {
 		preferred, found = firstLocation(m, RoleInbox, RoleSent, RoleArchive)
