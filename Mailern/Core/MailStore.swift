@@ -547,10 +547,15 @@ final class MailStore {
             return false
         }
     }
+    func hasSentOrDiscarded(_ id: UUID) -> Bool {
+        discardedDraftIDs.contains(id) || conversations.contains { thread in
+            thread.messages.contains { $0.outgoing && $0.id == id }
+        }
+    }
+
     /// Immediate sends use the same durable cleanup receipt as scheduled sends.
     @discardableResult func send(_ draft: ComposerDraft) -> Bool {
-        let id = draft.id
-        if discardedDraftIDs.contains(id) || conversations.contains(where: { $0.messages.contains { $0.outgoing && $0.id == id } }) { return true }
+        if hasSentOrDiscarded(draft.id) { return true }
         return sendUnsentOutboxDraft(draft)
     }
 

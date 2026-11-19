@@ -242,6 +242,10 @@ final class DraftStore {
     @discardableResult func save(_ draft: ComposerDraft) async -> Bool {
         await enqueue {
             var draft = draft
+            if draft.sendAt != nil, self.mail?.hasSentOrDiscarded(draft.id) == true {
+                self.error = "This draft has already been sent or discarded."
+                return false
+            }
             if let existing = self.all.first(where: { $0.id == draft.id }) {
                 // An open editor can hold mailbox state from before a snooze expired.
                 draft.pinned = existing.pinned
@@ -468,6 +472,8 @@ final class DraftStore {
             return true
         } catch {
             if !discarded.isEmpty {
+                all.removeAll { discarded.contains($0.id) }
+                clearResolvedWakeFailures()
                 needsMailRecovery = true
                 recoveryFailureReported = recoveryFailureReported || reportFailure
             }

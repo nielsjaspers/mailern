@@ -429,7 +429,7 @@ struct ComposerView: View {
             editor.view?.resignFirstResponder()
             if sendAt == nil, !(await drafts.delete(draft.id)) {
                 drafts.error = nil
-                error = "Message saved, but the draft could not be removed. You can discard it from its Inbox thread."
+                error = "Message sent. Mailern will retry draft cleanup."
                 return
             }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -541,10 +541,9 @@ private struct SystemEmailPicker: UIViewControllerRepresentable {
         picker.predicateForSelectionOfContact = NSPredicate(value: false)
         picker.predicateForSelectionOfProperty = NSPredicate(format: "key == %@", CNContactEmailAddressesKey)
         host.present(picker, animated: true)
-        picker.presentationController?.delegate = context.coordinator
     }
 
-    final class Coordinator: NSObject, CNContactPickerDelegate, UIAdaptivePresentationControllerDelegate {
+    final class Coordinator: NSObject, CNContactPickerDelegate {
         var presenting = false
         var finish: ((String?) -> Void)?
         private func complete(_ address: String?) {
@@ -552,7 +551,6 @@ private struct SystemEmailPicker: UIViewControllerRepresentable {
             finish = nil
             callback?(address)
         }
-        func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { complete(nil) }
         func contactPickerDidCancel(_ picker: CNContactPickerViewController) { complete(nil) }
         func contactPicker(_ picker: CNContactPickerViewController, didSelect property: CNContactProperty) {
             complete(property.value as? String)
