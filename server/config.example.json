@@ -1,0 +1,32 @@
+{
+  "tailscale": {
+    "hostname": "mailern",
+    "allowedUsers": ["you@github"]
+  },
+  "accounts": [
+    {
+      "id": "gmail",
+      "name": "Gmail",
+      "address": "you@gmail.com",
+      "senderName": "Your Name",
+      "provider": "gmail",
+      "passwordFile": "secrets/gmail"
+    },
+    {
+      "id": "icloud",
+      "name": "iCloud",
+      "address": "you@icloud.com",
+      "senderName": "Your Name",
+      "provider": "icloud",
+      "passwordFile": "secrets/icloud"
+    },
+    {
+      "id": "proton",
+      "name": "Proton",
+      "address": "you@proton.me",
+      "senderName": "Your Name",
+      "provider": "proton-bridge",
+      "passwordFile": "secrets/proton"
+    }
+  ]
+}
