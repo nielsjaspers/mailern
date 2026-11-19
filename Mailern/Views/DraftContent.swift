@@ -138,58 +138,61 @@ struct DraftStorageAlert: ViewModifier {
 struct DraftDock: View {
     @Environment(DraftStore.self) private var drafts
     let open: (UUID) -> Void
-    @GestureState private var lift: CGFloat = 0
-    /// Where a drag that opened the composer let go, so the dock stays there while the sheet rises.
-    @State private var held: CGFloat = 0
-    /// Set when the dock opens the composer. Its header hides at once, so the rising sheet's header is the only one.
-    @State private var opening = false
+    @GestureState(resetTransaction: Transaction(animation: .snappy)) private var lift: CGFloat = 0
+    /// Set when the dock opens the composer: the dock holds this lift while the sheet rises, and its header hides at
+    /// once, so the rising sheet's header is the only one.
+    @State private var handoff: CGFloat?
     private static let radius: CGFloat = 30
+    /// How far a drag lifts the dock. The sheet background runs this far past the bottom of the screen.
+    private static let maxLift: CGFloat = 120
     /// The composer sheet's own background, which dark mode lifts above the screen behind it.
     private static let sheet = UIColor { traits in
         UIColor.systemBackground.resolvedColor(with: traits.modifyingTraits { $0.userInterfaceLevel = .elevated })
     }
     var body: some View {
-        if let id = drafts.docked?.id, let draft = drafts.drafts.first(where: { $0.id == id }), !SoftwareKeyboard.shared.visible {
-            Button { resume(id) } label: {
-                VStack(spacing: 0) {
-                    Capsule().fill(.tertiary).frame(width: 36, height: 5).padding(.top, 6)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(draft.title).font(.headline).lineLimit(1)
-                        Text(recipients(draft)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+        // The container always exists, so the reset runs even while the keyboard has removed the dock.
+        ZStack {
+            if let id = drafts.docked?.id, let draft = drafts.drafts.first(where: { $0.id == id }), !SoftwareKeyboard.shared.visible {
+                Button { resume(id) } label: {
+                    VStack(spacing: 0) {
+                        Capsule().fill(.tertiary).frame(width: 36, height: 5).padding(.top, 6)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(draft.title).font(.headline).lineLimit(1)
+                            Text(recipients(draft)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 10)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 10)
+                    .opacity(handoff == nil ? 1 : 0)
+                    .background(alignment: .top) {
+                        UnevenRoundedRectangle(topLeadingRadius: Self.radius, topTrailingRadius: Self.radius)
+                            .fill(Color(uiColor: Self.sheet))
+                            .shadow(color: .black.opacity(0.15), radius: 12)
+                            .padding(.bottom, -Self.maxLift)
+                            .ignoresSafeArea(edges: .bottom)
+                    }
+                    .contentShape(.rect)
                 }
-                .opacity(opening ? 0 : 1)
-                .background(alignment: .top) {
-                    // The sheet runs past the bottom of the screen, so lifting it never shows a lower edge.
-                    UnevenRoundedRectangle(topLeadingRadius: Self.radius, topTrailingRadius: Self.radius)
-                        .fill(Color(uiColor: Self.sheet))
-                        .shadow(color: .black.opacity(0.15), radius: 12)
-                        .padding(.bottom, -200)
-                        .ignoresSafeArea(edges: .bottom)
-                }
-                .contentShape(.rect)
+                .buttonStyle(.plain)
+                .offset(y: lift + (handoff ?? 0))
+                // The sheet follows an upward drag, then opens.
+                .simultaneousGesture(DragGesture(minimumDistance: 10)
+                    .updating($lift) { value, lift, _ in lift = Self.lift(value.translation.height) }
+                    .onEnded { value in
+                        guard value.predictedEndTranslation.height < -40 else { return }
+                        resume(id, holding: Self.lift(value.translation.height))
+                    })
+                // Fade out as the composer rises over the dock, and back in as a pull reveals it. Only this fade is
+                // animated, so the header hides at once.
+                .animation(.easeOut(duration: 0.25)) { $0.opacity(drafts.sheetOverDock ? 0 : 1) }
+                .accessibilityLabel("Resume draft, \(draft.title)")
             }
-            .buttonStyle(.plain)
-            .offset(y: lift + held)
-            // The sheet follows an upward drag, then opens.
-            .simultaneousGesture(DragGesture(minimumDistance: 10)
-                .updating($lift) { value, lift, _ in lift = min(0, value.translation.height) * 0.5 }
-                .onEnded { value in
-                    guard value.predictedEndTranslation.height < -40 else { return }
-                    held = min(0, value.translation.height) * 0.5
-                    resume(id)
-                })
-            // Fade out as the composer rises over the dock, and back in as a pull reveals it.
-            .opacity(drafts.sheetOverDock ? 0 : 1)
-            .animation(.easeOut(duration: 0.25), value: drafts.sheetOverDock)
-            .onChange(of: drafts.sheetOverDock) { _, covered in if !covered { opening = false; held = 0 } }
-            .accessibilityLabel("Resume draft, \(draft.title)")
         }
+        .onChange(of: drafts.sheetOverDock) { _, covered in if !covered { handoff = nil } }
     }
-    private func resume(_ id: UUID) {
-        opening = true
+    private static func lift(_ translation: CGFloat) -> CGFloat { max(-maxLift, min(0, translation) * 0.5) }
+    private func resume(_ id: UUID, holding lift: CGFloat = 0) {
+        handoff = lift
         open(id)
     }
     private func recipients(_ draft: ComposerDraft) -> String {
@@ -199,8 +202,8 @@ struct DraftDock: View {
     }
 }
 
-/// Whether the keyboard is up, so the dock can step aside instead of riding above it. One shared observer, because a
-/// dock created while the keyboard is up would miss the notification.
+/// Whether the keyboard is up, so the dock can step aside instead of riding above it. One shared observer, created at
+/// launch by `draftDock`, because a dock created while the keyboard is up would miss the notification.
 @MainActor @Observable final class SoftwareKeyboard {
     static let shared = SoftwareKeyboard()
     private(set) var visible = false
@@ -219,6 +222,7 @@ extension View {
     /// Places the dock at the bottom. On iOS 26 and later it is a bar, so the scroll edge effect stays behind it
     /// instead of fading its text.
     @ViewBuilder func draftDock(open: @escaping (UUID) -> Void) -> some View {
+        let _ = SoftwareKeyboard.shared
         if #available(iOS 26, *) { safeAreaBar(edge: .bottom, spacing: 0) { DraftDock(open: open) } }
         else { safeAreaInset(edge: .bottom, spacing: 0) { DraftDock(open: open) } }
     }

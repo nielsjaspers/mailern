@@ -433,7 +433,7 @@ struct ComposerView: View {
     /// Puts the saved draft in the dock after the sheet is pulled down or Minimize draft closes it.
     private func minimize() {
         guard loaded, !finishing, saved else {
-            // An untouched message leaves any other minimized draft in the dock.
+            // Only a draft that left Drafts while open can own the dock here. It gives the dock back.
             if drafts.docked?.id == draft.id { drafts.docked = displaced }
             return
         }

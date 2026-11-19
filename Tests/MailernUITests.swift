@@ -446,6 +446,11 @@ final class MinimizedDraftUITests: MailernUITestCase {
         resume.swipeUp()
         body.typeText(" second")
         XCTAssertTrue((body.value as? String ?? "").contains("First second!"))
+        // A second round trip, after a resume, restores the dock too. The pull waits for the autosave.
+        _ = XCTWaiter.wait(for: [XCTestExpectation(description: "Autosave")], timeout: 1)
+        handle.press(forDuration: 0.1, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 450)))
+        XCTAssertTrue(resume.wait(for: \.isHittable, toEqual: true, timeout: 6))
+        resume.tap()
         app.buttons["Cancel"].tap()
         app.buttons["Save Draft"].tap()
         waitForAbsence(body)

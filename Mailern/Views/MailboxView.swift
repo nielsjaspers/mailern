@@ -103,12 +103,17 @@ struct MailboxView: View {
             }
         }
         // Undo Send and Edit take scheduled mail back into the composer from wherever it was sent.
+        // An open composer finishes first, so the request waits until its sheet closes.
         .onChange(of: drafts.reopening) { _, id in
-            guard let id else { return }
+            guard let id, composer == nil else { return }
             drafts.reopening = nil
             composer = .draft(id)
         }
-        .sheet(item: $composer) {
+        .sheet(item: $composer, onDismiss: {
+            guard let id = drafts.reopening else { return }
+            drafts.reopening = nil
+            composer = .draft(id)
+        }) {
             ComposerView(mode: $0, inboxAccountID: composeInboxAccount)
         }
         .modifier(DraftStorageAlert(active: composer == nil && paths[selection, default: []].isEmpty))
