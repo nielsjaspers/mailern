@@ -54,6 +54,10 @@ func (a *Account) reconcile(st *State) []plan {
 			continue
 		}
 		msgs := st.messages(c)
+		if c.Deleting && (!slices.Equal(c.Keys, c.DeleteKeys) || slices.ContainsFunc(msgs, outsideRemoval)) {
+			cancelDelete(c)
+			st.Touch(c)
+		}
 		if !c.Pending {
 			if adopt(c, msgs) {
 				st.Touch(c)
@@ -69,10 +73,22 @@ func (a *Account) reconcile(st *State) []plan {
 			st.removeConversation(c.ID)
 			continue
 		}
-		c.Pending = false
+		c.Pending, c.PendingPlacement, c.PendingRead, c.PendingPin = false, false, false, false
+		adopt(c, msgs)
 		st.Touch(c)
 	}
 	return plans
+}
+
+func outsideRemoval(m *Message) bool {
+	at, ok := placeOf(m)
+	return !ok || at.role != RoleTrash && at.role != RoleJunk
+}
+
+func cancelDelete(c *Conversation) {
+	c.Deleting, c.Pending = false, false
+	c.PendingPlacement, c.PendingRead, c.PendingPin = false, false, false
+	c.DeleteKeys = nil
 }
 
 func incoming(msgs []*Message) []*Message {
@@ -136,18 +152,51 @@ func planFor(c *Conversation, msgs []*Message) plan {
 	var p plan
 	if c.Deleting {
 		for _, m := range msgs {
-			at, ok := placeOf(m)
-			switch {
-			case !ok:
-			case at.role == RoleTrash || at.role == RoleJunk:
-				p.expunges = append(p.expunges, at)
-			default:
-				p.moves = append(p.moves, move{at, RoleTrash})
+			for _, role := range []Role{RoleTrash, RoleJunk} {
+				if uid, ok := m.Locations[role]; ok {
+					p.expunges = append(p.expunges, location{role, imap.UID(uid)})
+				}
 			}
 		}
 		return p
 	}
 	in := incoming(msgs)
+	if c.PendingPlacement {
+		p.moves = planMoves(c, msgs, in)
+	}
+	if c.PendingRead {
+		placed := slices.DeleteFunc(in, func(m *Message) bool { return len(m.Locations) == 0 })
+		if c.Unread {
+			if len(placed) > 0 && !slices.ContainsFunc(placed, func(m *Message) bool { return !m.Seen }) {
+				p.flags = appendFlag(p.flags, placed[len(placed)-1], imap.FlagSeen, false)
+			}
+		} else {
+			for _, m := range placed {
+				if !m.Seen {
+					p.flags = appendFlag(p.flags, m, imap.FlagSeen, true)
+				}
+			}
+		}
+	}
+	if c.PendingPin {
+		placed := slices.DeleteFunc(slices.Clone(msgs), func(m *Message) bool { return len(m.Locations) == 0 })
+		if c.Pinned {
+			if len(placed) > 0 && !slices.ContainsFunc(placed, func(m *Message) bool { return m.Flagged }) {
+				p.flags = appendFlag(p.flags, placed[len(placed)-1], imap.FlagFlagged, true)
+			}
+		} else {
+			for _, m := range placed {
+				if m.Flagged {
+					p.flags = appendFlag(p.flags, m, imap.FlagFlagged, false)
+				}
+			}
+		}
+	}
+	return p
+}
+
+func planMoves(c *Conversation, msgs, in []*Message) []move {
+	var moves []move
 	var primary *Message
 	for _, m := range in {
 		if _, ok := placeOf(m); ok {
@@ -173,32 +222,10 @@ func planFor(c *Conversation, msgs []*Message) plan {
 			target = RoleArchive
 		}
 		if target != at.role {
-			p.moves = append(p.moves, move{at, target})
+			moves = append(moves, move{at, target})
 		}
 	}
-	if c.Unread {
-		if !slices.ContainsFunc(in, func(m *Message) bool { return !m.Seen }) && len(in) > 0 {
-			p.flags = appendFlag(p.flags, in[len(in)-1], imap.FlagSeen, false)
-		}
-	} else {
-		for _, m := range in {
-			if !m.Seen {
-				p.flags = appendFlag(p.flags, m, imap.FlagSeen, true)
-			}
-		}
-	}
-	if c.Pinned {
-		if !slices.ContainsFunc(msgs, func(m *Message) bool { return m.Flagged }) && len(msgs) > 0 {
-			p.flags = appendFlag(p.flags, msgs[len(msgs)-1], imap.FlagFlagged, true)
-		}
-	} else {
-		for _, m := range msgs {
-			if m.Flagged {
-				p.flags = appendFlag(p.flags, m, imap.FlagFlagged, false)
-			}
-		}
-	}
-	return p
+	return moves
 }
 
 func appendFlag(changes []flagChange, m *Message, flag imap.Flag, add bool) []flagChange {
@@ -210,11 +237,15 @@ func appendFlag(changes []flagChange, m *Message, flag imap.Flag, add bool) []fl
 
 // apply carries out plans grouped by mailbox. Flags go first, because a move gives a message a new UID.
 // Gmail's All Mail holds every message, so mail leaves it by a copy that adds a label, not by a move.
-func (a *Account) apply(c *imapclient.Client, plans []plan) error {
+func (a *Account) apply(c *imapclient.Client, plans []plan, validity map[Role]uint32) error {
 	flags := map[Role]map[flagChange][]imap.UID{}
 	moves := map[Role]map[Role][]imap.UID{}
 	expunges := map[Role][]imap.UID{}
+	caps := c.Caps()
 	for _, p := range plans {
+		if len(p.expunges) > 0 && !caps.Has(imap.CapUIDPlus) {
+			return fmt.Errorf("permanent delete requires UIDPLUS")
+		}
 		for _, f := range p.flags {
 			key := flagChange{flag: f.flag, add: f.add}
 			if flags[f.at.role] == nil {
@@ -223,6 +254,12 @@ func (a *Account) apply(c *imapclient.Client, plans []plan) error {
 			flags[f.at.role][key] = append(flags[f.at.role][key], f.at.uid)
 		}
 		for _, m := range p.moves {
+			if a.mailboxes[m.to] == "" || a.mailboxes[m.to] == a.mailboxes[m.from.role] {
+				return fmt.Errorf("no distinct destination mailbox for %s", m.to)
+			}
+			if !(m.from.role == RoleArchive && a.archiveIsAll) && !caps.Has(imap.CapMove) && !caps.Has(imap.CapUIDPlus) {
+				return fmt.Errorf("move requires MOVE or UIDPLUS")
+			}
 			if moves[m.from.role] == nil {
 				moves[m.from.role] = map[Role][]imap.UID{}
 			}
@@ -236,8 +273,13 @@ func (a *Account) apply(c *imapclient.Client, plans []plan) error {
 		if len(flags[role])+len(moves[role])+len(expunges[role]) == 0 {
 			continue
 		}
-		if _, err := c.Select(a.mailboxes[role], nil).Wait(); err != nil {
-			return fmt.Errorf("select %s: %w", a.mailboxes[role], err)
+		name := a.mailboxes[role]
+		sel, err := c.Select(name, nil).Wait()
+		if err != nil {
+			return fmt.Errorf("select %s: %w", name, err)
+		}
+		if validity[role] == 0 || validity[role] != sel.UIDValidity {
+			return fmt.Errorf("UIDVALIDITY changed for %s", name)
 		}
 		for change, uids := range flags[role] {
 			op := imap.StoreFlagsDel
@@ -251,26 +293,38 @@ func (a *Account) apply(c *imapclient.Client, plans []plan) error {
 		}
 		for to, uids := range moves[role] {
 			set := imap.UIDSetNum(uids...)
-			var err error
-			if role == RoleArchive && a.archiveIsAll {
-				_, err = c.Copy(set, a.mailboxes[to]).Wait()
-			} else {
-				_, err = c.Move(set, a.mailboxes[to]).Wait()
-			}
-			if err != nil {
+			if err := moveUIDs(c, set, a.mailboxes[to], role == RoleArchive && a.archiveIsAll, caps); err != nil {
 				return fmt.Errorf("move to %s: %w", a.mailboxes[to], err)
 			}
 		}
 		if uids := expunges[role]; len(uids) > 0 {
-			set := imap.UIDSetNum(uids...)
-			deleted := &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}
-			if err := c.Store(set, deleted, nil).Close(); err != nil {
-				return fmt.Errorf("delete: %w", err)
-			}
-			if err := c.UIDExpunge(set).Close(); err != nil {
-				return fmt.Errorf("expunge: %w", err)
+			if err := expungeUIDs(c, imap.UIDSetNum(uids...)); err != nil {
+				return err
 			}
 		}
+	}
+	return nil
+}
+
+func moveUIDs(c *imapclient.Client, set imap.UIDSet, dest string, copyOnly bool, caps imap.CapSet) error {
+	if !copyOnly && caps.Has(imap.CapMove) {
+		_, err := c.Move(set, dest).Wait()
+		return err
+	}
+	// The client's MOVE fallback queues deletion before it knows whether COPY succeeded.
+	if _, err := c.Copy(set, dest).Wait(); err != nil || copyOnly {
+		return err
+	}
+	return expungeUIDs(c, set)
+}
+
+func expungeUIDs(c *imapclient.Client, set imap.UIDSet) error {
+	deleted := &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}
+	if err := c.Store(set, deleted, nil).Close(); err != nil {
+		return fmt.Errorf("delete: %w", err)
+	}
+	if err := c.UIDExpunge(set).Close(); err != nil {
+		return fmt.Errorf("expunge: %w", err)
 	}
 	return nil
 }

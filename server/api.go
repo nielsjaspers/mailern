@@ -212,9 +212,12 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 		} else if state.Removal != RoleTrash {
 			c.TrashSince = nil
 		}
+		c.PendingRead = c.PendingRead || c.Unread != state.Unread || (c.Workflow != WorkflowSettled && state.Workflow == WorkflowSettled)
+		c.PendingPin = c.PendingPin || c.Pinned != state.Pinned
+		c.PendingPlacement = c.PendingPlacement || c.Workflow != state.Workflow || c.Removal != state.Removal
 		c.Workflow, c.SnoozedUntil, c.Removal = state.Workflow, state.SnoozedUntil, state.Removal
 		c.Unread, c.Pinned, c.Muted = state.Unread, state.Pinned, state.Muted
-		c.Pending = true
+		c.Pending = c.Pending || c.PendingRead || c.PendingPin || c.PendingPlacement
 		st.Touch(c)
 		out = wire(st, c)
 		account = s.account(c.AccountID)
@@ -241,6 +244,7 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 		if c.Removal == "" {
 			return badRequest{errors.New("only mail in Trash or Junk can be deleted")}
 		}
+		c.DeleteKeys = slices.Clone(c.Keys)
 		c.Deleting, c.Pending = true, true
 		st.Touch(c)
 		account = s.account(c.AccountID)
