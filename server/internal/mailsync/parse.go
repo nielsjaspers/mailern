@@ -65,8 +65,12 @@ func parseMessage(raw []byte) (parsed, error) {
 		if err == io.EOF {
 			break
 		}
-		if err != nil {
+		// A part in an unsupported charset comes with an error. Skip it and keep reading the other parts.
+		if err != nil && part == nil {
 			break
+		}
+		if err != nil {
+			continue
 		}
 		inline, ok := part.Header.(*mail.InlineHeader)
 		if !ok {
