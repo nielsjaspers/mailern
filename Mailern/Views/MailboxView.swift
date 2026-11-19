@@ -256,16 +256,16 @@ struct MailboxView: View {
         }
     }
     @ViewBuilder private var minimizedBar: some View {
-            if let minimized = drafts.minimized, let draft = drafts.all.first(where: { $0.id == minimized.id && $0.sendAt == nil }) {
-                Button {
-                    reopened = .draft(draft.id)
-                } label: {
-                    Label(draft.title, systemImage: "square.and.pencil")
-                        .lineLimit(1).frame(maxWidth: .infinity).padding(10)
-                }
-                .accessibilityLabel("Resume draft, \(draft.title)")
-                .background(.bar)
+        if let minimized = drafts.minimized, let draft = drafts.all.first(where: { $0.id == minimized.id && $0.sendAt == nil }) {
+            Button {
+                reopened = .draft(draft.id)
+            } label: {
+                Label(draft.title, systemImage: "square.and.pencil")
+                    .lineLimit(1).frame(maxWidth: .infinity).padding(10)
             }
+            .accessibilityLabel("Resume draft, \(draft.title)")
+            .background(.bar)
+        }
     }
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {

@@ -349,7 +349,7 @@ struct ComposerView: View {
         editor.text = text
         let resume = drafts.minimized.flatMap { $0.id == draft.id ? $0 : nil }
         if resume != nil { drafts.minimized = nil }
-        let selections = resume?.selections.map { range in
+        let selections: [NSRange] = resume?.selections.map { range in
             let start = min(range.location, text.length)
             return NSRange(location: start, length: min(range.length, text.length - start))
         } ?? []
