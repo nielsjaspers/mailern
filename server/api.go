@@ -258,6 +258,7 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var account *Account
 	var at location
+	var validity uint32
 	found := false
 	s.store.Read(func(st *State) {
 		for accountID, state := range st.Accounts {
@@ -265,6 +266,7 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 				if m.ID == id {
 					account = s.account(accountID)
 					at, found = placeOf(m)
+					validity = state.UIDValidity[at.role]
 				}
 			}
 		}
@@ -273,7 +275,7 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errNotFound)
 		return
 	}
-	html, err := account.FetchHTML(at)
+	html, err := account.FetchHTML(at, validity)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -345,7 +347,7 @@ func (s *Service) WakeSnoozed(ctx context.Context) {
 }
 
 // FetchHTML reads one message's HTML on its own connection, so opening mail does not wait for a sync pass.
-func (a *Account) FetchHTML(at location) (string, error) {
+func (a *Account) FetchHTML(at location, validity uint32) (string, error) {
 	c, err := a.dial()
 	if err != nil {
 		return "", err
@@ -359,8 +361,13 @@ func (a *Account) FetchHTML(at location) (string, error) {
 	if name == "" {
 		return "", errNotFound
 	}
-	if _, err := c.Select(name, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+	selected, err := c.Select(name, &imap.SelectOptions{ReadOnly: true}).Wait()
+	if err != nil {
 		return "", err
+	}
+	if selected.UIDValidity != validity {
+		a.Trigger()
+		return "", errNotFound
 	}
 	section := &imap.FetchItemBodySection{Peek: true}
 	msgs, err := c.Fetch(imap.UIDSetNum(at.uid), &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}}).Collect()

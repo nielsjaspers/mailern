@@ -407,3 +407,21 @@ func TestHTMLIsFetchedOnDemand(t *testing.T) {
 		t.Fatalf("expected the HTML part, got %q", body.String())
 	}
 }
+
+func TestHTMLRejectsStaleMailboxIdentity(t *testing.T) {
+	h := newHarness(t)
+	h.deliver("INBOX", "Original", "")
+	h.sync()
+	var at location
+	var validity uint32
+	h.account.store.Read(func(st *State) {
+		account := st.Accounts[h.account.cfg.ID]
+		for _, m := range account.Messages {
+			at, _ = placeOf(m)
+			validity = account.UIDValidity[at.role]
+		}
+	})
+	if _, err := h.account.FetchHTML(at, validity+1); err != errNotFound {
+		t.Fatalf("stale mailbox identity returned %v", err)
+	}
+}
