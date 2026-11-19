@@ -26,6 +26,9 @@ import SwiftUI
     private(set) var minimizeRequests = 0
     /// Set by the composer: false while its draft cannot leave, such as during an import or a send.
     var canPull = false
+    /// Set by the composer: true once its message has something to keep, so a pull turns it into the dock. An
+    /// untouched message pulled down leaves as a composer.
+    var canDock = false
     /// Set by the composer: the height of its navigation bar, with the large title while it shows. A pull starts
     /// there, as on a sheet, and a scroll below it stays a scroll.
     var pullZone: CGFloat = 0
@@ -50,9 +53,6 @@ import SwiftUI
     fileprivate var height: CGFloat = 1000
     fileprivate var dockOffset: CGFloat { max(0, (dockBottom ?? openTop + height) - headerHeight - openTop) }
     private var pullStart: CGFloat = 0
-    /// Where a pull let go. A pulled message that closes instead of docking decides its look from this, not from the
-    /// dock target the spring already holds.
-    private var released: CGFloat = 0
     /// The dock offset the fades measure against. It holds still while the tab bar hides under a rising panel, so the
     /// header only fades with the finger, and follows the target while the panel docks.
     fileprivate private(set) var fadeBase: CGFloat = 1
@@ -62,10 +62,17 @@ import SwiftUI
     private var docking = false
     private var arrived = false
     private var ready = false
+    /// A compose request that came while the panel still heads for the dock. It opens once the panel is gone.
+    private var queued: Request?
 
     func present(_ mode: ComposeMode, messageID: UUID? = nil, inboxAccountID: String? = nil) {
-        guard request == nil else { return }
-        start(Request(mode: mode, messageID: messageID, inboxAccountID: inboxAccountID), at: height, morphing: false)
+        let next = Request(mode: mode, messageID: messageID, inboxAccountID: inboxAccountID)
+        guard request == nil else {
+            // The tab bar is back while the panel docks, so Compose can be tapped then.
+            if docking { queued = next }
+            return
+        }
+        start(next, at: height, morphing: false)
         // Move on the next turn of the run loop, once the panel is drawn at its start.
         DispatchQueue.main.async { self.open() }
     }
@@ -91,7 +98,9 @@ import SwiftUI
     /// Ends a drag on the dock. A drag the system canceled goes back to the dock.
     func endDockDrag(translation: CGFloat = 0, predicted: CGFloat = 0, velocity: CGFloat = 0) {
         guard request != nil, !settled, !docking else { return }
-        if predicted < -80 || translation < -dragOrigin / 3 { open(velocity: velocity) }
+        // A flick back down cancels, even past a third of the way.
+        let flick = predicted - translation
+        if flick < 80, predicted < -80 || translation < -dragOrigin / 3 { open(velocity: velocity) }
         else { dock(velocity: velocity); dockReady() }
     }
     /// Moves the panel to the dock. It leaves once the composer has saved and called `dockReady`.
@@ -112,6 +121,7 @@ import SwiftUI
     func open(velocity: CGFloat = 0) {
         guard request != nil else { return }
         docking = false
+        queued = nil
         withAnimation(.smooth(duration: 0.3)) { covering = true }
         move(to: 0, velocity: velocity) { [weak self] in
             self?.settled = true
@@ -122,9 +132,8 @@ import SwiftUI
     /// Slides the panel off the screen, after a send, a discard, or Save Draft.
     func close() {
         guard request != nil else { return }
-        // An untouched message pulled only part of the way leaves as a composer, not through the dock's header. A pull
-        // already aimed the spring at the dock, so the release position decides.
-        if (docking ? released : offset) < dockOffset * 0.55 { morphing = false }
+        // Only a message with something to keep turns into the dock, and that one docks instead of closing.
+        morphing = false
         docking = false
         settled = false
         withAnimation(.smooth(duration: 0.3)) { covering = false }
@@ -137,7 +146,9 @@ import SwiftUI
                   translation.height > abs(translation.width) else { return }
             pulling = true
             settled = false
-            morphing = true
+            morphing = canDock
+            // Measured now, so a rotation since the panel opened does not fade it against the old screen.
+            fadeBase = max(1, dockOffset)
             pullStart = translation.height
         }
         let distance = translation.height - pullStart
@@ -153,8 +164,9 @@ import SwiftUI
     fileprivate func pullEnded(translation: CGFloat, predicted: CGFloat, velocity: CGFloat) {
         guard pulling else { return }
         pulling = false
-        released = offset
-        if offset > 120 || (predicted - translation > 160 && offset > 24) {
+        // A flick back up cancels, even past the threshold.
+        let flick = predicted - translation
+        if flick > -80, offset > 120 || (flick > 160 && offset > 24) {
             dock(velocity: velocity)
             minimizeRequests += 1
         } else { open(velocity: velocity) }
@@ -203,6 +215,10 @@ import SwiftUI
         morphing = false
         offset = 0
         withAnimation(.smooth(duration: 0.3)) { hidesToolbar = false }
+        if let next = queued {
+            queued = nil
+            present(next.mode, messageID: next.messageID, inboxAccountID: next.inboxAccountID)
+        }
     }
     /// Springs the panel to `target`. A new `fade` base moves with it, so the fades blend into the new dock place.
     private func move(to target: CGFloat, fade: CGFloat? = nil, velocity: CGFloat = 0,
