@@ -1017,7 +1017,7 @@ import os
         var reply = ComposerDraft.make(mode: .reply(source.id), conversation: store.conversation(source.id), accounts: store.accounts)
         reply.bcc = "hidden@example.test"
         reply.attachments = [MailAttachment(name: "plan.txt", data: Data("Fictional plans".utf8), contentType: "text/plain")]
-        let queued = await drafts.schedule(reply, at: .now)
+        let queued = await drafts.schedule(reply, at: .now.addingTimeInterval(3600))
         var unsent = reply
         unsent.id = UUID()
         let queuedUnsent = await drafts.schedule(unsent, at: .now.addingTimeInterval(3600))
@@ -1064,8 +1064,8 @@ import os
         assert(recovered.discardedDraftIDs == [reply.id] && recovered.conversation(source.id)?.latest.id == reply.id)
         assert(recovered.conversation(source.id)?.latest.attachments == reply.attachments)
         assert(recovered.conversation(source.id)?.latest.bcc == ["hidden@example.test"])
-        let cleanedUp = await recoveredDrafts.sendNow(reply.id, through: recovered)
-        assert(cleanedUp && recoveredDrafts.outbox.isEmpty && DraftStore(url: draftURL).outbox.isEmpty)
+        await recoveredDrafts.recoverAfterMailLoad()
+        assert(recoveredDrafts.outbox.isEmpty && DraftStore(url: draftURL).outbox.isEmpty)
         print("PASS: source deletion removes unsent replies and preserves unresolved sends until they can be filed")
     }
 

@@ -461,7 +461,8 @@ final class DraftStore {
         }
     }
     func recoverAfterMailLoad(now: Date = .now) async {
-        guard needsMailRecovery, mail?.needsReload != true, (retryMailRecoveryAfter ?? .distantPast) <= now else { return }
+        guard needsMailRecovery || mail?.discardedDraftIDs.isEmpty == false,
+              mail?.needsReload != true, (retryMailRecoveryAfter ?? .distantPast) <= now else { return }
         await reload(automatic: true)
         needsMailRecovery = !hasReadableManifest || mail?.discardedDraftIDs.isEmpty == false
         if needsMailRecovery { retryMailRecoveryAfter = now.addingTimeInterval(30) }
