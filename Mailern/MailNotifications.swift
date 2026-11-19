@@ -97,7 +97,6 @@ final class MailNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
                 guard !box.drafts.hasReadableManifest, !identifier.hasPrefix(base + "conversation.") else { return false }
                 let key = identifier.dropFirst(base.count).split(separator: ".", maxSplits: 1)
                 guard key.count == 2, let id = UUID(uuidString: String(key[1])) else { return false }
-                if key[0] == "scheduled" { return !box.mail.discardedDraftIDs.contains(id) }
                 return !box.mail.discardedDraftIDs.contains(id)
             }
             return false

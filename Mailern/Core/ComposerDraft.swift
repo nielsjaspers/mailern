@@ -254,7 +254,7 @@ final class DraftStore {
     }
     @discardableResult func delete(_ id: UUID) async -> Bool {
         await enqueue {
-            guard self.all.contains(where: { $0.id == id }) else {
+            guard self.all.contains(where: { $0.id == id }) || self.mail?.discardedDraftIDs.contains(id) == true else {
                 if self.loadFailure == nil {
                     let url = self.url
                     await Task.detached { AttachmentJSON.removeUnusedPayloads(for: url, as: [ComposerDraft].self) }.value

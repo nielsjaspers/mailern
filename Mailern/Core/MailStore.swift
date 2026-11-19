@@ -547,10 +547,11 @@ final class MailStore {
             return false
         }
     }
-    /// Sends a composed draft as message `id`. A message with that ID that already went out is not sent again.
-    @discardableResult func send(_ draft: ComposerDraft, id: UUID = UUID()) -> Bool {
+    /// Immediate sends use the same durable cleanup receipt as scheduled sends.
+    @discardableResult func send(_ draft: ComposerDraft) -> Bool {
+        let id = draft.id
         if discardedDraftIDs.contains(id) || conversations.contains(where: { $0.messages.contains { $0.outgoing && $0.id == id } }) { return true }
-        return sendDraft(draft, id: id)
+        return sendUnsentOutboxDraft(draft)
     }
 
     /// Delivery checks the queued IDs together before calling this method.

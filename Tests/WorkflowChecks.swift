@@ -741,6 +741,18 @@ import os
         let writing = ComposerDraft(subject: "Still composing")
         try AttachmentJSON.save([obsolete, writing, pending], to: draftURL)
         let retryMail = MailStore(persistence: SQLitePersistence(url: mailURL))
+        var immediate = ComposerDraft(subject: "Immediate send", text: "Hello")
+        immediate.to = "casey@example.com"
+        let immediateURL = directory.appending(path: "immediate.json")
+        try AttachmentJSON.save([immediate], to: immediateURL)
+        let failedCleanup = DraftStore(url: immediateURL, mail: retryMail) { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        assert(retryMail.send(immediate))
+        let removed = await failedCleanup.delete(immediate.id)
+        assert(!removed && retryMail.discardedDraftIDs.contains(immediate.id))
+        let reopened = DraftStore(url: immediateURL, mail: retryMail)
+        assert(reopened.all.isEmpty)
+        await reopened.recoverAfterMailLoad()
+        assert(retryMail.discardedDraftIDs.isEmpty && retryMail.conversations.flatMap(\.messages).filter { $0.id == immediate.id }.count == 1)
         let current = DraftStore(url: draftURL, mail: retryMail)
         assert(current.outbox == [pending] && current.drafts == [writing])
         let persisted = try AttachmentJSON.load([ComposerDraft].self, from: draftURL)
