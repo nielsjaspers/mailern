@@ -245,7 +245,10 @@ func planMoves(c *Conversation, msgs, in []*Message, archiveIsAll bool) []move {
 	}
 	for _, m := range msgs {
 		at, ok := observedPlace(c, m, archiveIsAll)
-		if m.PendingMove == nil && c.MoveFromRemoval != "" {
+		settleInbox := c.MoveFromRemoval == "" && c.Removal == "" && c.Workflow == WorkflowSettled && !m.Outgoing && m.Locations[RoleInbox] != 0
+		if m.PendingMove == nil && settleInbox {
+			at, ok = firstLocation(m, RoleInbox)
+		} else if m.PendingMove == nil && c.MoveFromRemoval != "" {
 			if previous, found := firstLocation(m, c.MoveFromRemoval); found {
 				at, ok = previous, true
 			}
@@ -277,7 +280,7 @@ func planMoves(c *Conversation, msgs, in []*Message, archiveIsAll bool) []move {
 		}
 		// Once the target has a copy, another mailbox can still hold an independent copy.
 		// Gmail's All Mail overlaps with other mailboxes.
-		if target != at.role && !targetExists {
+		if target != at.role && (!targetExists || settleInbox) {
 			moves = append(moves, move{at, target})
 		}
 	}

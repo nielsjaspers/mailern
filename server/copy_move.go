@@ -113,12 +113,14 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 	}
 	sourceUIDs := imap.UIDSetNum(m.from.uid)
 	var pending *copyMove
+	var existingDestination imap.UID
 	var checkErr error
 	a.store.Read(func(st *State) {
 		var msg *Message
 		msg, checkErr = check(st)
 		if checkErr == nil {
 			pending = msg.PendingMove
+			existingDestination = imap.UID(msg.Locations[m.to])
 		}
 	})
 	if checkErr != nil {
@@ -177,30 +179,40 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 			UIDNext: data.UIDNext,
 			Digest:  sha256.Sum256(msgs[0].FindBodySection(section)),
 		}
+		if existingDestination != 0 && !a.archiveIsAll {
+			pending.To.UID = existingDestination
+			if _, err := pending.confirmCopy(destination, data.UIDNext); errors.Is(err, errCopyUnconfirmed) {
+				pending.To.UID = 0
+			} else if err != nil {
+				return err
+			}
+		}
 		if err := save(pending); err != nil {
 			return err
 		}
-		receipt, err := source.Copy(sourceUIDs, to.name).Wait()
-		if err != nil {
-			var status *imap.Error
-			if errors.As(err, &status) && (status.Type == imap.StatusResponseTypeNo || status.Type == imap.StatusResponseTypeBad) {
-				// A tagged rejection guarantees that COPY did not add a message.
-				return errors.Join(err, save(nil))
-			}
-			return err
-		}
-		if receipt.UIDValidity != 0 && receipt.UIDValidity != to.validity {
-			return fmt.Errorf("COPY reports changed UIDVALIDITY for %s", to.name)
-		}
-		if receipt.UIDValidity == to.validity && slices.Equal(receipt.SourceUIDs, sourceUIDs) &&
-			len(receipt.DestUIDs) == 1 && receipt.DestUIDs[0].Start == receipt.DestUIDs[0].Stop &&
-			receipt.DestUIDs[0].Start >= pending.UIDNext {
-			confirmed := *pending
-			confirmed.To.UID = receipt.DestUIDs[0].Start
-			confirmed.HasCopyUID = true
-			pending = &confirmed
-			if err := save(pending); err != nil {
+		if pending.To.UID == 0 {
+			receipt, err := source.Copy(sourceUIDs, to.name).Wait()
+			if err != nil {
+				var status *imap.Error
+				if errors.As(err, &status) && (status.Type == imap.StatusResponseTypeNo || status.Type == imap.StatusResponseTypeBad) {
+					// A tagged rejection guarantees that COPY did not add a message.
+					return errors.Join(err, save(nil))
+				}
 				return err
+			}
+			if receipt.UIDValidity != 0 && receipt.UIDValidity != to.validity {
+				return fmt.Errorf("COPY reports changed UIDVALIDITY for %s", to.name)
+			}
+			if receipt.UIDValidity == to.validity && slices.Equal(receipt.SourceUIDs, sourceUIDs) &&
+				len(receipt.DestUIDs) == 1 && receipt.DestUIDs[0].Start == receipt.DestUIDs[0].Stop &&
+				receipt.DestUIDs[0].Start >= pending.UIDNext {
+				confirmed := *pending
+				confirmed.To.UID = receipt.DestUIDs[0].Start
+				confirmed.HasCopyUID = true
+				pending = &confirmed
+				if err := save(pending); err != nil {
+					return err
+				}
 			}
 		}
 	}

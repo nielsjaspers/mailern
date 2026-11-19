@@ -324,3 +324,25 @@ func TestUIDPlusRestoreFromJunkWithTrashAndInboxCopies(t *testing.T) {
 		t.Fatal("restore should move only the Junk UID to Archive")
 	}
 }
+
+func TestSettleAfterUndoOfLostArchiveCopy(t *testing.T) {
+	h := newHarness(t)
+	copies := serveCopyMoveProvider(t, h, loseCopyResponse)
+	const subject = "Settle after Undo"
+	h.deliver("INBOX", subject, "")
+	h.sync()
+	setWorkflow := func(workflow Workflow) {
+		h.set(h.conversations()[subject], func(s *ConversationState) { s.Workflow = workflow })
+	}
+	setWorkflow(WorkflowSettled)
+	if err := h.account.Sync(); err == nil {
+		t.Fatal("expected lost Archive COPY response")
+	}
+	setWorkflow(WorkflowInbox)
+	h.sync()
+	setWorkflow(WorkflowSettled)
+	h.sync()
+	if len(h.mailbox("INBOX")) != 0 || len(h.mailbox("Archive")) != 1 || copies.Load() != 1 || h.conversations()[subject].Workflow != WorkflowSettled {
+		t.Fatal("second Settle must remove the Inbox source and reuse the verified Archive copy")
+	}
+}
