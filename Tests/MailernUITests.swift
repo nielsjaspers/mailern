@@ -169,6 +169,33 @@ final class HTMLMailUITests: MailernUITestCase {
     }
 }
 
+final class ComposeAccountUITests: MailernUITestCase {
+    @MainActor
+    func testInboxAccountOverridesDefaultSender() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Default From'")).firstMatch.tap()
+        app.buttons["morgan@mail.example.com"].tap()
+        app.buttons["Done"].tap()
+        func checkSender(_ address: String) {
+            app.buttons["Compose"].tap()
+            app.buttons["Cc/Bcc, From"].tap()
+            XCTAssertTrue(app.buttons["From, \(address)"].existsOrWait(timeout: 5))
+            app.buttons["Cancel"].tap()
+            waitForComposerDismissal(in: app)
+        }
+        checkSender("morgan@mail.example.com")
+        openFilterOptions(in: app)
+        app.buttons["filter-account-icloud"].tap()
+        app.buttons["filter-account-gmail"].tap()
+        app.buttons["Done"].tap()
+        checkSender("morgan@student.example.com")
+    }
+}
+
 final class RecipientSearchUITests: MailernUITestCase {
     @MainActor
     func testSearchRecipientsAndPreserveSelection() {

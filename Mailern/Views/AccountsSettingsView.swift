@@ -18,7 +18,7 @@ struct AccountsSettingsView: View {
                     }
                 }
             } footer: {
-                Text("New messages are sent from \(store.accounts[0].name). Accounts are stored on this iPhone. No email providers are connected.")
+                Text("Accounts are stored on this iPhone. No email providers are connected.")
             }
             Section {
                 NavigationLink("Add Account") {

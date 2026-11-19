@@ -115,10 +115,10 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
         return range
     }
 
-    /// A new draft from `accounts[0]`, or a reply or forward from the conversation's account, with that account's signature.
-    static func make(mode: ComposeMode, conversation: Conversation?, message: UUID? = nil, accounts: [MailAccount]) -> Self {
+    /// A new draft from the preferred account, or a reply or forward from the conversation's account, with that account's signature.
+    static func make(mode: ComposeMode, conversation: Conversation?, message: UUID? = nil, accounts: [MailAccount], preferredAccountID: String? = nil) -> Self {
         var draft = Self(mode: mode, messageID: message)
-        draft.accountID = conversation?.accountID ?? accounts.first?.id ?? draft.accountID
+        draft.accountID = conversation?.accountID ?? accounts.first { $0.id == preferredAccountID }?.id ?? accounts.first?.id ?? draft.accountID
         let signature = accounts.first { $0.id == draft.accountID }?.signature ?? ""
         draft.signature = signature
         draft.text = signatureBlock(signature)

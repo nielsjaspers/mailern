@@ -111,7 +111,7 @@ struct MailboxView: View {
         }
         .sheet(item: $reopened) { ComposerView(mode: $0) }
         .sheet(item: $composer) {
-            ComposerView(mode: $0).modifier(ComposerTransition(source: composerSourceID, namespace: composeTransition))
+            ComposerView(mode: $0, inboxAccountID: composeInboxAccount).modifier(ComposerTransition(source: composerSourceID, namespace: composeTransition))
         }
         .modifier(DraftStorageAlert(active: composer == nil && paths[selection, default: []].isEmpty))
         .sheet(isPresented: $settings) {
@@ -228,7 +228,7 @@ struct MailboxView: View {
                     switch route {
                     case .conversation(let id):
                         if store.conversation(id) != nil {
-                            ThreadView(id: id, next: {
+                            ThreadView(id: id, inboxAccountID: composeInboxAccount, next: {
                                 if case .sender(let sender) = paths[status]?.dropLast().last {
                                     let order = store.conversations(with: sender.address).map(\.id)
                                     return MailboxItem.conversation(after: id, in: order, available: Set(order))
@@ -599,6 +599,12 @@ struct MailboxView: View {
     private func peek(_ id: UUID, in status: Workflow, order: [UUID]) {
         openedOrder[status] = order
         peeking = id
+    }
+    private var composeInboxAccount: String? {
+        let filter = filters[.inbox]
+        guard selection == .inbox, !allMail(.inbox), filter.enabled, let ids = filter.accountIDs else { return nil }
+        let included = store.accounts.filter { ids.contains($0.id) }
+        return included.count == 1 ? included[0].id : nil
     }
     private func openComposer(_ mode: ComposeMode) {
         composer = mode

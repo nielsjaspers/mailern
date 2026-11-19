@@ -12,6 +12,8 @@ struct ComposerView: View {
     let mode: ComposeMode
     /// The message a new reply or forward quotes. Nil targets the latest message.
     var messageID: UUID?
+    var inboxAccountID: String?
+    @AppStorage("defaultComposeAccount") private var defaultAccount = ""
     @State private var draft = ComposerDraft()
     @State private var initial = ComposerDraft()
     @State private var editor = RichTextState()
@@ -324,10 +326,11 @@ struct ComposerView: View {
         } else if let replyID = mode.replyID, let existing = drafts.drafts.first(where: { $0.mode.replyID == replyID && $0.messageID == messageID }) {
             draft = existing
         } else {
-            draft = ComposerDraft.make(mode: mode, conversation: mode.sourceID.flatMap(store.conversation), message: messageID, accounts: store.accounts)
+            draft = ComposerDraft.make(mode: mode, conversation: mode.sourceID.flatMap(store.conversation), message: messageID, accounts: store.accounts, preferredAccountID: inboxAccountID ?? defaultAccount)
         }
         // A draft can outlive its account, for example after a demo reset. It sends from the default account instead.
-        if !store.accounts.contains(where: { $0.id == draft.accountID }) { draft.accountID = store.accounts[0].id }
+        let missingAccount = !store.accounts.contains { $0.id == draft.accountID }
+        if missingAccount { draft.accountID = store.accounts.first { $0.id == defaultAccount }?.id ?? store.accounts[0].id }
         let text = NSMutableAttributedString(attributedString: RichText.decode(draft.richText, fallback: draft.text))
         if !saved, draft.richText == nil, let sourceID = draft.mode.sourceID, let source = store.conversation(sourceID), text.length > 2 {
             // Retain the original formatting inside the editable reply or forward quote.
@@ -342,6 +345,7 @@ struct ComposerView: View {
         editor.text = text
         editor.selection = NSRange(location: 0, length: 0)
         editor.typing = [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
+        if missingAccount { replaceSignature(with: account.signature) }
         initial = draft
         loaded = true
         if draft.to.isEmpty { focus = .to }

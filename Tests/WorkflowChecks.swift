@@ -1254,7 +1254,15 @@ import os
         let disk = SQLitePersistence(url: dir.appending(path: "mail.sqlite"))
         let store = MailStore(persistence: disk)
         let source = store.list(.inbox).first { $0.subject == "Course project feedback" }!
-        let reply = ComposerDraft.make(mode: .replyAll(source.id), conversation: source, accounts: MailAccount.demo)
+        var accounts = store.accounts
+        accounts[2].signature = "Preferred sender"
+        let preferred = accounts[2]
+        let fresh = ComposerDraft.make(mode: .new, conversation: nil, accounts: accounts, preferredAccountID: preferred.id)
+        assert(fresh.accountID == preferred.id && fresh.text == ComposerDraft.signatureBlock(preferred.signature))
+        let fallback = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts, preferredAccountID: "deleted")
+        assert(fallback.accountID == store.accounts[0].id)
+        let reply = ComposerDraft.make(mode: .replyAll(source.id), conversation: source, accounts: MailAccount.demo, preferredAccountID: preferred.id)
+        assert(reply.accountID == source.accountID)
         assert(reply.to == source.correspondent.address)
         assert(ComposerDraft.addresses(reply.cc) == ["coordinator@college.example.com"])
         assert(reply.subject == "Re: \(source.subject)" && reply.text.contains(source.latest.body))

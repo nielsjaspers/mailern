@@ -32,6 +32,8 @@ enum AfterSettle: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(MailStore.self) private var store
+    @AppStorage("defaultComposeAccount") private var defaultAccount = ""
     @Binding var pullAction: InboxPullAction
     @AppStorage(UndoSend.key) private var undoDelay = UndoSend.defaultDelay
     @AppStorage(AfterSettle.key) private var afterSettle = AfterSettle.returnToList
@@ -48,6 +50,11 @@ struct SettingsView: View {
                 NavigationLink("Blocked Senders") { BlockedSendersView() }
                 NavigationLink("Snooze settings") { SnoozeSettingsView() }
                 NavigationLink("Swipe actions") { SwipeSettingsView() }
+                Picker("Default From", selection: Binding(get: {
+                    store.accounts.first { $0.id == defaultAccount }?.id ?? store.accounts.first?.id ?? ""
+                }, set: { defaultAccount = $0 })) {
+                    ForEach(store.accounts) { Text($0.address).tag($0.id) }
+                }
                 Picker("Undo send", selection: $undoDelay) {
                     ForEach(UndoSend.choices, id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
                 }
