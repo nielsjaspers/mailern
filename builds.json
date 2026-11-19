@@ -323,8 +323,10 @@
       "source_digest": "956f2b28d82969fdc6d2407a02de0927ec25caa2d302f4a27004fda5d744b3a2",
       "build": 59,
       "version": "0.7.0",
-      "status": "reserved",
-      "created_at": "2026-11-19T01:55:21+00:00"
+      "status": "failed",
+      "created_at": "2026-11-19T01:55:21+00:00",
+      "repository": "nielsjaspers/mailern",
+      "finished_at": "2026-11-19T01:55:41+00:00"
     }
   ]
 }
