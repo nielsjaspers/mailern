@@ -407,14 +407,15 @@ func (a *Account) submit(req SendRequest, raw []byte) error {
 	if err != nil {
 		return submissionError(err)
 	}
+	// Until DATA closes, the server has no terminator and cannot accept the mail, so a failure here is not a send.
 	if _, err := data.Write(raw); err != nil {
-		return err
+		return notSubmitted{err}
 	}
-	// DATA close sends the terminator that allows the server to accept the mail.
 	key := a.messageID(req)
 	if err := a.markSubmitting(key, &submission{MessageID: strings.ToLower(req.ID), ConversationID: req.ConversationID, From: cmp.Or(req.From, a.cfg.Address)}); err != nil {
-		return errors.Join(err, a.markSubmitting(key, nil))
+		return notSubmitted{errors.Join(err, a.markSubmitting(key, nil))}
 	}
+	// DATA close sends the terminator that allows the server to accept the mail.
 	if err := data.Close(); err != nil {
 		var rejection *smtp.SMTPError
 		if errors.As(err, &rejection) && rejection.Code >= 400 && rejection.Code < 600 {

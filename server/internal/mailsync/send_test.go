@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -413,5 +414,29 @@ func TestAcceptedMailFilesAfterReceiptWriteRecovers(t *testing.T) {
 	h.sync()
 	if _, ok := h.mailbox("Sent")[req.Subject]; !ok || len(h.lab.Submitted()) != 1 {
 		t.Fatal("retry must file the accepted message without a second SMTP delivery")
+	}
+}
+
+func TestUnsavedSubmissionRecordIsConfirmedUnsent(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	dir := filepath.Dir(h.account.store.path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	req := SendRequest{ID: uuid.NewString(), ConversationID: uuid.NewString(), AccountID: "lab", To: []string{"sam@example.com"}}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := h.http.Client().Post(h.http.URL+"/v1/send", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 503 || resp.Header.Get("Mailern-Submission") != "not-accepted" || len(h.lab.Submitted()) != 0 {
+		t.Fatalf("a send whose record could not be saved never reached the provider, got %d %q",
+			resp.StatusCode, resp.Header.Get("Mailern-Submission"))
 	}
 }
