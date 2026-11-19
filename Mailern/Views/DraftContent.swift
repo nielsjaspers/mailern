@@ -114,6 +114,8 @@ struct DraftThreadView: View {
         .sheet(item: $mode, onDismiss: {
             if !drafts.drafts.contains(where: { $0.id == id }) { dismiss() }
         }) { ComposerView(mode: $0) }
+        // The dock can resume this draft in another sheet, so leave when it is deleted or sent there too.
+        .onChange(of: drafts.drafts.contains { $0.id == id }) { _, exists in if !exists && mode == nil { dismiss() } }
     }
 }
 
@@ -138,8 +140,6 @@ struct DraftDock: View {
     @Environment(DraftStore.self) private var drafts
     /// Search raises the keyboard, so the dock steps aside instead of riding above it.
     var searching: Bool
-    /// A composer opening over a minimized draft hides it, so the rising sheet does not show a second header.
-    var composing: Bool
     let open: (UUID) -> Void
     @GestureState private var lift: CGFloat = 0
     private static let radius: CGFloat = 30
@@ -171,14 +171,13 @@ struct DraftDock: View {
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .disabled(!docked.minimized)
             .offset(y: lift)
             // The sheet follows an upward drag, then opens.
             .simultaneousGesture(DragGesture(minimumDistance: 10)
                 .updating($lift) { value, lift, _ in lift = min(0, value.translation.height) * 0.5 }
-                .onEnded { value in if docked.minimized, value.predictedEndTranslation.height < -40 { open(draft.id) } })
-            .opacity(composing && docked.minimized ? 0 : 1)
-            .animation(.easeOut(duration: 0.15), value: composing)
+                .onEnded { value in if value.predictedEndTranslation.height < -40 { open(draft.id) } })
+            .opacity(drafts.sheetOverDock ? 0 : 1)
+            .animation(drafts.sheetOverDock ? nil : .easeOut(duration: 0.15), value: drafts.sheetOverDock)
             .accessibilityLabel("Resume draft, \(draft.title)")
         }
     }

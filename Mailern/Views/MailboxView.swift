@@ -195,8 +195,9 @@ struct MailboxView: View {
             path: Binding(get: { paths[status, default: []] }, set: { paths[status] = $0 })
         ) {
             mailboxViewport(status)
-                .safeAreaInset(edge: .bottom, spacing: 0) { dock }
+                // The Undo banner sits above the dock, so the dock stays put while it shows.
                 .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner() }
+                .safeAreaInset(edge: .bottom, spacing: 0) { dock(searching: searching) }
                 .navigationTitle(status.title)
                 .searchable(text: $searchInput.text, isPresented: Binding(
                     get: { searching && selection == status },
@@ -246,12 +247,13 @@ struct MailboxView: View {
                         case .scheduled: ScheduledMailboxView()
                         case .scheduledMessage(let id): ScheduledMessageView(id: id)
                         }
-                    }.safeAreaInset(edge: .bottom, spacing: 0) { dock }
+                    // Search stays active under a pushed page, but its keyboard does not.
+                    }.safeAreaInset(edge: .bottom, spacing: 0) { dock(searching: false) }
                 }
         }
     }
-    private var dock: some View {
-        DraftDock(searching: searching, composing: composer != nil) { composer = .draft($0) }
+    private func dock(searching: Bool) -> some View {
+        DraftDock(searching: searching) { composer = .draft($0) }
     }
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {

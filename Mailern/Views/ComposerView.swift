@@ -25,8 +25,9 @@ struct ComposerView: View {
     @State private var subjectFocused = false
     @State private var expanded = false
     @GestureState private var draggingContent = false
-    /// The sheet's highest top edge, to tell when a pull moves it down.
+    /// The sheet's highest top edge at its current size, to tell when a pull moves it down.
     @State private var restingTop = CGFloat.infinity
+    @State private var sheetWidth: CGFloat = 0
     @State private var filePicker = false
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
@@ -174,9 +175,14 @@ struct ComposerView: View {
         .tint(.blue)
         // Put the keyboard away as soon as a pull moves the sheet, so it does not stay up over the mailbox after the
         // sheet has gone.
-        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { top in
-            restingTop = min(restingTop, top)
-            if top - restingTop > 24 { editor.view?.window?.endEditing(true) }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+            // A rotation moves the resting top edge. The height also changes during a pull, so only the width counts.
+            if frame.width != sheetWidth { sheetWidth = frame.width; restingTop = frame.minY }
+            restingTop = min(restingTop, frame.minY)
+            if frame.minY - restingTop > 24 {
+                editor.view?.window?.endEditing(true)
+                drafts.sheetOverDock = false
+            }
         }
         .writingToolsBehavior(.disabled)
         .presentationDetents([.large])
@@ -184,7 +190,10 @@ struct ComposerView: View {
         // Pulling the sheet down minimizes the draft once its edits are saved.
         .interactiveDismissDisabled(draggingContent || importing || finishing || dirty)
         .presentationBackground(Color(uiColor: .systemBackground))
-        .onAppear(perform: load)
+        .onAppear {
+            drafts.sheetOverDock = true
+            load()
+        }
         .onChange(of: draft.accountID) { _, id in if loaded { replaceSignature(with: store.account(id).signature) } }
         .onChange(of: input) { _, value in
             autosave?.cancel()
@@ -199,6 +208,7 @@ struct ComposerView: View {
         .onChange(of: draft) { _, value in if drafts.docked?.draft.id == value.id { drafts.docked?.draft = value } }
         .onChange(of: completed) { _, done in if done, drafts.docked?.draft.id == draft.id { drafts.docked = nil } }
         .onDisappear {
+            drafts.sheetOverDock = false
             autosave?.cancel()
             if !completed { minimize() }
         }
@@ -371,7 +381,8 @@ struct ComposerView: View {
         } ?? []
         let selection = selections.first ?? NSRange(location: 0, length: 0)
         editor.selection = selection
-        editor.typing = resume?.typing ?? [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
+        let typing = resume?.typing ?? [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
+        editor.typing = typing
         if missingAccount { replaceSignature(with: account.signature) }
         initial = draft
         // An unsaved message leaves the dock to the minimized draft until it is saved.
@@ -384,7 +395,7 @@ struct ComposerView: View {
                 view.becomeFirstResponder()
                 if #available(iOS 26, *), !selections.isEmpty { view.selectedRanges = selections }
                 else { view.selectedRange = selection }
-                view.typingAttributes = resume?.typing ?? [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
+                view.typingAttributes = typing
             }
         }
     }
@@ -411,7 +422,11 @@ struct ComposerView: View {
     }
     /// Puts the saved draft in the dock after the sheet is pulled down or Minimize draft closes it.
     private func minimize() {
-        guard loaded, !finishing, saved else { drafts.docked = nil; return }
+        guard loaded, !finishing, saved else {
+            // An untouched message leaves any other minimized draft in the dock.
+            if drafts.docked?.draft.id == draft.id { drafts.docked = nil }
+            return
+        }
         let selections: [NSRange]
         if #available(iOS 26, *), let view = editor.view { selections = view.selectedRanges }
         else { selections = [editor.view?.selectedRange ?? editor.selection] }

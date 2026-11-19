@@ -380,14 +380,42 @@ final class MinimizedDraftUITests: MailernUITestCase {
         row("Dinner on Saturday?", in: app).tap()
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera")).firstMatch.tap()
         let body = app.textViews["Message body"]
-        body.typeText("!")
+        body.typeText("Kept after failure ")
         // Autosave fails too. Dismiss its alert, then minimize.
         XCTAssertTrue(app.alerts["Composer"].waitForExistence(timeout: 5))
         app.alerts.buttons["OK"].tap()
         app.buttons["Minimize draft"].tap()
         XCTAssertTrue(app.alerts["Composer"].waitForExistence(timeout: 5))
         app.alerts.buttons["OK"].tap()
-        XCTAssertTrue((body.value as? String ?? "").contains("Bring something to drink"))
+        XCTAssertTrue((body.value as? String ?? "").contains("Kept after failure"))
+    }
+    @MainActor
+    func testDeleteFromDockLeavesTheDraftReader() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        let body = app.textViews["Message body"]
+        body.tap()
+        body.typeText("Reader check")
+        app.buttons["Minimize draft"].tap()
+        let dock = app.buttons["Resume draft, New Message"]
+        XCTAssertTrue(dock.waitForExistence(timeout: 5))
+        // Pulling down an untouched message keeps the minimized draft in the dock.
+        app.buttons["Compose"].tap()
+        let handle = app.navigationBars["New Message"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+        handle.press(forDuration: 0.1, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 450)))
+        waitForAbsence(app.buttons["Send"])
+        XCTAssertTrue(dock.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        row("Reader check", in: app).tap()
+        XCTAssertTrue(app.buttons["Edit draft"].waitForExistence(timeout: 5))
+        dock.tap()
+        app.buttons["Cancel"].tap()
+        app.buttons["Delete Draft"].tap()
+        waitForAbsence(body)
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Draft unavailable"].exists)
+        XCTAssertFalse(dock.exists)
     }
     @MainActor
     func testPullDownAndResumeBodyCursor() {

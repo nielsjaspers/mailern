@@ -183,6 +183,9 @@ final class DraftStore {
         var minimized = false
     }
     var docked: Docked?
+    /// True while a composer sheet covers the dock. The dock hides then, so a rising sheet does not show a second
+    /// header, and shows again as soon as a pull moves the sheet down.
+    var sheetOverDock = false
     var error: String?
     /// Counts Pin, Snooze, Restore, Settle, and Discard on standalone drafts, like `MailStore.actionCount`.
     private(set) var actionCount = 0
