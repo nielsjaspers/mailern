@@ -1,4 +1,5 @@
 import SwiftUI
+import ContactsUI
 import PhotosUI
 import UniformTypeIdentifiers
 
@@ -26,6 +27,7 @@ struct ComposerView: View {
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
     @State private var contacts = false
+    @State private var systemContacts = false
     @State private var recipientSearch = ""
     @State private var importsInFlight = 0
     @State private var error: String?
@@ -273,8 +275,7 @@ struct ComposerView: View {
             List {
                 ForEach(matches, id: \.address) { person in
                     Button {
-                        draft.to += draft.to.trimmingCharacters(in: .whitespaces).isEmpty ? person.address : ", \(person.address)"
-                        contacts = false
+                        addRecipient(person.address)
                     } label: {
                         VStack(alignment: .leading) { Text(person.name); Text(person.address).font(.caption).foregroundStyle(.secondary) }
                     }.foregroundStyle(.primary)
@@ -290,8 +291,22 @@ struct ComposerView: View {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .navigationTitle("Recipients").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { contacts = false } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { contacts = false } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Contacts", systemImage: "person.crop.circle") { systemContacts = true }
+                }
+            }
+            .background {
+                SystemEmailPicker(isPresented: $systemContacts) { address in
+                    if let address { addRecipient(address) }
+                }
+            }
         }
+    }
+    private func addRecipient(_ address: String) {
+        draft.to += draft.to.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? address : ", \(address)"
+        contacts = false
     }
     private var recipients: [(name: String, address: String)] {
         var seen = Set(store.accounts.map(\.address))
@@ -496,6 +511,45 @@ private struct ComposerSubjectField: UIViewRepresentable {
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
             textField.resignFirstResponder()
             return true
+        }
+    }
+}
+
+private struct SystemEmailPicker: UIViewControllerRepresentable {
+    @Binding var isPresented: Bool
+    let finish: (String?) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIViewController(context: Context) -> UIViewController { UIViewController() }
+
+    func updateUIViewController(_ host: UIViewController, context: Context) {
+        guard isPresented, host.presentedViewController == nil, !context.coordinator.presenting else { return }
+        let picker = CNContactPickerViewController()
+        context.coordinator.presenting = true
+        context.coordinator.finish = { address in
+            isPresented = false
+            context.coordinator.presenting = false
+            finish(address)
+        }
+        picker.delegate = context.coordinator
+        picker.displayedPropertyKeys = [CNContactEmailAddressesKey]
+        picker.predicateForEnablingContact = NSPredicate(format: "emailAddresses.@count > 0")
+        picker.predicateForSelectionOfContact = NSPredicate(value: false)
+        picker.predicateForSelectionOfProperty = NSPredicate(format: "key == %@", CNContactEmailAddressesKey)
+        host.present(picker, animated: true)
+    }
+
+    final class Coordinator: NSObject, CNContactPickerDelegate {
+        var presenting = false
+        var finish: ((String?) -> Void)?
+        private func complete(_ address: String?) {
+            let callback = finish
+            finish = nil
+            callback?(address)
+        }
+        func contactPickerDidCancel(_ picker: CNContactPickerViewController) { complete(nil) }
+        func contactPicker(_ picker: CNContactPickerViewController, didSelect property: CNContactProperty) {
+            complete(property.value as? String)
         }
     }
 }
