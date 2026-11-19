@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -184,6 +186,35 @@ func TestMutedInboxReplyStaysRead(t *testing.T) {
 	}
 }
 
+func markSeen(t *testing.T, h *harness, mailbox, subject string, flag imap.Flag) {
+	t.Helper()
+	c, err := imapclient.DialInsecure(h.lab.IMAP.Address(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Login(labAddress, "lab").Wait()
+	c.Select(mailbox, nil).Wait()
+	found, _ := c.UIDSearch(&imap.SearchCriteria{Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: subject}}}, nil).Wait()
+	c.Store(imap.UIDSetNum(found.AllUIDs()...), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{flag}}, nil).Close()
+}
+
+func TestMutedReplyKeepsReadsFromOtherClients(t *testing.T) {
+	h := newHarness(t)
+	root := h.deliver("INBOX", "Dinner", "")
+	h.sync()
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Muted = true })
+	h.sync()
+	// A reply arrives, and another client reads the whole thread before Mailern's next poll.
+	h.deliver("INBOX", "Re: Dinner", root)
+	markSeen(t, h, "INBOX", "Dinner", imap.FlagSeen)
+	h.sync()
+	h.sync()
+	if inbox := h.mailbox("INBOX"); !slices.Contains(inbox["Dinner"], imap.FlagSeen) || !slices.Contains(inbox["Re: Dinner"], imap.FlagSeen) {
+		t.Fatalf("Mailern must not undo reads made in another client: %v", inbox)
+	}
+}
+
 func TestReplyDatedBeforeItsParentJoinsTheThread(t *testing.T) {
 	h := newHarness(t)
 	now := time.Now()
@@ -197,5 +228,35 @@ func TestReplyDatedBeforeItsParentJoinsTheThread(t *testing.T) {
 	h.sync()
 	if c := h.conversations()["Plans"]; len(c.Messages) != 2 {
 		t.Fatalf("a reply with an earlier date should join its parent, got %d messages", len(c.Messages))
+	}
+}
+
+func TestDeletedUnreadReplyDoesNotMakeThreadUnread(t *testing.T) {
+	h := newHarness(t)
+	root := h.deliver("INBOX", "Dinner", "")
+	h.sync()
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Unread = false })
+	h.sync()
+	h.deliver("INBOX", "Re: Dinner", root, imap.FlagDeleted)
+	h.sync()
+	h.sync()
+	if c := h.conversations()["Dinner"]; c.Unread {
+		t.Fatal("a reply another client marked deleted must not make the thread unread")
+	}
+}
+
+func TestDeletedFlagChangeReachesIncrementalSync(t *testing.T) {
+	h := newHarness(t)
+	root := h.deliver("INBOX", "Dinner", "")
+	h.deliver("INBOX", "Re: Dinner", root)
+	h.sync()
+	var before syncResponse
+	h.request("GET", "/v1/sync?since=0", nil, &before)
+	markSeen(t, h, "INBOX", "Re: Dinner", imap.FlagDeleted)
+	h.sync()
+	var after syncResponse
+	h.request("GET", fmt.Sprintf("/v1/sync?since=%d", before.Revision), nil, &after)
+	if len(after.Conversations) != 1 {
+		t.Fatalf("a change to the deleted flag should reach incremental sync, got %d conversations", len(after.Conversations))
 	}
 }

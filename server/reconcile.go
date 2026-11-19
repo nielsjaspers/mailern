@@ -180,7 +180,7 @@ func adopt(c *Conversation, msgs []*Message, archiveIsAll bool) bool {
 		}
 	}
 	// Mailern shows settled conversations as read, whatever their messages say.
-	c.Unread = c.Workflow != WorkflowSettled && slices.ContainsFunc(in, func(m *Message) bool { return !m.Seen })
+	c.Unread = c.Workflow != WorkflowSettled && slices.ContainsFunc(in, func(m *Message) bool { return !m.Seen && !m.Deleted })
 	c.Pinned = slices.ContainsFunc(msgs, func(m *Message) bool { return m.Flagged })
 	return c.Workflow != before.Workflow || c.Removal != before.Removal || c.Unread != before.Unread ||
 		c.Pinned != before.Pinned || !sameTime(c.SnoozedUntil, before.SnoozedUntil)
@@ -215,7 +215,7 @@ func planForMailboxes(c *Conversation, msgs []*Message, archiveIsAll bool) plan 
 		}
 	}
 	if c.PendingRead {
-		placed := slices.DeleteFunc(in, func(m *Message) bool { return len(m.Locations) == 0 })
+		placed := slices.DeleteFunc(in, func(m *Message) bool { return len(m.Locations) == 0 || m.Deleted })
 		if c.Unread {
 			if len(placed) > 0 && !slices.ContainsFunc(placed, func(m *Message) bool { return !m.Seen }) {
 				p.flags = appendFlag(p.flags, archiveIsAll, c, placed[len(placed)-1], imap.FlagSeen, false)

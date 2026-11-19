@@ -658,7 +658,10 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 			m.Seen, m.Flagged = seen, flagged
 			changed[m.ConversationID] = true
 		}
-		m.Deleted = slices.Contains(flags, imap.FlagDeleted)
+		if deleted := slices.Contains(flags, imap.FlagDeleted); m.Deleted != deleted {
+			m.Deleted = deleted
+			changed[m.ConversationID] = true
+		}
 	}
 	slices.SortStableFunc(fresh, func(x, y *parsedArrival) int { return x.Date.Compare(y.Date) })
 	// A reply can sort before its parent, for example when the sender's clock is behind. Threading the parent
@@ -733,7 +736,11 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 			}
 			// A reply joins a muted thread without moving it or making it unread, so it is filed and marked read.
 			if arrived[key] && c.Muted {
-				c.Pending, c.PendingPlacement, c.PendingRead = true, true, true
+				c.Pending, c.PendingPlacement = true, true
+				// Only a read thread files the reply as read. An unread one keeps the flags other clients set.
+				if !c.Unread {
+					c.PendingRead = true
+				}
 			}
 		}
 		st.Touch(c)
