@@ -427,6 +427,9 @@ final class DraftStore {
             guard !queued.isEmpty else { return true }
             var failure: String?
             let errorBefore = store.error
+            // Only sends that stay queued retry. A refused one is back in Drafts and is always reported.
+            var retrying = false
+            var refused: String?
             var updated: [ComposerDraft] = []
             for var draft in self.all {
                 guard queued.contains(draft.id) else {
@@ -438,10 +441,12 @@ final class DraftStore {
                     continue
                 case .waitingToFile:
                     failure = store.error ?? "Mailern is still finishing this send."
+                    retrying = true
                 case .refused:
                     draft.sendAt = nil
                     draft.holdingForUndo = nil
-                    failure = "“\(draft.title)” could not be sent and is back in Drafts. \(store.error ?? "")"
+                    refused = "“\(draft.title)” could not be sent and is back in Drafts. \(store.error ?? "")"
+                    failure = refused
                 }
                 updated.append(draft)
             }
@@ -458,16 +463,18 @@ final class DraftStore {
             }
             if automatic {
                 // An outage would fail every second. Wait a minute between tries and say it once.
-                self.automaticRetryAfter = failure == nil ? nil : .now.addingTimeInterval(60)
+                self.automaticRetryAfter = retrying ? .now.addingTimeInterval(60) : nil
                 // A repeat failure clears only its own message, so an error from sync during the send stays.
-                if let failure {
+                if let refused {
+                    store.error = refused
+                } else if let failure {
                     if !self.automaticFailureReported {
                         store.error = failure
                     } else if store.error == failure {
                         store.error = errorBefore
                     }
                 }
-                self.automaticFailureReported = failure != nil
+                self.automaticFailureReported = retrying
             } else if let failure {
                 store.error = failure
             }
