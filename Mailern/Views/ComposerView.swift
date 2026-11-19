@@ -152,7 +152,8 @@ struct ComposerView: View {
                 subjectFocused = false
                 editor.view?.window?.endEditing(true)
             })
-            .background(ComposerPanel.background)
+            // The keyboard's rounded corners show the composer underneath.
+            .background { ComposerPanel.background.ignoresSafeArea() }
             .navigationTitle(draft.title).navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importing || finishing) }
