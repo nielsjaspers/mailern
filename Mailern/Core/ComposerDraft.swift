@@ -459,8 +459,13 @@ final class DraftStore {
             if automatic {
                 // An outage would fail every second. Wait a minute between tries and say it once.
                 self.automaticRetryAfter = failure == nil ? nil : .now.addingTimeInterval(60)
+                // A repeat failure clears only its own message, so an error from sync during the send stays.
                 if let failure {
-                    store.error = self.automaticFailureReported ? errorBefore : failure
+                    if !self.automaticFailureReported {
+                        store.error = failure
+                    } else if store.error == failure {
+                        store.error = errorBefore
+                    }
                 }
                 self.automaticFailureReported = failure != nil
             } else if let failure {
