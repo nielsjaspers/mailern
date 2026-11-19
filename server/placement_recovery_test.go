@@ -242,3 +242,34 @@ func TestSentHeaderSearchRefusalAllowsInboxSync(t *testing.T) {
 		t.Fatal("expected Inbox, cached Sent, and archived mail after the refused recovery search")
 	}
 }
+
+func TestRetargetFlagsOnlyTheJunkCopy(t *testing.T) {
+	for _, fault := range []int32{loseCopyResponse, loseDeletedStoreResponse} {
+		h := newHarness(t)
+		serveCopyMoveProvider(t, h, fault)
+		const subject = "Interrupted restore"
+		raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
+		if err := h.lab.Deliver(labAddress, "Trash", raw); err != nil {
+			t.Fatal(err)
+		}
+		h.sync()
+		h.set(h.conversations()[subject], func(s *ConversationState) { s.Removal = "" })
+		if err := h.account.Sync(); err == nil {
+			t.Fatal("expected interrupted restore")
+		}
+		if err := h.lab.Deliver(labAddress, "Junk", raw); err != nil {
+			t.Fatal(err)
+		}
+		thread := h.conversations()[subject]
+		update := ConversationState{Workflow: thread.Workflow, Removal: RoleJunk, Pinned: true, Fields: []string{"removal", "unread", "pinned"}}
+		if code := h.request("PUT", "/v1/conversations/"+thread.ID, update, nil); code != 200 {
+			t.Fatalf("retarget returned %d", code)
+		}
+		h.sync()
+		for _, flag := range []imap.Flag{imap.FlagSeen, imap.FlagFlagged} {
+			if !slices.Contains(h.mailbox("Junk")[subject], flag) || slices.Contains(h.mailbox("Trash")[subject], flag) {
+				t.Fatalf("flag %s: Trash %v Junk %v conversation %+v", flag, h.mailbox("Trash"), h.mailbox("Junk"), h.conversations()[subject])
+			}
+		}
+	}
+}

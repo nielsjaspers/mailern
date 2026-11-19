@@ -76,6 +76,7 @@ type Conversation struct {
 	PendingRead          bool       `json:"pendingRead,omitempty"`
 	PendingPin           bool       `json:"pendingPin,omitempty"`
 	PendingPlacement     bool       `json:"pendingPlacement,omitempty"`
+	MoveFromRemoval      Role       `json:"moveFromRemoval,omitempty"`
 	DeleteKeys           []string   `json:"deleteKeys,omitempty"`
 	// Set by a permanent delete. The service moves the thread to Trash, expunges it, and then forgets it.
 	Deleting bool   `json:"deleting,omitempty"`

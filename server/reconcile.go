@@ -109,6 +109,7 @@ func (a *Account) reconcile(st *State) []plan {
 			st.removeConversation(c.ID)
 			continue
 		}
+		c.MoveFromRemoval = ""
 		c.Pending, c.PendingPlacement, c.PendingRead, c.PendingPin = false, false, false, false
 		adopt(c, msgs, a.archiveIsAll)
 		st.Touch(c)
@@ -117,6 +118,7 @@ func (a *Account) reconcile(st *State) []plan {
 }
 
 func cancelDelete(c *Conversation) {
+	c.MoveFromRemoval = ""
 	c.Deleting, c.Pending = false, false
 	c.PendingPlacement, c.PendingRead, c.PendingPin = false, false, false
 	c.DeleteKeys = nil
@@ -195,6 +197,10 @@ func planForMailboxes(c *Conversation, msgs []*Message, archiveIsAll bool) plan 
 	in := incoming(msgs)
 	if c.PendingPlacement {
 		p.moves = planMoves(c, msgs, in, archiveIsAll)
+		if len(p.moves) != 0 {
+			// Re-read the destination before deciding which copy needs flag changes.
+			return p
+		}
 	}
 	if c.PendingRead {
 		placed := slices.DeleteFunc(in, func(m *Message) bool { return len(m.Locations) == 0 })
@@ -236,7 +242,12 @@ func planMoves(c *Conversation, msgs, in []*Message, archiveIsAll bool) []move {
 		}
 	}
 	for _, m := range msgs {
-		at, ok := placeOf(m)
+		at, ok := observedPlace(c, m, archiveIsAll)
+		if m.PendingMove == nil && c.MoveFromRemoval != "" {
+			if previous, found := firstLocation(m, c.MoveFromRemoval); found {
+				at, ok = previous, true
+			}
+		}
 		if !ok {
 			continue
 		}

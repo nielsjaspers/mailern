@@ -239,6 +239,7 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 		if c == nil || c.Deleting || c.AccountID != account.cfg.ID {
 			return errNotFound
 		}
+		previousRemoval, wasMoving := c.Removal, c.PendingPlacement
 		if slices.Contains(state.Fields, "workflow") && (c.Workflow != state.Workflow || !sameTime(c.SnoozedUntil, state.SnoozedUntil)) {
 			c.PendingPlacement = true
 			c.Workflow, c.SnoozedUntil, c.ReturnedFromSnoozeAt = state.Workflow, state.SnoozedUntil, nil
@@ -253,6 +254,9 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 				now := time.Now()
 				c.TrashSince = &now
 			}
+		}
+		if c.PendingPlacement && !wasMoving {
+			c.MoveFromRemoval = previousRemoval
 		}
 		if slices.Contains(state.Fields, "unread") {
 			c.Unread, c.PendingRead = state.Unread && c.Workflow != WorkflowSettled, true
