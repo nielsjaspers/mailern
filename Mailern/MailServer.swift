@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 /// Talks to mailern-server over HTTPS on the tailnet, or plain HTTP on this machine during development.
-struct MailServerClient {
+struct MailServerClient: RemoteMailboxClient {
     let base: URL
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.default
@@ -40,9 +40,13 @@ struct MailServerClient {
         return try RemoteJSON.decoder.decode(RemoteSync.self, from: data)
     }
 
-    func setState(_ id: UUID, _ state: RemoteState) async throws -> RemoteConversation {
-        let data = try await send("PUT", "v1/conversations/\(id.uuidString.lowercased())", body: RemoteJSON.encoder.encode(state))
-        return try RemoteJSON.decoder.decode(RemoteConversation.self, from: data)
+    func setState(_ id: UUID, _ state: RemoteState) async throws -> RemoteConversation? {
+        do {
+            let data = try await send("PUT", "v1/conversations/\(id.uuidString.lowercased())", body: RemoteJSON.encoder.encode(state))
+            return try RemoteJSON.decoder.decode(RemoteConversation.self, from: data)
+        } catch let failure as Failure where failure.status == 404 {
+            return nil
+        }
     }
 
     func delete(_ id: UUID) async throws {
@@ -73,101 +77,21 @@ struct MailServerClient {
     }
 }
 
-/// Keeps a server mailbox in step with mailern-server while the app is open: it waits for changes, merges them into
-/// the store, and sends conversations the phone changed.
-@MainActor @Observable
-final class ServerSync {
-    let client: MailServerClient
-    @ObservationIgnored private let store: MailStore
-    @ObservationIgnored private let defaults: UserDefaults
-    private(set) var problem: String?
-    private(set) var lastSync: Date?
-    @ObservationIgnored private var inFlight = Set<UUID>()
-    /// Server conversations in Trash or Junk, so a permanent delete on the phone also deletes them on the server.
-    @ObservationIgnored private var removed = Set<UUID>()
-    private static let revisionKey = "mailServerRevision"
-
-    init(url: URL, store: MailStore, defaults: UserDefaults) {
-        client = MailServerClient(base: url)
-        self.store = store
-        self.defaults = defaults
-        store.sendRemote = { [client, store] draft in try await client.send(Self.outgoing(draft, store: store)) }
-        store.loadRemoteHTML = { [client] id in try await client.html(id) }
-        noteRemoved()
+extension ServerSync {
+    convenience init(url: URL, store: MailStore) {
+        let client = MailServerClient(base: url)
+        self.init(client: client, store: store)
+        store.sendRemote = { prepared in try await client.send(Self.outgoing(prepared)) }
+        store.loadRemoteHTML = { id in try await client.html(id) }
     }
 
-    private var revision: UInt64 {
-        get { store.conversations.isEmpty ? 0 : UInt64(defaults.string(forKey: Self.revisionKey) ?? "") ?? 0 }
-        set { defaults.set(String(newValue), forKey: Self.revisionKey) }
-    }
-
-    /// Runs until cancelled. The first request returns at once; later ones wait up to 25 seconds for a change.
-    func run() async {
-        var wait = 0
-        while !Task.isCancelled {
-            do {
-                let changes = try await client.sync(since: revision, wait: wait)
-                try Task.checkCancellation()
-                store.mergeRemote(changes)
-                if !store.needsReload { revision = changes.revision }
-                noteRemoved()
-                problem = nil
-                lastSync = .now
-                wait = 25
-                await push()
-            } catch is CancellationError {
-                return
-            } catch let error as URLError where error.code == .cancelled {
-                return
-            } catch {
-                problem = error.localizedDescription
-                wait = 0
-                try? await Task.sleep(for: .seconds(5))
-            }
-        }
-    }
-
-    /// Sends every conversation with unconfirmed changes, and deletes the ones the phone deleted for good.
-    func push() async {
-        let present = Set(store.conversations.map(\.id))
-        for id in removed.subtracting(present).subtracting(inFlight) {
-            inFlight.insert(id)
-            defer { inFlight.remove(id) }
-            do {
-                try await client.delete(id)
-                removed.remove(id)
-            } catch { problem = error.localizedDescription }
-        }
-        for conversation in store.conversations where conversation.hasUnsyncedChanges && !inFlight.contains(conversation.id) {
-            let id = conversation.id
-            let state = conversation.remoteState
-            inFlight.insert(id)
-            defer { inFlight.remove(id) }
-            do {
-                let confirmed = try await client.setState(id, state)
-                store.mergeRemote(RemoteSync(revision: 0, reset: false, accounts: [], conversations: [confirmed], deleted: []))
-                noteRemoved()
-            } catch let failure as MailServerClient.Failure where failure.status == 404 {
-                // The server no longer has it. The next full sync settles which side is right.
-                revision = 0
-            } catch {
-                problem = error.localizedDescription
-            }
-        }
-    }
-
-    private func noteRemoved() {
-        removed.formUnion(store.conversations.filter { $0.removal != nil && $0.synced?.removal != nil }.map(\.id))
-        removed.subtract(store.conversations.filter { $0.removal == nil }.map(\.id))
-    }
-
-    private static func outgoing(_ draft: ComposerDraft, store: MailStore) -> MailServerClient.Outgoing {
-        let thread = draft.mode.replyID.flatMap(store.conversation)
-        let target = thread?.message(draft.answering ?? draft.messageID)
+    private static func outgoing(_ prepared: PreparedRemoteSend) -> MailServerClient.Outgoing {
+        let draft = prepared.draft
+        let target = prepared.replyTo
         return .init(
             id: draft.id.uuidString.lowercased(),
-            conversationID: (thread?.id ?? draft.id).uuidString.lowercased(),
-            accountID: draft.accountID,
+            conversationID: prepared.conversationID.uuidString.lowercased(),
+            accountID: prepared.from.id,
             to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc), bcc: ComposerDraft.addresses(draft.bcc),
             subject: draft.subject.isEmpty ? "(No Subject)" : draft.subject,
             text: draft.text,

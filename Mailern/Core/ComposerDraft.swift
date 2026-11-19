@@ -357,6 +357,7 @@ final class DraftStore {
     /// Takes scheduled mail back into Drafts. False when it already went out.
     func unschedule(_ id: UUID) async -> Bool {
         await enqueue {
+            guard self.mail?.hasSentOrDiscarded(id) != true else { return false }
             guard let i = self.all.firstIndex(where: { $0.id == id && $0.sendAt != nil }) else { return false }
             var updated = self.all
             updated[i].sendAt = nil
@@ -390,30 +391,35 @@ final class DraftStore {
             let queued = Set(self.all.lazy.filter { $0.sendAt != nil && pick($0) }.map(\.id))
             guard !queued.isEmpty else { return true }
             var failure: String?
-            // Mail for a server account goes out first. The store records only what the server accepted.
-            var remoteFailures: [UUID: String] = [:]
-            if let sendRemote = store.sendRemote {
-                for draft in self.all where queued.contains(draft.id) && !store.hasSentOrDiscarded(draft.id) {
-                    do { try await sendRemote(draft) } catch { remoteFailures[draft.id] = error.localizedDescription }
+            var updated: [ComposerDraft] = []
+            for var draft in self.all {
+                guard queued.contains(draft.id) else {
+                    updated.append(draft)
+                    continue
                 }
+                switch await store.deliver(draft) {
+                case .filed:
+                    continue
+                case .waitingToFile:
+                    failure = store.error ?? "Mailern is still finishing this send."
+                case .refused:
+                    draft.sendAt = nil
+                    draft.holdingForUndo = nil
+                    failure = "“\(draft.title)” could not be sent and is back in Drafts. \(store.error ?? "")"
+                }
+                updated.append(draft)
             }
-            let updated = self.all.compactMap { draft -> ComposerDraft? in
-                guard queued.contains(draft.id) else { return draft }
-                guard !store.discardedDraftIDs.contains(draft.id) else { return nil }
-                if remoteFailures[draft.id] == nil, store.sendUnsentOutboxDraft(draft) { return nil }
-                var refused = draft
-                refused.sendAt = nil
-                refused.holdingForUndo = nil
-                failure = "“\(draft.title)” could not be sent and is back in Drafts. \(remoteFailures[draft.id] ?? store.error ?? "")"
-                return refused
-            }
-            let saved = await self.persist(updated, reportFailure: !automatic || !self.recoveryFailureReported)
+            let saved = if updated == self.all { true }
+            else { await self.persist(updated, reportFailure: !automatic || !self.recoveryFailureReported) }
             if !saved, !store.discardedDraftIDs.isEmpty {
                 self.all.removeAll { store.discardedDraftIDs.contains($0.id) }
                 self.clearResolvedWakeFailures()
                 self.needsMailRecovery = true
             }
-            if let undoable = self.undoable, !self.all.contains(where: { $0.id == undoable && $0.sendAt != nil }) { self.undoable = nil }
+            if let undoable = self.undoable,
+               store.hasSentOrDiscarded(undoable) || !self.all.contains(where: { $0.id == undoable && $0.sendAt != nil }) {
+                self.undoable = nil
+            }
             if let failure { store.error = failure }
             return saved && failure == nil
         }

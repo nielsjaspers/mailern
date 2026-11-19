@@ -52,9 +52,10 @@ struct MailernApp: App {
                 .seedIfNeeded { MailData(conversations: [], accounts: []) }
             defaults = TestStorage.preferences(forServer: url)
             snoozePreferences = SnoozePreferences(defaults: defaults)
-            store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite"), requiresSeed: true))
+            store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite"), requiresSeed: true),
+                              isServerMailbox: true)
             drafts = makeDrafts(mail: store, url: directory.appending(path: "drafts-v1.json"))
-            sync = ServerSync(url: url, store: store, defaults: defaults)
+            sync = ServerSync(url: url, store: store)
         }
     }
     private static func makeDrafts(mail: MailStore, url: URL) -> DraftStore {
