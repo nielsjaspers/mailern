@@ -898,7 +898,7 @@ import os
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
         var thread = remoteThread()
-        thread.messages[0].replyTo = ["list@example.test"]
+        thread.messages[0].replyTo = ["list@example.test", remoteAccount.address]
         assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
         // A reply goes to Reply-To when the message has one.
         let reply = ComposerDraft.make(mode: .reply(thread.id), conversation: store.conversation(thread.id), accounts: store.accounts)
@@ -922,6 +922,30 @@ import os
         assert(posts == 1 && store.error == nil)
         await drafts.sendDue(through: store, now: start.addingTimeInterval(61))
         assert(posts == 2 && store.error == nil)
+        // A permanent rejection goes back to Drafts and does not hold up the next message.
+        store.sendRemote = { _ in throw RemoteSendRejection(message: "Unknown recipient") }
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(122))
+        assert(store.error?.contains("back in Drafts") == true)
+        var next = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        next.to = "sam@example.test"
+        let queuedNext = await drafts.schedule(next, at: .now)
+        assert(queuedNext)
+        var sent = 0
+        store.sendRemote = { _ in sent += 1 }
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(123))
+        assert(sent == 1)
+        // Another client trashing a waiting thread ends its reminder.
+        var waiting = store.conversation(thread.id)!
+        waiting.move(to: .snoozed, until: .now.addingTimeInterval(3600))
+        waiting.followUp = .waiting
+        waiting.synced = waiting.remoteState
+        store.replaceRemote(conversations: [waiting], accounts: store.accounts, invalidatingUndo: [])
+        var trashed = thread
+        trashed.workflow = .snoozed
+        trashed.snoozedUntil = waiting.snoozedUntil
+        trashed.removal = .trash
+        assert(store.mergeRemote(remoteBatch(2, [trashed])))
+        assert(store.conversation(thread.id)!.followUp == nil)
         print("PASS: replies use Reply-To, the demo reply is refused in real mail, and offline sends back off and report once")
     }
 

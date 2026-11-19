@@ -164,8 +164,10 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
             // Mail from any of your addresses, also one of another connected account, counts as your own.
             let fromYou = target.outgoing || accounts.contains { $0.owns(target.address) }
             // A reply goes where the sender asked: Reply-To when the message has one, otherwise its sender.
+            // Your own addresses never go in To, also not from Reply-To.
+            let replyTargets = (target.replyTo ?? []).filter { address in !accounts.contains { $0.owns(address) } }
             draft.to = fromYou ? (others.isEmpty ? target.to : others).joined(separator: ", ")
-                : (target.replyTo ?? [target.address]).joined(separator: ", ")
+                : (replyTargets.isEmpty ? [target.address] : replyTargets).joined(separator: ", ")
             draft.subject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
             if case .replyAll = mode {
                 var seen = Set(accounts.flatMap(\.addresses).map { $0.lowercased() } + addresses(draft.to).map { $0.lowercased() })
