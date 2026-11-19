@@ -34,25 +34,27 @@ const (
 // Message is one email as the service knows it. Locations holds its UID in each role mailbox that contains it.
 // Gmail keeps an inbox message in both INBOX and All Mail, so one message can have several locations.
 type Message struct {
-	PendingMove    *copyMove       `json:"pendingMove,omitempty"`
-	ID             string          `json:"id"`
-	Key            string          `json:"key"`
-	ConversationID string          `json:"conversationID"`
-	Sender         string          `json:"sender"`
-	Address        string          `json:"address"`
-	To             []string        `json:"to"`
-	Cc             []string        `json:"cc"`
-	Date           time.Time       `json:"date"`
-	Subject        string          `json:"subject"`
-	Text           string          `json:"text"`
-	HasHTML        bool            `json:"hasHTML"`
-	MessageID      string          `json:"messageID,omitempty"`
-	InReplyTo      string          `json:"inReplyTo,omitempty"`
-	References     []string        `json:"references,omitempty"`
-	Outgoing       bool            `json:"outgoing"`
-	Seen           bool            `json:"seen"`
-	Flagged        bool            `json:"flagged"`
-	Locations      map[Role]uint32 `json:"locations"`
+	PendingMove    *copyMove `json:"pendingMove,omitempty"`
+	ID             string    `json:"id"`
+	Key            string    `json:"key"`
+	ConversationID string    `json:"conversationID"`
+	Sender         string    `json:"sender"`
+	Address        string    `json:"address"`
+	To             []string  `json:"to"`
+	Cc             []string  `json:"cc"`
+	Date           time.Time `json:"date"`
+	Subject        string    `json:"subject"`
+	Text           string    `json:"text"`
+	HasHTML        bool      `json:"hasHTML"`
+	MessageID      string    `json:"messageID,omitempty"`
+	InReplyTo      string    `json:"inReplyTo,omitempty"`
+	References     []string  `json:"references,omitempty"`
+	Outgoing       bool      `json:"outgoing"`
+	Seen           bool      `json:"seen"`
+	Flagged        bool      `json:"flagged"`
+	// Another client marked the observed copy deleted. Placement leaves it alone; the provider may expunge it.
+	Deleted   bool            `json:"deleted,omitempty"`
+	Locations map[Role]uint32 `json:"locations"`
 	// SentAt marks mail this service submitted. It stays without a location until a sync finds the Sent copy.
 	SentAt *time.Time `json:"sentAt,omitempty"`
 }

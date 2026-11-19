@@ -650,6 +650,7 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 			m.Seen, m.Flagged = seen, flagged
 			changed[m.ConversationID] = true
 		}
+		m.Deleted = slices.Contains(flags, imap.FlagDeleted)
 	}
 	slices.SortStableFunc(fresh, func(x, y *parsedArrival) int { return x.Date.Compare(y.Date) })
 	for _, f := range fresh {
@@ -688,7 +689,12 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 				// A reply rescues a thread from Trash. A conversation in Junk stays there until restored,
 				// so the reply follows it into Junk.
 				if c.Removal == RoleTrash {
+					// Restore the older messages too, as an explicit Restore does, before Trash expires them.
+					if !c.PendingPlacement {
+						c.MoveFromRemoval = RoleTrash
+					}
 					c.Removal, c.TrashSince = "", nil
+					c.Pending, c.PendingPlacement = true, true
 				}
 				if c.Removal == RoleJunk {
 					c.Pending, c.PendingPlacement = true, true

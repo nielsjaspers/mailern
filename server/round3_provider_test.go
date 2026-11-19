@@ -92,9 +92,14 @@ func TestProviderRollsBackInterruptedDeleteOnNewReply(t *testing.T) {
 	h.deliver("INBOX", "New reply cancels the delete", root)
 	restartCopyMoveAccount(t, h)
 	h.sync()
-	trash := h.mailbox("Trash")
-	if len(trash) != 2 || slices.Contains(trash[subject], imap.FlagDeleted) || !slices.Contains(trash["Already marked"], imap.FlagDeleted) {
-		t.Fatalf("expected only the service's flag to be cleared, got %v", trash)
+	// The reply rescues the thread, so the root leaves Trash without the service's flag. The copy another
+	// client marked deleted stays as it was.
+	trash, archive := h.mailbox("Trash"), h.mailbox("Archive")
+	if len(trash) != 1 || !slices.Contains(trash["Already marked"], imap.FlagDeleted) {
+		t.Fatalf("expected only the externally deleted copy in Trash, got %v", trash)
+	}
+	if flags, ok := archive[subject]; !ok || slices.Contains(flags, imap.FlagDeleted) {
+		t.Fatalf("expected the rescued root in Archive without the service's flag, got %v", archive)
 	}
 	h.account.store.Read(func(st *State) {
 		if c := st.Conversations[thread.ID]; c == nil || c.Deleting || len(c.Keys) != 3 {

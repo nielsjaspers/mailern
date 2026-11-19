@@ -250,6 +250,9 @@ func planMoves(c *Conversation, msgs, in []*Message, archiveIsAll bool) []move {
 		}
 	}
 	for _, m := range msgs {
+		if m.Deleted && m.PendingMove == nil {
+			continue
+		}
 		at, ok := observedPlace(c, m, archiveIsAll)
 		settleInbox := c.MoveFromRemoval == "" && c.Removal == "" && c.Workflow == WorkflowSettled && !m.Outgoing && m.Locations[RoleInbox] != 0
 		if m.PendingMove == nil && settleInbox {
