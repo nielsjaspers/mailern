@@ -917,9 +917,14 @@ import os
         let start = Date.now.addingTimeInterval(1)
         await drafts.sendDue(through: store, now: start)
         assert(posts == 1 && store.error != nil)
-        store.error = nil
+        let initialAlert = store.error
         await drafts.sendDue(through: store, now: start.addingTimeInterval(1))
-        assert(posts == 1 && store.error == nil)
+        assert(posts == 1 && store.error == initialAlert)
+        store.sendRemote = { _ in
+            posts += 1
+            store.error = nil // The user dismisses the previous alert during the retry.
+            throw URLError(.notConnectedToInternet)
+        }
         await drafts.sendDue(through: store, now: start.addingTimeInterval(61))
         assert(posts == 2 && store.error == nil)
         var fresh = draft

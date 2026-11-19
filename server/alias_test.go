@@ -87,26 +87,34 @@ func TestRetryAcceptedDraftAfterRemovingAlias(t *testing.T) {
 	}
 }
 
-func TestSMTPConnectionRefusedIsConfirmedUnsent(t *testing.T) {
-	h := newHarness(t)
-	socket, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	endpoint := endpointFor(socket)
-	socket.Close()
-	h.account.cfg.SMTP = &endpoint
-	req := SendRequest{ID: uuid.NewString(), ConversationID: uuid.NewString(), AccountID: "lab", To: []string{"sam@example.com"}}
-	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := h.http.Client().Post(h.http.URL+"/v1/send", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 503 || resp.Header.Get("Mailern-Submission") != "not-accepted" || len(h.lab.Submitted) != 0 {
-		t.Fatalf("unexpected submission result: %d %q", resp.StatusCode, resp.Header.Get("Mailern-Submission"))
+func TestProviderConnectionRefusedIsConfirmedUnsent(t *testing.T) {
+	for _, protocol := range []string{"imap", "smtp"} {
+		t.Run(protocol, func(t *testing.T) {
+			h := newHarness(t)
+			socket, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			endpoint := endpointFor(socket)
+			socket.Close()
+			if protocol == "smtp" {
+				h.account.cfg.SMTP = &endpoint
+			} else {
+				h.account.cfg.IMAP = &endpoint
+			}
+			req := SendRequest{ID: uuid.NewString(), ConversationID: uuid.NewString(), AccountID: "lab", To: []string{"sam@example.com"}}
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := h.http.Client().Post(h.http.URL+"/v1/send", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 503 || resp.Header.Get("Mailern-Submission") != "not-accepted" || len(h.lab.Submitted) != 0 {
+				t.Fatalf("unexpected submission result: %d %q", resp.StatusCode, resp.Header.Get("Mailern-Submission"))
+			}
+		})
 	}
 }

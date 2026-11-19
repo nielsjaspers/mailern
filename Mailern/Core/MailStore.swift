@@ -181,8 +181,8 @@ final class MailStore {
     @discardableResult private func save(replacingConversations updated: [Conversation]? = nil, metadataAt indices: [Int]? = nil,
                                          draftDiscards: Set<UUID>? = nil, remoteAccounts: [MailAccount]? = nil, revision: UInt64? = nil,
                                          pendingDeletes: [UUID: PendingRemoteDelete]? = nil, pendingSends: [UUID: PendingRemoteSend]? = nil,
-                                         reportFailure: Bool = true) -> Bool {
-        guard canWrite() else { return false }
+                                         reportFailure: Bool = true, onMessage: ((String?) -> Void)? = nil) -> Bool {
+        guard canWrite(onMessage) else { return false }
         var data = self.data
         if let updated { data.conversations = updated }
         if let draftDiscards { data.discardedDraftIDs = draftDiscards }
@@ -202,7 +202,7 @@ final class MailStore {
             return true
         } catch {
             if updated == nil { indexCurrent = false }
-            if reportFailure { self.error = "Changes could not be saved. \(error.localizedDescription)" }
+            if reportFailure { report("Changes could not be saved. \(error.localizedDescription)", to: onMessage) }
             return false
         }
     }
@@ -211,9 +211,12 @@ final class MailStore {
         save(replacingConversations: conversations, metadataAt: [], draftDiscards: discardedDraftIDs.subtracting(completed), reportFailure: reportFailure)
     }
 
-    private func canWrite() -> Bool {
+    private func report(_ message: String?, to recipient: ((String?) -> Void)?) {
+        if let recipient { recipient(message) } else { error = message }
+    }
+    private func canWrite(_ onMessage: ((String?) -> Void)? = nil) -> Bool {
         guard let loadFailure else { return true }
-        error = loadFailure
+        report(loadFailure, to: onMessage)
         return false
     }
     private func update(_ id: UUID, _ action: (inout Conversation) -> Void) {
@@ -645,14 +648,14 @@ final class MailStore {
     /// Sends a message. With a `threadID`, it answers the message `replyingTo` in that conversation, or the latest one.
     /// The conversation settles, or waits in Snoozed until `followUp` when that is still ahead.
     func send(threadID: UUID?, replyingTo: UUID? = nil, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
-              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil, id: UUID = UUID(), discardingDraft: UUID? = nil) -> Bool {
-        guard canWrite() else { return false }
+              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil, id: UUID = UUID(), discardingDraft: UUID? = nil, onMessage: ((String?) -> Void)? = nil) -> Bool {
+        guard canWrite(onMessage) else { return false }
         guard accounts.contains(where: { $0.id == account.id }) else {
-            error = "The sending account no longer exists. Choose another From address."
+            report("The sending account no longer exists. Choose another From address.", to: onMessage)
             return false
         }
         if let threadID, conversation(threadID) == nil {
-            error = "The original conversation is no longer available. Your draft has not been sent."
+            report("The original conversation is no longer available. Your draft has not been sent.", to: onMessage)
             return false
         }
         let before = conversations
@@ -681,12 +684,12 @@ final class MailStore {
             if discardingDraft != nil { discardedDraftIDs = sent.discardedDraftIDs }
             indexCurrent = true
             clearNotice()
-            error = nil
+            report(nil, to: onMessage)
             return true
         } catch {
             indexCurrent = false
             conversations = before
-            self.error = "Message could not be saved. Your draft has not been sent. \(error.localizedDescription)"
+            report("Message could not be saved. Your draft has not been sent. \(error.localizedDescription)", to: onMessage)
             return false
         }
     }
@@ -700,9 +703,9 @@ final class MailStore {
     }
 
     /// Immediate sends use the same durable cleanup receipt as scheduled sends.
-    @discardableResult func send(_ draft: ComposerDraft) -> Bool {
+    @discardableResult func send(_ draft: ComposerDraft, onMessage: ((String?) -> Void)? = nil) -> Bool {
         if hasSentOrDiscarded(draft.id) { return true }
-        return sendDraft(draft, id: draft.id, discardingDraft: draft.id)
+        return sendDraft(draft, id: draft.id, discardingDraft: draft.id, onMessage: onMessage)
     }
     func sendNow(_ draft: ComposerDraft) async -> Bool {
         await deliver(draft) == .filed
@@ -710,19 +713,19 @@ final class MailStore {
 
     /// Sends a draft. A retry after an unconfirmed send repeats the first submission exactly, because that one may
     /// already be out. Changes made since then are not sent, and the store says so.
-    func deliver(_ draft: ComposerDraft) async -> DraftDelivery {
+    func deliver(_ draft: ComposerDraft, onMessage: ((String?) -> Void)? = nil) async -> DraftDelivery {
         let changed = pendingRemoteSends[draft.id].map { !$0.prepared.draft.hasSameSubmission(as: draft) } ?? false
-        let result = await deliverSubmission(draft)
+        let result = await deliverSubmission(draft, onMessage: onMessage)
         if changed && result == .filed {
-            error = "Message sent as first written. Changes made after the first try were not sent."
+            report("Message sent as first written. Changes made after the first try were not sent.", to: onMessage)
         }
         return result
     }
 
-    private func deliverSubmission(_ draft: ComposerDraft) async -> DraftDelivery {
+    private func deliverSubmission(_ draft: ComposerDraft, onMessage: ((String?) -> Void)?) async -> DraftDelivery {
         if discardedDraftIDs.contains(draft.id) { return .filed }
-        guard isServerMailbox else { return send(draft) ? .filed : .refused }
-        guard canWrite() else { return .refused }
+        guard isServerMailbox else { return send(draft, onMessage: onMessage) ? .filed : .refused }
+        guard canWrite(onMessage) else { return .refused }
         if remoteSendsInFlight.contains(draft.id) { return .waitingToFile }
         let prepared: PreparedRemoteSend
         let previousAttempt = pendingRemoteSends[draft.id]
@@ -730,24 +733,24 @@ final class MailStore {
             prepared = pending.prepared
         } else if sentConversation(draft.id) != nil {
             // The server has a copy, but there is no record of which local draft was submitted.
-            guard save(replacingConversations: conversations, draftDiscards: discardedDraftIDs.union([draft.id])) else { return .waitingToFile }
-            error = nil
+            guard save(replacingConversations: conversations, draftDiscards: discardedDraftIDs.union([draft.id]), onMessage: onMessage) else { return .waitingToFile }
+            report(nil, to: onMessage)
             return .filed
         } else {
-            guard let fresh = prepareRemoteSend(draft) else { return .refused }
+            guard let fresh = prepareRemoteSend(draft, onMessage: onMessage) else { return .refused }
             guard sendRemote != nil else {
-                error = "The mail server is unavailable."
+                report("The mail server is unavailable.", to: onMessage)
                 return .refused
             }
             var pending = pendingRemoteSends
             pending[draft.id] = PendingRemoteSend(prepared: fresh)
-            guard save(replacingConversations: conversations, pendingSends: pending) else { return .refused }
+            guard save(replacingConversations: conversations, pendingSends: pending, onMessage: onMessage) else { return .refused }
             prepared = fresh
         }
 
-        if canFileRemoteSend(draft.id) { return fileAcceptedSend(prepared) }
+        if canFileRemoteSend(draft.id) { return fileAcceptedSend(prepared, onMessage: onMessage) }
         guard let sendRemote else {
-            error = "The mail server is unavailable."
+            report("The mail server is unavailable.", to: onMessage)
             return .waitingToFile
         }
         remoteSendsInFlight.insert(draft.id)
@@ -759,8 +762,8 @@ final class MailStore {
                 if error is RemoteSendRejection {
                     var pending = pendingRemoteSends
                     pending.removeValue(forKey: draft.id)
-                    guard save(replacingConversations: conversations, pendingSends: pending) else { return .waitingToFile }
-                    self.error = "Message could not be sent. \(error.localizedDescription)"
+                    guard save(replacingConversations: conversations, pendingSends: pending, onMessage: onMessage) else { return .waitingToFile }
+                    report("Message could not be sent. \(error.localizedDescription)", to: onMessage)
                     return .refused
                 }
                 // A connection that never opened sent nothing, so the attempt can be dropped: the draft stays
@@ -770,25 +773,25 @@ final class MailStore {
                 if error is RemoteSendUnavailable || (previousAttempt == nil && unreachable) {
                     var pending = pendingRemoteSends
                     pending.removeValue(forKey: draft.id)
-                    guard save(replacingConversations: conversations, pendingSends: pending) else { return .waitingToFile }
-                    self.error = "The mail server was unavailable. Nothing was sent. \(error.localizedDescription)"
+                    guard save(replacingConversations: conversations, pendingSends: pending, onMessage: onMessage) else { return .waitingToFile }
+                    report("The mail server was unavailable. Nothing was sent. \(error.localizedDescription)", to: onMessage)
                     return .waitingToFile
                 }
-                self.error = "Delivery is unconfirmed. Retry to finish sending this message. \(error.localizedDescription)"
+                report("Delivery is unconfirmed. Retry to finish sending this message. \(error.localizedDescription)", to: onMessage)
                 return .waitingToFile
             }
         }
-        return fileAcceptedSend(prepared)
+        return fileAcceptedSend(prepared, onMessage: onMessage)
     }
 
-    private func prepareRemoteSend(_ draft: ComposerDraft) -> PreparedRemoteSend? {
+    private func prepareRemoteSend(_ draft: ComposerDraft, onMessage: ((String?) -> Void)?) -> PreparedRemoteSend? {
         guard let from = accounts.first(where: { $0.id == draft.accountID }) else {
-            error = "The sending account no longer exists. Choose another From address."
+            report("The sending account no longer exists. Choose another From address.", to: onMessage)
             return nil
         }
         // An alias removed from the server config must not turn into a send from the main address.
         if let chosen = draft.fromAddress, !from.owns(chosen) {
-            error = "\(chosen) is no longer an address of this account. Choose another From address."
+            report("\(chosen) is no longer an address of this account. Choose another From address.", to: onMessage)
             return nil
         }
         var source: MailMessage?
@@ -801,7 +804,7 @@ final class MailStore {
                 }
             }
             guard source != nil else {
-                error = "The original message is no longer available. Your draft has not been sent."
+                report("The original message is no longer available. Your draft has not been sent.", to: onMessage)
                 return nil
             }
         }
@@ -827,12 +830,12 @@ final class MailStore {
         conversations.first { $0.messages.contains { $0.id == id && $0.outgoing } }
     }
 
-    private func fileAcceptedSend(_ accepted: PreparedRemoteSend) -> DraftDelivery {
+    private func fileAcceptedSend(_ accepted: PreparedRemoteSend, onMessage: ((String?) -> Void)? = nil) -> DraftDelivery {
         let draft = accepted.draft
         let threadID = sentConversation(draft.id)?.id ?? accepted.conversationID
         acceptedSends.insert(draft.id)
         guard pendingRemoteDeletes[threadID] == nil else {
-            return deferAcceptedSend(draft.id, message: "Message was sent. The sent copy will be filed once the conversation deletion is resolved.")
+            return deferAcceptedSend(draft.id, message: "Message was sent. The sent copy will be filed once the conversation deletion is resolved.", onMessage: onMessage)
         }
         remoteSendGeneration &+= 1
         var pending = pendingRemoteSends
@@ -876,32 +879,32 @@ final class MailStore {
             }
         }
         guard save(replacingConversations: updated, draftDiscards: discardedDraftIDs.union([draft.id]),
-                   pendingSends: pending, reportFailure: false) else {
-            return deferAcceptedSend(draft.id, message: "Message was sent. Try again to save the sent copy.")
+                   pendingSends: pending, reportFailure: false, onMessage: onMessage) else {
+            return deferAcceptedSend(draft.id, message: "Message was sent. Try again to save the sent copy.", onMessage: onMessage)
         }
         acceptedSends.remove(draft.id)
         if conversations != updated { conversations = updated }
         clearNotice()
-        error = nil
+        report(nil, to: onMessage)
         return .filed
     }
 
-    private func deferAcceptedSend(_ id: UUID, message: String) -> DraftDelivery {
+    private func deferAcceptedSend(_ id: UUID, message: String, onMessage: ((String?) -> Void)?) -> DraftDelivery {
         if pendingRemoteSends[id]?.accepted == false {
             var unfiled = pendingRemoteSends
             unfiled[id]?.accepted = true
-            save(replacingConversations: conversations, pendingSends: unfiled, reportFailure: false)
+            save(replacingConversations: conversations, pendingSends: unfiled, reportFailure: false, onMessage: onMessage)
         }
-        error = message
+        report(message, to: onMessage)
         return .waitingToFile
     }
 
-    private func sendDraft(_ draft: ComposerDraft, id: UUID, discardingDraft: UUID? = nil) -> Bool {
+    private func sendDraft(_ draft: ComposerDraft, id: UUID, discardingDraft: UUID? = nil, onMessage: ((String?) -> Void)? = nil) -> Bool {
         return send(threadID: draft.mode.replyID, replyingTo: draft.answering ?? draft.messageID, account: account(draft.accountID),
                     to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
                     subject: draft.subject.isEmpty ? "(No Subject)" : draft.subject, body: draft.text,
                     bcc: ComposerDraft.addresses(draft.bcc), richText: draft.richText, attachments: draft.attachments,
-                    followUp: draft.followUp, id: id, discardingDraft: discardingDraft)
+                    followUp: draft.followUp, id: id, discardingDraft: discardingDraft, onMessage: onMessage)
     }
     func reset() {
         let replacement = MailData(conversations: DemoData.conversations(), discardedDraftIDs: discardedDraftIDs)

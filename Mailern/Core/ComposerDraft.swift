@@ -437,18 +437,18 @@ final class DraftStore {
                     updated.append(draft)
                     continue
                 }
-                let previousError = store.error
-                switch await store.deliver(draft) {
+                var deliveryMessage: String?
+                let result = await store.deliver(draft) { deliveryMessage = $0 }
+                switch result {
                 case .filed:
+                    if let deliveryMessage { alerts.append(deliveryMessage) }
                     self.automaticRetries[draft.id] = nil
                     continue
                 case .waitingToFile:
                     failed = true
-                    let message = store.error ?? "Mailern is still finishing this send."
+                    let message = deliveryMessage ?? "Mailern is still finishing this send."
                     if !automatic || self.automaticRetries[draft.id]?.message != message {
                         alerts.append("“\(draft.title)”: \(message)")
-                    } else if store.error == message {
-                        store.error = previousError
                     }
                     if automatic {
                         let elapsed = ProcessInfo.processInfo.systemUptime - started
@@ -459,7 +459,7 @@ final class DraftStore {
                     self.automaticRetries[draft.id] = nil
                     draft.sendAt = nil
                     draft.holdingForUndo = nil
-                    alerts.append("“\(draft.title)” could not be sent and is back in Drafts. \(store.error ?? "")")
+                    alerts.append("“\(draft.title)” could not be sent and is back in Drafts. \(deliveryMessage ?? "")")
                 }
                 updated.append(draft)
             }

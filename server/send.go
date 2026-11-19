@@ -122,21 +122,23 @@ func (a *Account) Send(req SendRequest) error {
 		return badRequest{errors.New("the original conversation is unavailable")}
 	}
 	c, err := a.connect()
-	if err != nil {
-		return err
+	var found bool
+	if err == nil {
+		if sent := a.mailboxes[RoleSent]; sent != "" {
+			found, err = sentContains(c, sent, key)
+		} else if *a.cfg.AppendSent {
+			err = errors.New("configure a Sent mailbox before sending")
+		}
 	}
-	sent := a.mailboxes[RoleSent]
-	if sent != "" {
-		found, err := sentContains(c, sent, key)
-		if err != nil {
-			a.disconnect()
-			return err
+	if err != nil {
+		a.disconnect()
+		if uncertain {
+			return errors.Join(uncertainDelivery, err)
 		}
-		if found {
-			return a.record(req, key, nil)
-		}
-	} else if *a.cfg.AppendSent {
-		return errors.New("configure a Sent mailbox before sending")
+		return notSubmitted{err}
+	}
+	if found {
+		return a.record(req, key, nil)
 	}
 	if uncertain {
 		return uncertainDelivery
