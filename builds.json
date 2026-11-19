@@ -259,6 +259,16 @@
       "finished_at": "2026-11-19T00:09:07+00:00",
       "bundle_id": "com.example.mailern",
       "ipa_sha256": "9b09a806388f91cdcc4ff4a305a0a8d806ca9411dd02647ffdfeb8ac15a2b2c3"
+    },
+    {
+      "source_revision": "589b73a42ec9d2a5024e8483d9c1edc9b41f4a98",
+      "branch": "feat/compose-contacts",
+      "uncommitted_changes": false,
+      "source_digest": "a35f03c5de8372be54225ec94d1d1bfcf97ad1a9c0a771d51b8a9eb65e345402",
+      "build": 55,
+      "version": "0.7.0",
+      "status": "reserved",
+      "created_at": "2026-11-19T01:10:40+00:00"
     }
   ]
 }
