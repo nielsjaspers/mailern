@@ -126,3 +126,27 @@ func TestAmbiguousDeliveryPreservesClientSubmission(t *testing.T) {
 		t.Fatalf("ambiguous delivery returned status %d", response.Code)
 	}
 }
+
+func TestUncertainReplyWithDeletingSource(t *testing.T) {
+	h := newHarness(t)
+	parent := h.deliver("INBOX", "Question", "")
+	h.sync()
+	thread := h.conversations()["Question"]
+	req := SendRequest{ID: "a2a16159-c8b5-47b0-8df8-d09fa58cccb0", ConversationID: thread.ID, AccountID: h.account.cfg.ID, InReplyTo: parent, To: []string{"sam@example.com"}, Text: "Reply"}
+	raw, err := h.account.compose(req, h.account.messageID(req.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.account.submit(req, raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.account.store.Update(func(st *State) error {
+		st.Conversations[thread.ID].Deleting = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.request("POST", "/v1/send", req, nil); code != 409 || len(h.lab.Submitted) != 1 {
+		t.Fatalf("retry with pending delete: status %d, deliveries %d", code, len(h.lab.Submitted))
+	}
+}

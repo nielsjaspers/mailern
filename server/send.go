@@ -81,6 +81,9 @@ func (a *Account) Send(req SendRequest) error {
 		return a.store.Update(func(*State) error { return nil })
 	}
 	if invalidThread {
+		if uncertain {
+			return uncertainDelivery
+		}
 		return badRequest{errors.New("the original conversation is unavailable")}
 	}
 	c, err := a.connect()
