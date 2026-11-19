@@ -930,6 +930,24 @@ import os
         answered.messages.append(deletedReply)
         assert(store.mergeRemote(remoteBatch(6, [answered])))
         assert(store.conversation(thread.id)!.followUp == .waiting)
+        // The reply came before the deadline, but the phone syncs after the server woke the reminder: it still settles.
+        var late = store.conversation(thread.id)!
+        let deadline = Date.now.addingTimeInterval(-60)
+        late.snoozedUntil = deadline
+        late.synced = late.remoteState
+        store.replaceRemote(conversations: [late], accounts: store.accounts, invalidatingUndo: [])
+        assert(store.conversation(thread.id)!.remoteWriteFields.isEmpty)
+        var woke = answered
+        woke.workflow = .inbox
+        woke.snoozedUntil = nil
+        woke.returnedFromSnoozeAt = deadline
+        woke.muted = true
+        woke.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                           date: deadline.addingTimeInterval(-120), body: "Got it", outgoing: false,
+                                           subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(7, [woke])))
+        let settledLate = store.conversation(thread.id)!
+        assert(settledLate.workflow == .settled && settledLate.followUp == nil)
         // A send from an alias the server no longer lists is refused instead of going out from the main address.
         var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
         draft.to = "alex@example.test"
@@ -998,6 +1016,13 @@ import os
         c.messages[0].cc = []
         let nobody = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
         assert(nobody.to.isEmpty && nobody.cc.isEmpty && !nobody.canSend)
+        // Mail received from your own alias counts as your own, so Reply All does not address only yourself.
+        c.messages[0].outgoing = false
+        c.messages[0].address = "hello@example.test"
+        c.messages[0].to = [account.address]
+        c.messages[0].cc = ["sam@example.test"]
+        let fromSelf = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
+        assert(fromSelf.to.isEmpty && fromSelf.cc == "sam@example.test")
         var other = reply
         other.fromAddress = nil
         assert(!reply.hasSameSubmission(as: other))

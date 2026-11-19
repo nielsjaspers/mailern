@@ -161,13 +161,15 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
             draft.answering = target.id
             // Answering your own message goes to its other recipients, not back to you.
             let others = target.to.filter { address in !accounts.contains { $0.owns(address) } }
-            draft.to = target.outgoing ? (others.isEmpty ? target.to : others).joined(separator: ", ") : target.address
+            // Mail from any of your addresses, also one of another connected account, counts as your own.
+            let fromYou = target.outgoing || accounts.contains { $0.owns(target.address) }
+            draft.to = fromYou ? (others.isEmpty ? target.to : others).joined(separator: ", ") : target.address
             draft.subject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
             if case .replyAll = mode {
                 var seen = Set(accounts.flatMap(\.addresses).map { $0.lowercased() } + addresses(draft.to).map { $0.lowercased() })
                 draft.cc = (target.to + target.cc).filter { seen.insert($0.lowercased()).inserted }.joined(separator: ", ")
                 // Reply All never addresses only you. Without other recipients, To stays empty for you to fill in.
-                if target.outgoing && others.isEmpty { draft.to = "" }
+                if fromYou && others.isEmpty { draft.to = "" }
             }
             draft.text += "\n\n\(QuotedText.attribution(for: target))\n\(target.body)"
         case .forward:
