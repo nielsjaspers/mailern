@@ -505,6 +505,7 @@ import os
         try await checkRemoteUndo()
         try await checkRemoteDelete()
         try await checkRemoteSending()
+        try await checkUnconfirmedSendRetry()
         try await checkOutboxDuringSourceDelete()
     }
 
@@ -865,6 +866,42 @@ import os
         await ServerSync(client: client, store: saved).push()
         assert(deletedAfterPut && saved.pendingRemoteDeletes.isEmpty)
         print("PASS: delete keeps confirmed IDs and mailbox identity across pulls, restart, and PUT acknowledgment. A conflict refreshes the mailbox.")
+    }
+
+    @MainActor static func checkUnconfirmedSendRetry() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-unconfirmed-send-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        assert(store.mergeRemote(remoteBatch(1, [], reset: true)))
+        var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        draft.to = "alex@example.test"
+        draft.subject = "Plans"
+        var submitted: [String] = []
+        store.sendRemote = { prepared in
+            submitted.append(prepared.draft.to)
+            throw URLError(.networkConnectionLost)
+        }
+        let lost = await store.sendNow(draft)
+        assert(!lost && store.hasPendingRemoteSend(draft.id))
+        // A retry repeats the first submission, which may already be out, and says that later changes were not sent.
+        var edited = draft
+        edited.to = "sam@example.test"
+        store.error = nil
+        store.sendRemote = { prepared in submitted.append(prepared.draft.to) }
+        let retried = await store.sendNow(edited)
+        assert(retried && submitted == ["alex@example.test", "alex@example.test"] && !store.hasPendingRemoteSend(draft.id))
+        assert(store.error?.contains("were not sent") == true)
+        // A sync that rewrites the sent message's metadata keeps Undo for a later move.
+        let sent = store.conversation(draft.id)!
+        assert(store.apply(ids: [sent.id], action: .move(.inbox)))
+        let copy = RemoteConversation(id: sent.id, accountID: sent.accountID, subject: sent.subject, workflow: .inbox,
+                                      unread: false, pinned: false, muted: false, messages: [
+            RemoteMessage(id: draft.id, sender: "Me", address: remoteAccount.address, date: sent.latest.date,
+                          body: draft.text, outgoing: true, subject: draft.subject, hasHTML: false, messageID: "<copy@example.test>")])
+        assert(store.mergeRemote(remoteBatch(2, [copy])))
+        store.undo()
+        assert(store.conversation(sent.id)!.workflow == .settled)
+        print("PASS: an edited retry of an unconfirmed send repeats the original and says so; Undo survives a metadata-only sync")
     }
 
     @MainActor static func checkRemoteSending() async throws {

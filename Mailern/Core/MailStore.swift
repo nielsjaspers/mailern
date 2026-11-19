@@ -312,7 +312,8 @@ final class MailStore {
         let originals = Dictionary(uniqueKeysWithValues: undoSnapshot.map { ($0.id, $0) })
         let indices = conversations.indices.filter { originals[conversations[$0].id] != nil }
         guard indices.count == originals.count,
-              indices.allSatisfy({ originals[conversations[$0].id]?.messages == conversations[$0].messages }) else {
+              // A sync can rewrite a message's metadata. Only a new or removed message ends Undo.
+              indices.allSatisfy({ originals[conversations[$0].id]?.messages.map(\.id) == conversations[$0].messages.map(\.id) }) else {
             clearNotice()
             return
         }
