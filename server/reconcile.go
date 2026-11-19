@@ -107,8 +107,8 @@ func (a *Account) reconcile(st *State) []plan {
 			plans = append(plans, p)
 			continue
 		}
-		// Trash, Junk, and delete take sent replies too. One still waiting for its Sent copy follows once it appears.
-		if (c.Removal != "" || c.Deleting) && slices.ContainsFunc(msgs, func(m *Message) bool {
+		// A just-sent reply has no provider copy yet. Trash, Junk, delete, and Pin apply to it once its Sent copy appears.
+		if slices.ContainsFunc(msgs, func(m *Message) bool {
 			return m.Outgoing && m.SentAt != nil && len(m.Locations) == 0
 		}) {
 			continue

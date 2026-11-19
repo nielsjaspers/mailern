@@ -2,7 +2,10 @@ package main
 
 import (
 	"net/http"
+	"slices"
 	"testing"
+
+	"github.com/emersion/go-imap/v2"
 
 	"github.com/google/uuid"
 )
@@ -53,5 +56,30 @@ func TestTrashTakesReplyWhoseSentCopyArrivesLater(t *testing.T) {
 	h.sync()
 	if h.count("Trash") != 0 {
 		t.Fatalf("permanent delete should empty Trash, %d left", h.count("Trash"))
+	}
+}
+
+func TestPinWaitsForSentCopyOfNewThread(t *testing.T) {
+	h := newHarness(t)
+	appendSent := false
+	h.account.cfg.AppendSent = &appendSent
+	h.sync()
+	req := SendRequest{ID: uuid.NewString(), ConversationID: uuid.NewString(), AccountID: "lab",
+		To: []string{"alex@example.org"}, Subject: "Plans", Text: "Are you free?"}
+	if code := h.request("POST", "/v1/send", req, nil); code != http.StatusNoContent {
+		t.Fatalf("send: %d", code)
+	}
+	h.set(h.conversations()["Plans"], func(s *ConversationState) { s.Pinned = true })
+	h.sync()
+	if !h.conversations()["Plans"].Pinned {
+		t.Fatal("the pin must survive a sync before the Sent copy exists")
+	}
+	if err := h.lab.Deliver(labAddress, "Sent", h.lab.Submitted[0]); err != nil {
+		t.Fatal(err)
+	}
+	h.sync()
+	h.sync()
+	if !slices.Contains(h.mailbox("Sent")["Plans"], imap.FlagFlagged) || !h.conversations()["Plans"].Pinned {
+		t.Fatal("the Sent copy should take the pin once it appears")
 	}
 }
