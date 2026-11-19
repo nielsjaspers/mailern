@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	netmail "net/mail"
 	"regexp"
 	"strings"
 	"time"
@@ -41,8 +42,8 @@ func parseMessage(raw []byte) (parsed, error) {
 	// Where the message was delivered. A blind copy or list mail names the alias only here.
 	for _, key := range []string{"Delivered-To", "X-Original-To"} {
 		for _, value := range h.Values(key) {
-			if address := strings.Trim(strings.TrimSpace(value), "<>"); strings.Contains(address, "@") {
-				p.DeliveredTo = append(p.DeliveredTo, address)
+			if address, err := netmail.ParseAddress(value); err == nil {
+				p.DeliveredTo = append(p.DeliveredTo, address.Address)
 			}
 		}
 	}

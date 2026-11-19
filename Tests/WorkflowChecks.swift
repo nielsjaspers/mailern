@@ -1159,6 +1159,10 @@ import os
         c.messages[0].deliveredTo = ["hello@example.test"]
         let fromList = ComposerDraft.make(mode: .reply(c.id), conversation: c, accounts: store.accounts)
         assert(fromList.fromAddress == "hello@example.test")
+        // Forwarded mail lists the main address first, from the last server on the chain. The alias still wins.
+        c.messages[0].deliveredTo = [account.address, "hello@example.test"]
+        let forwarded = ComposerDraft.make(mode: .reply(c.id), conversation: c, accounts: store.accounts)
+        assert(forwarded.fromAddress == "hello@example.test")
         c.messages[0].deliveredTo = nil
         // Mail to the main address answers from the main address.
         c.messages[0].to = [account.address]

@@ -151,7 +151,9 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
         // Answer from the address the message was sent to, as Mail does. A blind copy or list mail names it only in
         // its delivery address.
         if let account = accounts.first(where: { $0.id == c.accountID }), !target.outgoing,
-           let alias = (target.to + target.cc).first(where: account.owns) ?? (target.deliveredTo ?? []).first(where: account.owns),
+           // Each server on a forwarding chain adds its own Delivered-To, so prefer an alias over the main address.
+           let alias = (target.to + target.cc).first(where: account.owns)
+            ?? (target.deliveredTo ?? []).first(where: { account.owns($0) && $0.caseInsensitiveCompare(account.address) != .orderedSame }),
            alias.caseInsensitiveCompare(account.address) != .orderedSame {
             draft.fromAddress = account.addresses.first { $0.caseInsensitiveCompare(alias) == .orderedSame }
         } else if target.outgoing, let account = accounts.first(where: { $0.id == c.accountID }), account.owns(target.address),

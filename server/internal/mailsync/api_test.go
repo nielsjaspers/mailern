@@ -163,7 +163,7 @@ func TestHTMLRejectsStaleMailboxIdentity(t *testing.T) {
 
 func TestDeliveryAddressReachesThePhone(t *testing.T) {
 	h := newHarness(t)
-	raw := "Delivered-To: gh@example.org\r\nFrom: List <list@example.com>\r\nTo: list@example.com\r\nSubject: Release\r\n" +
+	raw := "Delivered-To: Niels <gh@example.org>\r\nFrom: List <list@example.com>\r\nTo: list@example.com\r\nSubject: Release\r\n" +
 		"Message-ID: <release@example.com>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHello\r\n"
 	if err := h.lab.Deliver(labAddress, "INBOX", []byte(raw)); err != nil {
 		t.Fatal(err)
