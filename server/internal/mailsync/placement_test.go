@@ -1,4 +1,4 @@
-package main
+package mailsync
 
 import (
 	"net"
@@ -9,14 +9,121 @@ import (
 	"time"
 
 	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-imap/v2/imapserver"
+	"github.com/nielsjaspers/mailern/server/internal/maillab"
 )
+
+func TestProviderRollsBackDeletedFlagAfterExternalMove(t *testing.T) {
+	t.Run("keyword preserved", func(t *testing.T) { checkDeletedFlagExternalMove(t, false) })
+	t.Run("keyword discarded", func(t *testing.T) { checkDeletedFlagExternalMove(t, true) })
+}
+
+func checkDeletedFlagExternalMove(t *testing.T, discardKeyword bool) {
+	t.Helper()
+	h := newHarness(t)
+	// Use the lab's native MOVE connection for the other client. Mailern's connection
+	// drops the response to the first STORE that adds Deleted.
+	other, err := h.account.dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if !other.Caps().Has(imap.CapMove) {
+		t.Fatal("test requires native MOVE")
+	}
+	serveCopyMoveProvider(t, h, loseDeletedStoreResponse)
+	const dest = "Personal folder"
+	if err := other.Create(dest, nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	raw := maillab.Message("sam@example.com", labAddress, "Two identical messages", "Hello.", "", time.Now())
+	if err := h.lab.Deliver(labAddress, "Trash", raw, imap.FlagSeen); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.lab.Deliver(labAddress, dest, raw, imap.FlagDeleted, imap.FlagFlagged); err != nil {
+		t.Fatal(err)
+	}
+	c, err := h.account.dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	sel, err := c.Select("Trash", nil).Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := imap.UIDSetNum(1)
+	fetch := &imap.FetchOptions{UID: true, Flags: true}
+	present, err := c.Fetch(set, fetch).Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.account.expungeOwned(c, mailboxIdentity{"Trash", sel.UIDValidity}, set, present); err == nil {
+		t.Fatal("expected the provider to disconnect during STORE")
+	}
+	if _, err := other.Select("Trash", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	move, err := other.Move(set, dest).Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uids, ok := move.DestUIDs.(imap.UIDSet); !ok || !slices.Equal(uids, imap.UIDSetNum(2)) {
+		t.Fatalf("expected MOVE to assign UID 2 in the new mailbox, got %v", move.DestUIDs)
+	}
+	if _, err := other.Select(dest, nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	movedSet := imap.UIDSetNum(2)
+	moved, err := other.Fetch(movedSet, fetch).Collect()
+	if err != nil || len(moved) != 1 || !slices.Contains(moved[0].Flags, imap.FlagDeleted) {
+		t.Fatalf("expected MOVE to carry the deletion flag, got %v, %v", moved, err)
+	}
+	wantMoved := []imap.Flag{imap.FlagSeen}
+	if discardKeyword {
+		// Simulate a MOVE that drops custom keywords while preserving system flags.
+		wantMoved = append(wantMoved, imap.FlagDeleted)
+		setFlags := &imap.StoreFlags{Op: imap.StoreFlagsSet, Silent: true, Flags: wantMoved}
+		if err := other.Store(movedSet, setFlags, nil).Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restartCopyMoveAccount(t, h)
+	recovery, err := h.account.dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovery.Close()
+	if err := h.account.recoverOwnedDeleted(recovery); err != nil {
+		t.Fatal(err)
+	}
+	h.account.store.Read(func(st *State) {
+		if st.account(h.account.cfg.ID).OwnedDeleted != nil {
+			t.Error("recovery left the interrupted delete in the journal")
+		}
+	})
+	msgs, err := other.Fetch(imap.UIDSetNum(1, 2), fetch).Collect()
+	if err != nil || len(msgs) != 2 {
+		t.Fatalf("expected both copies to survive, got %v, %v", msgs, err)
+	}
+	for _, msg := range msgs {
+		if msg.UID == 1 && (len(msg.Flags) != 2 || !slices.Contains(msg.Flags, imap.FlagDeleted) || !slices.Contains(msg.Flags, imap.FlagFlagged)) {
+			t.Fatalf("changed flags on independently deleted copy: %v", msg.Flags)
+		}
+		if msg.UID == 2 {
+			slices.Sort(msg.Flags)
+			slices.Sort(wantMoved)
+			if !slices.Equal(msg.Flags, wantMoved) {
+				t.Fatalf("moved copy has flags %v, want %v", msg.Flags, wantMoved)
+			}
+		}
+	}
+}
 
 func TestRestoreWithIndependentInboxAndTrashCopies(t *testing.T) {
 	h := newHarness(t)
 	const subject = "Two copies of a garden plan"
-	raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
+	raw := maillab.Message("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
 	if err := h.lab.Deliver(labAddress, "INBOX", raw); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +172,7 @@ func TestPlacementSurvivesUnconfirmedTrashCopy(t *testing.T) {
 			h := newHarness(t)
 			copies := serveCopyMoveProvider(t, h, loseCopyResponse)
 			const subject = "Keep the requested placement"
-			raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
+			raw := maillab.Message("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
 			if err := h.lab.Deliver(labAddress, "INBOX", raw); err != nil {
 				t.Fatal(err)
 			}
@@ -133,7 +240,7 @@ func (s recoverySelectProvider) Select(name string, opts *imap.SelectOptions) (*
 
 func TestUndoRecoversFlagsWhenUnrelatedFolderRejectsSelect(t *testing.T) {
 	h := newHarness(t)
-	if err := h.lab.users[labAddress].Create("Private folder", nil); err != nil {
+	if err := h.lab.User(labAddress).Create("Private folder", nil); err != nil {
 		t.Fatal(err)
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -144,15 +251,15 @@ func TestUndoRecoversFlagsWhenUnrelatedFolderRejectsSelect(t *testing.T) {
 	var denySource atomic.Bool
 	fault.Store(loseDeletedStoreResponse)
 	server := imapserver.New(&imapserver.Options{
-		Caps: imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapUIDPlus: {}}, InsecureAuth: true, Logger: quietLogger{},
+		Caps: imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapUIDPlus: {}}, InsecureAuth: true, Logger: maillab.QuietLogger{},
 		NewSession: func(conn *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return recoverySelectProvider{copyMoveProvider{h.lab.imap.NewSession(), conn.NetConn(), &fault, &copies}, &denySource}, nil, nil
+			return recoverySelectProvider{copyMoveProvider{h.lab.NewSession(), conn.NetConn(), &fault, &copies}, &denySource}, nil, nil
 		},
 	})
 	go server.Serve(listener)
 	t.Cleanup(func() { server.Close() })
-	h.lab.IMAP = endpointFor(listener)
-	h.account.cfg.IMAP = &h.lab.IMAP
+	h.imap = endpointFor(listener)
+	h.account.cfg.IMAP = &h.imap
 
 	const subject = "Undo an interrupted move"
 	h.deliver("INBOX", subject, "")
@@ -182,7 +289,7 @@ func TestUndoRecoversFlagsWhenUnrelatedFolderRejectsSelect(t *testing.T) {
 func TestRestoreSettledWithIndependentInboxCopy(t *testing.T) {
 	h := newHarness(t)
 	const subject = "Settled with a second copy"
-	raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
+	raw := maillab.Message("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
 	if err := h.lab.Deliver(labAddress, "Archive", raw); err != nil {
 		t.Fatal(err)
 	}
@@ -206,104 +313,11 @@ func TestRestoreSettledWithIndependentInboxCopy(t *testing.T) {
 	})
 }
 
-type refuseSentHeaderSearch struct {
-	imapserver.SessionIMAP4rev2
-	selected string
-	refusals *atomic.Int32
-}
-
-func (s *refuseSentHeaderSearch) Select(name string, options *imap.SelectOptions) (*imap.SelectData, error) {
-	s.selected = name
-	return s.SessionIMAP4rev2.Select(name, options)
-}
-
-func (s *refuseSentHeaderSearch) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error) {
-	if s.selected == "Sent" && len(criteria.Header) != 0 {
-		s.refusals.Add(1)
-		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "Header search unavailable"}
-	}
-	return s.SessionIMAP4rev2.Search(kind, criteria, options)
-}
-
-func TestSentHeaderSearchRefusalAllowsInboxSync(t *testing.T) {
-	h := newHarness(t)
-	var refusals atomic.Int32
-	serveProvider(t, h, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}}, func(s imapserver.Session) imapserver.Session {
-		return &refuseSentHeaderSearch{SessionIMAP4rev2: s.(imapserver.SessionIMAP4rev2), refusals: &refusals}
-	})
-	h.deliver("Sent", "Cached sent", "")
-	h.deliver("INBOX", "To archive", "")
-	h.sync()
-	h.set(h.conversations()["To archive"], func(s *ConversationState) { s.Workflow = WorkflowSettled })
-	h.sync()
-	h.deliver("INBOX", "Later delivery", "")
-	h.sync()
-	got := h.conversations()
-	if refusals.Load() == 0 || got["Cached sent"].ID == "" || got["Later delivery"].ID == "" || got["To archive"].Workflow != WorkflowSettled {
-		t.Fatal("expected Inbox, cached Sent, and archived mail after the refused recovery search")
-	}
-}
-
-func TestRetargetFlagsOnlyTheJunkCopy(t *testing.T) {
-	for _, fault := range []int32{loseCopyResponse, loseDeletedStoreResponse} {
-		h := newHarness(t)
-		serveCopyMoveProvider(t, h, fault)
-		const subject = "Interrupted restore"
-		raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
-		if err := h.lab.Deliver(labAddress, "Trash", raw); err != nil {
-			t.Fatal(err)
-		}
-		h.sync()
-		h.set(h.conversations()[subject], func(s *ConversationState) { s.Removal = "" })
-		if err := h.account.Sync(); err == nil {
-			t.Fatal("expected interrupted restore")
-		}
-		if err := h.lab.Deliver(labAddress, "Junk", raw); err != nil {
-			t.Fatal(err)
-		}
-		thread := h.conversations()[subject]
-		update := ConversationState{Workflow: thread.Workflow, Removal: RoleJunk, Pinned: true, Fields: []string{"removal", "unread", "pinned"}}
-		if code := h.request("PUT", "/v1/conversations/"+thread.ID, update, nil); code != 200 {
-			t.Fatalf("retarget returned %d", code)
-		}
-		h.sync()
-		for _, flag := range []imap.Flag{imap.FlagSeen, imap.FlagFlagged} {
-			if !slices.Contains(h.mailbox("Junk")[subject], flag) || slices.Contains(h.mailbox("Trash")[subject], flag) {
-				t.Fatalf("flag %s: Trash %v Junk %v conversation %+v", flag, h.mailbox("Trash"), h.mailbox("Junk"), h.conversations()[subject])
-			}
-		}
-	}
-}
-
-func TestRestoredSentCopyReceivesPin(t *testing.T) {
-	h := newHarness(t)
-	const subject = "Outgoing with an archive copy"
-	raw := LabMessage(labAddress, "sam@example.com", subject, "Hello.", "", time.Now())
-	for _, name := range []string{"Sent", "Archive"} {
-		if err := h.lab.Deliver(labAddress, name, raw); err != nil {
-			t.Fatal(err)
-		}
-	}
-	h.sync()
-	thread := h.conversations()[subject]
-	h.set(thread, func(s *ConversationState) { s.Removal = RoleTrash })
-	h.sync()
-	h.set(h.conversations()[subject], func(s *ConversationState) { s.Removal = "" })
-	h.sync()
-	restartCopyMoveAccount(t, h)
-	h.service.store, h.service.accounts = h.account.store, []*Account{h.account}
-	h.set(h.conversations()[subject], func(s *ConversationState) { s.Pinned = true })
-	h.sync()
-	if !slices.Contains(h.mailbox("Sent")[subject], imap.FlagFlagged) || slices.Contains(h.mailbox("Archive")[subject], imap.FlagFlagged) {
-		t.Fatal("expected Pin on the restored Sent copy only")
-	}
-}
-
 func TestUIDPlusRestoreFromJunkWithTrashAndInboxCopies(t *testing.T) {
 	h := newHarness(t)
 	serveCopyMoveProvider(t, h, 0)
 	const subject = "Restore from Junk"
-	raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
+	raw := maillab.Message("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
 	if err := h.lab.Deliver(labAddress, "Junk", raw); err != nil {
 		t.Fatal(err)
 	}
@@ -326,82 +340,78 @@ func TestUIDPlusRestoreFromJunkWithTrashAndInboxCopies(t *testing.T) {
 	}
 }
 
-func TestSettleAfterUndoOfLostArchiveCopy(t *testing.T) {
-	h := newHarness(t)
-	copies := serveCopyMoveProvider(t, h, loseCopyResponse)
-	const subject = "Settle after Undo"
-	h.deliver("INBOX", subject, "")
-	h.sync()
-	setWorkflow := func(workflow Workflow) {
-		h.set(h.conversations()[subject], func(s *ConversationState) { s.Workflow = workflow })
-	}
-	setWorkflow(WorkflowSettled)
-	if err := h.account.Sync(); err == nil {
-		t.Fatal("expected lost Archive COPY response")
-	}
-	setWorkflow(WorkflowInbox)
-	h.sync()
-	setWorkflow(WorkflowSettled)
-	h.sync()
-	if len(h.mailbox("INBOX")) != 0 || len(h.mailbox("Archive")) != 1 || copies.Load() != 1 || h.conversations()[subject].Workflow != WorkflowSettled {
-		t.Fatal("second Settle must remove the Inbox source and reuse the verified Archive copy")
-	}
-}
-
-func (h *harness) count(mailbox string) uint32 {
-	h.t.Helper()
-	c, err := imapclient.DialInsecure(h.lab.IMAP.Address(), nil)
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	defer c.Close()
-	if err := c.Login(labAddress, "lab").Wait(); err != nil {
-		h.t.Fatal(err)
-	}
-	status, err := c.Status(mailbox, &imap.StatusOptions{NumMessages: true}).Wait()
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	return *status.NumMessages
-}
-
-func TestResettleAfterLostCopyKeepsNewPin(t *testing.T) {
-	h := newHarness(t)
-	serveCopyMoveProvider(t, h, loseCopyResponse)
-	const subject = "Pin before Settle"
-	h.deliver("INBOX", subject, "")
-	h.sync()
-	set := func(change func(*ConversationState)) { h.set(h.conversations()[subject], change) }
-	set(func(s *ConversationState) { s.Workflow = WorkflowSettled })
-	if err := h.account.Sync(); err == nil {
-		t.Fatal("expected lost Archive COPY response")
-	}
-	set(func(s *ConversationState) { s.Workflow = WorkflowInbox })
-	h.sync()
-	set(func(s *ConversationState) { s.Pinned = true })
-	h.sync()
-	set(func(s *ConversationState) { s.Workflow = WorkflowSettled })
-	h.sync()
-	restartCopyMoveAccount(t, h)
-	h.sync()
-	if !slices.Contains(h.mailbox("Archive")[subject], imap.FlagFlagged) || !h.conversations()[subject].Pinned {
-		t.Fatal("the reused Archive copy must take the pin set after Undo")
-	}
-}
-
-func TestNativeMoveReusesExistingArchiveCopy(t *testing.T) {
-	h := newHarness(t)
-	const subject = "Copy in Inbox and Archive"
-	raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
-	for _, mailbox := range []string{"INBOX", "Archive"} {
-		if err := h.lab.Deliver(labAddress, mailbox, raw); err != nil {
-			t.Fatal(err)
+func TestProviderNativeMovePreservesUnrelatedDeletedMail(t *testing.T) {
+	for _, targeted := range []bool{true, false} {
+		name := "UIDPLUS"
+		if !targeted {
+			name = "no UIDPLUS"
 		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			caps := imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapMove: {}}
+			if targeted {
+				caps[imap.CapUIDPlus] = struct{}{}
+			}
+			serveProvider(t, h, caps, nil)
+			h.deliver("INBOX", "Move me", "")
+			h.deliver("INBOX", "Unrelated deleted message", "", imap.FlagDeleted)
+			h.sync()
+			h.set(h.conversations()["Move me"], func(s *ConversationState) { s.Workflow = WorkflowSettled })
+			err := h.account.Sync()
+			inbox, archive := h.mailbox("INBOX"), h.mailbox("Archive")
+			if !slices.Contains(inbox["Unrelated deleted message"], imap.FlagDeleted) {
+				t.Fatalf("MOVE expunged an unrelated UID: %v", inbox)
+			}
+			if err != nil || len(inbox) != 1 || len(archive) != 1 {
+				t.Fatalf("MOVE should move one message: %v, inbox %v, archive %v", err, inbox, archive)
+			}
+		})
 	}
-	h.sync()
-	h.set(h.conversations()[subject], func(s *ConversationState) { s.Workflow = WorkflowSettled })
-	h.sync()
-	if h.count("INBOX") != 0 || h.count("Archive") != 1 {
-		t.Fatalf("Settle must leave one Archive copy: Inbox %d, Archive %d", h.count("INBOX"), h.count("Archive"))
+}
+
+func TestProviderAppliesSupportedWritesAlongsideUnsupportedWrites(t *testing.T) {
+	for _, provider := range []struct {
+		name    string
+		move    bool
+		uidPlus bool
+	}{
+		{name: "UIDPLUS only", uidPlus: true},
+		{name: "MOVE only", move: true},
+		{name: "neither"},
+	} {
+		t.Run(provider.name, func(t *testing.T) {
+			h := newHarness(t)
+			caps := imap.CapSet{imap.CapIMAP4rev1: {}}
+			if provider.move {
+				caps[imap.CapMove] = struct{}{}
+			}
+			if provider.uidPlus {
+				caps[imap.CapUIDPlus] = struct{}{}
+			}
+			serveProvider(t, h, caps, nil)
+			h.deliver("INBOX", "Pin me", "")
+			h.deliver("INBOX", "Archive me", "")
+			h.deliver("Trash", "Delete me", "")
+			h.sync()
+			threads := h.conversations()
+			h.set(threads["Pin me"], func(s *ConversationState) { s.Pinned = true })
+			h.set(threads["Archive me"], func(s *ConversationState) { s.Workflow = WorkflowSettled })
+			queueProviderDelete(t, h, threads["Delete me"].ID)
+			for range 2 {
+				err := h.account.Sync()
+				if !slices.Contains(h.mailbox("INBOX")["Pin me"], imap.FlagFlagged) {
+					t.Fatalf("unrelated pin was blocked: %v", err)
+				}
+				if provider.uidPlus && err != nil || !provider.uidPlus && (err == nil || !strings.Contains(err.Error(), "UIDPLUS")) {
+					t.Fatalf("unexpected sync error: %v", err)
+				}
+			}
+			_, inInbox := h.mailbox("INBOX")["Archive me"]
+			_, inArchive := h.mailbox("Archive")["Archive me"]
+			_, inTrash := h.mailbox("Trash")["Delete me"]
+			if inInbox != (!provider.move && !provider.uidPlus) || inArchive == inInbox || inTrash != !provider.uidPlus {
+				t.Fatalf("unexpected provider state: moved source %v, destination %v, delete target %v", inInbox, inArchive, inTrash)
+			}
+		})
 	}
 }

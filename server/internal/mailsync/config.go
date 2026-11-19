@@ -1,4 +1,4 @@
-package main
+package mailsync
 
 import (
 	"encoding/json"
@@ -49,7 +49,8 @@ type AccountConfig struct {
 	// Overrides for servers that do not mark their mailboxes with special-use attributes.
 	Mailboxes map[Role]string `json:"mailboxes,omitempty"`
 
-	password string
+	// Password is read from PasswordFile or PasswordEnv. It is never written to JSON.
+	Password string `json:"-"`
 }
 
 type Config struct {
@@ -170,11 +171,11 @@ func (c *Config) resolve(base string) error {
 			if err != nil {
 				return fmt.Errorf("account %q: %w", a.ID, err)
 			}
-			a.password = strings.TrimSpace(string(data))
+			a.Password = strings.TrimSpace(string(data))
 		case a.PasswordEnv != "":
-			a.password = os.Getenv(a.PasswordEnv)
+			a.Password = os.Getenv(a.PasswordEnv)
 		}
-		if a.password == "" {
+		if a.Password == "" {
 			return fmt.Errorf("account %q needs a password through passwordFile or passwordEnv", a.ID)
 		}
 	}

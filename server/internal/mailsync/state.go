@@ -1,4 +1,4 @@
-package main
+package mailsync
 
 import (
 	"encoding/json"

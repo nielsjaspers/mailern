@@ -30,8 +30,8 @@ Before permanent deletion, Mailern checks the thread members and their mailbox. 
    - Proton: run Proton Mail Bridge on the same computer and copy the username and password it shows for your account. Bridge requires a paid plan. Match the IMAP and SMTP ports and connection security in Bridge’s Mailbox details. If SMTP uses SSL/TLS, set the account’s `smtp` endpoint to the displayed host and port with `"security": "tls"`.
 2. Save each password in its own file, readable only by you (`chmod 600`).
 3. Copy `config.example.json` to `config.json` and fill in your addresses, password files, and your Tailscale login name in `allowedUsers`. Relative paths are relative to the config file.
-4. Check the config: `go run . check -config config.json`. It signs in to each account and prints its mailboxes and message counts, without message content.
-5. Start the service: `go run . serve -config config.json`. The first start prints a link to add the device to your tailnet; after that it prints the address to use, such as `https://mailern.example.ts.net`. Your tailnet needs MagicDNS and HTTPS certificates turned on.
+4. Check the config: `go run ./cmd/mailern-server check -config config.json`. It signs in to each account and prints its mailboxes and message counts, without message content.
+5. Start the service: `go run ./cmd/mailern-server serve -config config.json`. The first start prints a link to add the device to your tailnet; after that it prints the address to use, such as `https://mailern.example.ts.net`. Your tailnet needs MagicDNS and HTTPS certificates turned on.
 6. In Mailern, open More → Settings → Mail Server and enter that address.
 
 Only the Tailscale users in `allowedUsers` can use the service. Keep the service running for snoozes to return on time and for sync to continue while the app is closed.
@@ -52,8 +52,10 @@ Only the Tailscale users in `allowedUsers` can use the service. Keep the service
 
 ## Development
 
-`go run . demo` serves fictional mail from a built-in mail server on `http://127.0.0.1:8025`, with no accounts or Tailscale. In the iOS Simulator, enter that address in Mailern. `POST /demo/receive` delivers a fictional message; pass `inReplyTo` with a Message-ID to reply to a thread.
+`go run ./cmd/mailern-server demo` serves fictional mail from a built-in mail server on `http://127.0.0.1:8025`, with no accounts or Tailscale. In the iOS Simulator, enter that address in Mailern. `POST /demo/receive` delivers a fictional message; pass `inReplyTo` with a Message-ID to reply to a thread.
 
 `go test ./...` runs the sync, workflow, send, and API tests against the same fictional mail server.
+
+The command lives in `cmd/mailern-server`. `internal/mailsync` holds the service: config, sync, workflow placement, sending, and the API the app uses. `internal/maillab` is the fictional mail server that `demo` and the tests run.
 
 `serve -listen 127.0.0.1:PORT` serves real accounts over plain HTTP on this computer only, without Tailscale or sign-in.

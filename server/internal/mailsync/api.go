@@ -1,4 +1,4 @@
-package main
+package mailsync
 
 import (
 	"context"
@@ -18,8 +18,8 @@ import (
 type Service struct {
 	store    *Store
 	accounts []*Account
-	// authorize rejects requests from people outside the allowed list. Nil allows every request.
-	authorize func(*http.Request) error
+	// Authorize rejects requests from people outside the allowed list. Nil allows every request.
+	Authorize func(*http.Request) error
 }
 
 type wireAccount struct {
@@ -104,8 +104,8 @@ func (s *Service) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if s.authorize != nil {
-			if err := s.authorize(r); err != nil {
+		if s.Authorize != nil {
+			if err := s.Authorize(r); err != nil {
 				http.Error(w, err.Error(), http.StatusForbidden)
 				return
 			}

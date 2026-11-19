@@ -1,6 +1,7 @@
-package main
+package mailsync
 
 import (
+	"errors"
 	"net"
 	"slices"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
+	"github.com/nielsjaspers/mailern/server/internal/maillab"
 )
 
 type copyMoveProvider struct {
@@ -81,26 +83,16 @@ func serveCopyMoveProvider(t *testing.T, h *harness, fault int32) *atomic.Int32 
 	var pending, copies atomic.Int32
 	pending.Store(fault)
 	server := imapserver.New(&imapserver.Options{
-		Caps: imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapUIDPlus: {}}, InsecureAuth: true, Logger: quietLogger{},
+		Caps: imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapUIDPlus: {}}, InsecureAuth: true, Logger: maillab.QuietLogger{},
 		NewSession: func(conn *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return copyMoveProvider{h.lab.imap.NewSession(), conn.NetConn(), &pending, &copies}, nil, nil
+			return copyMoveProvider{h.lab.NewSession(), conn.NetConn(), &pending, &copies}, nil, nil
 		},
 	})
 	go server.Serve(listener)
 	t.Cleanup(func() { server.Close() })
-	h.lab.IMAP = endpointFor(listener)
-	h.account.cfg.IMAP = &h.lab.IMAP
+	h.imap = endpointFor(listener)
+	h.account.cfg.IMAP = &h.imap
 	return &copies
-}
-
-func restartCopyMoveAccount(t *testing.T, h *harness) {
-	t.Helper()
-	h.account.disconnect()
-	store, err := OpenStore(h.account.store.path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.account = NewAccount(h.account.cfg, store, h.account.window)
 }
 
 func TestProviderUIDPlusMoveRetriesAfterRestart(t *testing.T) {
@@ -220,7 +212,7 @@ func TestProviderUIDPlusMoveLeavesSourceAfterRestoreOrRemap(t *testing.T) {
 			}
 			switch change {
 			case "mailbox remap":
-				if err := h.lab.users[labAddress].Create("Other Trash", nil); err != nil {
+				if err := h.lab.User(labAddress).Create("Other Trash", nil); err != nil {
 					t.Fatal(err)
 				}
 				h.deliver("Other Trash", "Unrelated mail", "")
@@ -278,7 +270,7 @@ func TestProviderUIDPlusSupersededMovePreservesExternalCopy(t *testing.T) {
 			h := newHarness(t)
 			copies := serveCopyMoveProvider(t, h, scenario.fault)
 			const subject = "Identical mail added by another client"
-			raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
+			raw := maillab.Message("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
 			if err := h.lab.Deliver(labAddress, "INBOX", raw); err != nil {
 				t.Fatal(err)
 			}
@@ -333,6 +325,204 @@ func TestProviderUIDPlusRetriesCopyThatNeverCommitted(t *testing.T) {
 			}
 			if c := h.conversations()[subject]; c.Workflow != WorkflowSettled {
 				t.Fatalf("thread should be settled, got %s", c.Workflow)
+			}
+		})
+	}
+}
+
+func TestSettleAfterUndoOfLostArchiveCopy(t *testing.T) {
+	h := newHarness(t)
+	copies := serveCopyMoveProvider(t, h, loseCopyResponse)
+	const subject = "Settle after Undo"
+	h.deliver("INBOX", subject, "")
+	h.sync()
+	setWorkflow := func(workflow Workflow) {
+		h.set(h.conversations()[subject], func(s *ConversationState) { s.Workflow = workflow })
+	}
+	setWorkflow(WorkflowSettled)
+	if err := h.account.Sync(); err == nil {
+		t.Fatal("expected lost Archive COPY response")
+	}
+	setWorkflow(WorkflowInbox)
+	h.sync()
+	setWorkflow(WorkflowSettled)
+	h.sync()
+	if len(h.mailbox("INBOX")) != 0 || len(h.mailbox("Archive")) != 1 || copies.Load() != 1 || h.conversations()[subject].Workflow != WorkflowSettled {
+		t.Fatal("second Settle must remove the Inbox source and reuse the verified Archive copy")
+	}
+}
+
+func TestResettleAfterLostCopyKeepsNewPin(t *testing.T) {
+	h := newHarness(t)
+	serveCopyMoveProvider(t, h, loseCopyResponse)
+	const subject = "Pin before Settle"
+	h.deliver("INBOX", subject, "")
+	h.sync()
+	set := func(change func(*ConversationState)) { h.set(h.conversations()[subject], change) }
+	set(func(s *ConversationState) { s.Workflow = WorkflowSettled })
+	if err := h.account.Sync(); err == nil {
+		t.Fatal("expected lost Archive COPY response")
+	}
+	set(func(s *ConversationState) { s.Workflow = WorkflowInbox })
+	h.sync()
+	set(func(s *ConversationState) { s.Pinned = true })
+	h.sync()
+	set(func(s *ConversationState) { s.Workflow = WorkflowSettled })
+	h.sync()
+	restartCopyMoveAccount(t, h)
+	h.sync()
+	if !slices.Contains(h.mailbox("Archive")[subject], imap.FlagFlagged) || !h.conversations()[subject].Pinned {
+		t.Fatal("the reused Archive copy must take the pin set after Undo")
+	}
+}
+
+func TestNativeMoveReusesExistingArchiveCopy(t *testing.T) {
+	h := newHarness(t)
+	const subject = "Copy in Inbox and Archive"
+	raw := maillab.Message("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
+	for _, mailbox := range []string{"INBOX", "Archive"} {
+		if err := h.lab.Deliver(labAddress, mailbox, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.sync()
+	h.set(h.conversations()[subject], func(s *ConversationState) { s.Workflow = WorkflowSettled })
+	h.sync()
+	if h.count("INBOX") != 0 || h.count("Archive") != 1 {
+		t.Fatalf("Settle must leave one Archive copy: Inbox %d, Archive %d", h.count("INBOX"), h.count("Archive"))
+	}
+}
+
+func TestProviderCopyFromAllMailKeepsOldSource(t *testing.T) {
+	h := newHarness(t)
+	user := h.lab.User(labAddress)
+	if err := user.Create("Everything", nil); err != nil {
+		t.Fatal(err)
+	}
+	h.account.cfg.Mailboxes = map[Role]string{RoleArchive: "Everything"}
+	serveProvider(t, h, imap.CapSet{
+		imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}, imap.CapSpecialUse: {},
+	}, func(s imapserver.Session) imapserver.Session {
+		return allMailSession{s.(imapserver.SessionIMAP4rev2)}
+	})
+	appendOldProviderMail(t, h, "INBOX", "Old mail")
+	h.sync()
+	h.set(h.conversations()["Old mail"], func(s *ConversationState) { s.Workflow = WorkflowSettled })
+	h.sync()
+	h.set(h.conversations()["Old mail"], func(s *ConversationState) { s.Removal = RoleTrash })
+	h.sync()
+	if len(h.mailbox("Everything")) != 1 || len(h.mailbox("Trash")) != 1 {
+		t.Fatal("leaving All Mail should copy the message and keep the source")
+	}
+	if got := h.conversations()["Old mail"]; got.Removal != RoleTrash {
+		t.Fatalf("old copy was not associated with its thread: %+v", got)
+	}
+}
+
+type allMailSession struct {
+	imapserver.SessionIMAP4rev2
+}
+
+func (s allMailSession) List(w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) error {
+	// The in-memory backend does not assign special-use flags to created mailboxes.
+	if options.ReturnSpecialUse {
+		if err := w.WriteList(&imap.ListData{Mailbox: "Everything", Delim: '/', Attrs: []imap.MailboxAttr{imap.MailboxAttrAll}}); err != nil {
+			return err
+		}
+	}
+	return s.SessionIMAP4rev2.List(w, ref, patterns, options)
+}
+
+type failingCopySession struct {
+	imapserver.Session
+}
+
+func (s failingCopySession) Copy(imap.NumSet, string) (*imap.CopyData, error) {
+	return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "test copy refused"}
+}
+
+func TestProviderFailedAllMailCopyLeavesSourceUndeleted(t *testing.T) {
+	h := newHarness(t)
+	if err := h.lab.User(labAddress).Create("Everything", nil); err != nil {
+		t.Fatal(err)
+	}
+	h.account.cfg.Mailboxes = map[Role]string{RoleArchive: "Everything"}
+	serveProvider(t, h, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapSpecialUse: {}, imap.CapListExtended: {}},
+		func(s imapserver.Session) imapserver.Session {
+			return failingCopySession{allMailSession{s.(imapserver.SessionIMAP4rev2)}}
+		})
+	h.deliver("Everything", "Keep on failed copy", "")
+	h.sync()
+	h.set(h.conversations()["Keep on failed copy"], func(s *ConversationState) { s.Workflow = WorkflowInbox })
+	// Keep the connection open after the error so a queued STORE or EXPUNGE reaches the server.
+	err := h.account.sync()
+	var status *imap.Error
+	if !errors.As(err, &status) || status.Text != "test copy refused" {
+		t.Fatalf("expected the COPY failure, got %v", err)
+	}
+	if err := h.account.client.Noop().Wait(); err != nil {
+		t.Fatal(err)
+	}
+	got := h.mailbox("Everything")
+	if flags, ok := got["Keep on failed copy"]; !ok || slices.Contains(flags, imap.FlagDeleted) {
+		t.Fatalf("failed COPY touched the source: %v", got)
+	}
+}
+
+func TestProviderRollsBackSourceStoreAfterCopyRemoved(t *testing.T) {
+	h := newHarness(t)
+	copies := serveCopyMoveProvider(t, h, loseDeletedStoreResponse)
+	const subject = "Keep the only remaining copy"
+	h.deliver("INBOX", subject, "")
+	h.sync()
+	h.set(h.conversations()[subject], func(s *ConversationState) { s.Removal = RoleTrash })
+	if err := h.account.Sync(); err == nil {
+		t.Fatal("expected lost STORE response")
+	}
+	if !slices.Contains(h.mailbox("INBOX")[subject], imap.FlagDeleted) {
+		t.Fatal("provider did not commit STORE")
+	}
+	c, err := h.account.dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Select("Trash", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := expungeUIDs(c, imap.UIDSetNum(1)); err != nil {
+		t.Fatal(err)
+	}
+	restartCopyMoveAccount(t, h)
+	h.sync()
+	if flags, ok := h.mailbox("INBOX")[subject]; !ok || slices.Contains(flags, imap.FlagDeleted) || copies.Load() != 1 {
+		t.Fatalf("expected the source to survive unmarked and no repeat COPY, got %v with flags %v and %d attempts", ok, flags, copies.Load())
+	}
+}
+
+func TestProviderSupersedesPartialCopyWithExplicitTarget(t *testing.T) {
+	for _, scenario := range []struct {
+		name       string
+		fault      int32
+		trashCount int
+	}{
+		{"COPY response lost", loseCopyResponse, 1},
+		{"STORE response lost after COPYUID", loseDeletedStoreResponse, 0},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			h := newHarness(t)
+			copies := serveCopyMoveProvider(t, h, scenario.fault)
+			const subject = "Send to Junk instead"
+			h.deliver("INBOX", subject, "")
+			h.sync()
+			h.set(h.conversations()[subject], func(s *ConversationState) { s.Removal = RoleTrash })
+			if err := h.account.Sync(); err == nil {
+				t.Fatal("expected interrupted move")
+			}
+			h.set(h.conversations()[subject], func(s *ConversationState) { s.Removal = RoleJunk })
+			h.sync()
+			if len(h.mailbox("INBOX")) != 0 || len(h.mailbox("Trash")) != scenario.trashCount || len(h.mailbox("Junk")) != 1 || copies.Load() != 2 {
+				t.Fatalf("expected the new Junk copy and %d retained Trash copies, got %d COPY attempts", scenario.trashCount, copies.Load())
 			}
 		})
 	}

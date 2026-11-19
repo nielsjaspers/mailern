@@ -1,4 +1,4 @@
-package main
+package mailsync
 
 import (
 	"context"
@@ -86,7 +86,7 @@ func (a *Account) dial() (*imapclient.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := c.Login(a.cfg.Username, a.cfg.password).Wait(); err != nil {
+	if err := c.Login(a.cfg.Username, a.cfg.Password).Wait(); err != nil {
 		c.Close()
 		return nil, fmt.Errorf("login: %w", err)
 	}

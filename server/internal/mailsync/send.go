@@ -1,4 +1,4 @@
-package main
+package mailsync
 
 import (
 	"bytes"
@@ -365,7 +365,7 @@ func (a *Account) smtpClient() (*smtp.Client, error) {
 		return nil, err
 	}
 	if e.Security != "none" {
-		if err := c.Auth(sasl.NewPlainClient("", a.cfg.Username, a.cfg.password)); err != nil {
+		if err := c.Auth(sasl.NewPlainClient("", a.cfg.Username, a.cfg.Password)); err != nil {
 			c.Close()
 			return nil, fmt.Errorf("smtp login: %w", err)
 		}
