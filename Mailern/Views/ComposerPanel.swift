@@ -396,10 +396,10 @@ private struct PanelMotion<Content: View, Header: View>: View, Animatable {
     }
     private var closeOpacity: Double {
         guard let closingFrom else { return 1 }
-        // Fade the controls before they reach the tab bar. A long pull still starts at full opacity on release.
-        let fadeStart = max(closingFrom, dockOffset - 110)
-        let fadeLength = max(30, dockOffset - fadeStart)
-        return 1 - min(1, max(0, (offset - fadeStart) / fadeLength))
+        // Fields sit below the panel's top edge. Clear them before they can pass behind the tab bar.
+        let fadeEnd = max(32, dockOffset - 180)
+        let fadeStart = max(fadeEnd - 100, min(closingFrom, fadeEnd - 32))
+        return 1 - min(1, max(0, (offset - fadeStart) / (fadeEnd - fadeStart)))
     }
 }
 
