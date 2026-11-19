@@ -76,6 +76,12 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     /// When to return the sent conversation to Inbox if nobody replied.
     var followUp: Date?
 
+    /// Whether `other` would send the same message: sender, recipients, subject, body, and attachments.
+    func hasSameSubmission(as other: Self) -> Bool {
+        accountID == other.accountID && to == other.to && cc == other.cc && bcc == other.bcc && subject == other.subject
+            && text == other.text && richText == other.richText && attachments == other.attachments
+    }
+
     func matchesContent(of other: Self) -> Bool {
         // Pinning and snooze expiry do not change the editor's saved content.
         var content = self

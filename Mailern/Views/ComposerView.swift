@@ -68,6 +68,8 @@ struct ComposerView: View {
     private let attachmentLimit = 25 * 1024 * 1024
     private var importing: Bool { importsInFlight > 0 }
 
+    private var awaitingConfirmation: Bool { store.hasPendingRemoteSend(draft.id) }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -141,7 +143,8 @@ struct ComposerView: View {
                     keyboardTools.padding(.trailing, 16).padding(.top, 4).padding(.bottom, 12)
                 }
             }
-            .disabled(completed || finishing)
+            // An unconfirmed send may already be out, so its content stays as sent until the server answers.
+            .disabled(completed || finishing || awaitingConfirmation)
             .scrollDismissesKeyboard(.immediately)
             // The top inset is the navigation bar, with the large title while it shows: the panel's pull zone.
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.top } action: { _, top in panel.pullZone = top }
@@ -163,7 +166,7 @@ struct ComposerView: View {
                         Button("Send Later…", systemImage: "calendar.badge.clock") { picking = .sendLater }
                         Button(draft.followUp == nil ? "Remind Me If No Reply…" : "Change Reminder…", systemImage: "hourglass") { picking = .reminder }
                     } label: {
-                        Label("Send", systemImage: "arrow.up")
+                        Label(awaitingConfirmation ? "Retry Send" : "Send", systemImage: "arrow.up")
                     } primaryAction: { Task { await send() } }
                         .labelStyle(.iconOnly).tint(.blue)
                         .foregroundStyle(draft.canSend ? Color.white : Color.secondary).disabled(!draft.canSend || !loaded || completed || finishing || importing)

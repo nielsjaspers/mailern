@@ -702,7 +702,18 @@ final class MailStore {
         await deliver(draft) == .filed
     }
 
+    /// Sends a draft. A retry after an unconfirmed send repeats the first submission exactly, because that one may
+    /// already be out. Changes made since then are not sent, and the store says so.
     func deliver(_ draft: ComposerDraft) async -> DraftDelivery {
+        let changed = pendingRemoteSends[draft.id].map { !$0.prepared.draft.hasSameSubmission(as: draft) } ?? false
+        let result = await deliverSubmission(draft)
+        if changed && result == .filed {
+            error = "Message sent as first written. Changes made after the first try were not sent."
+        }
+        return result
+    }
+
+    private func deliverSubmission(_ draft: ComposerDraft) async -> DraftDelivery {
         if discardedDraftIDs.contains(draft.id) { return .filed }
         guard isServerMailbox else { return send(draft) ? .filed : .refused }
         guard canWrite() else { return .refused }
