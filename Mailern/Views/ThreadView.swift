@@ -125,7 +125,6 @@ struct ThreadView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner(sendingOnly: true) }
         .toolbar(.hidden, for: .tabBar)
         .onAppear { store.markRead(id) }
-        .toolbar(panel.hidesToolbar ? .hidden : .visible, for: .bottomBar)
         .modifier(DraftStorageAlert(active: true))
         .modifier(DiscardDraftsConfirmation(request: $settling, onDone: { leave(after: settleNext) }))
         .confirmationDialog("Delete this conversation permanently?", isPresented: $deletingConversation, titleVisibility: .visible) {

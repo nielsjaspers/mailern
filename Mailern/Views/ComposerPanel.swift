@@ -50,6 +50,12 @@ import SwiftUI
     fileprivate var height: CGFloat = 1000
     fileprivate var dockOffset: CGFloat { max(0, (dockBottom ?? openTop + height) - headerHeight - openTop) }
     private var pullStart: CGFloat = 0
+    /// Where a pull let go. A pulled message that closes instead of docking decides its look from this, not from the
+    /// dock target the spring already holds.
+    private var released: CGFloat = 0
+    /// The dock offset the fades measure against. It holds still while the tab bar hides under a rising panel, so the
+    /// header only fades with the finger, and follows the target while the panel docks.
+    fileprivate private(set) var fadeBase: CGFloat = 1
     /// Where a drag on the dock started. The tab bar hides as the panel rises, which moves the dock under the finger.
     private var dragOrigin: CGFloat = 0
     private var generation = 0
@@ -118,7 +124,7 @@ import SwiftUI
         docking = false
         settled = false
         // An untouched message pulled only part of the way leaves as a composer, not through the dock's header.
-        if offset < dockOffset * 0.55 { morphing = false }
+        if (docking ? released : offset) < dockOffset * 0.55 { morphing = false }
         withAnimation(.smooth(duration: 0.3)) { covering = false }
         move(to: height, until: .removed) { [weak self] in self?.leave() }
     }
@@ -145,6 +151,7 @@ import SwiftUI
     fileprivate func pullEnded(translation: CGFloat, predicted: CGFloat, velocity: CGFloat) {
         guard pulling else { return }
         pulling = false
+        released = offset
         if offset > 120 || (predicted - translation > 160 && offset > 24) {
             dock(velocity: velocity)
             minimizeRequests += 1
@@ -157,6 +164,7 @@ import SwiftUI
         self.request = request
         self.offset = offset
         self.morphing = morphing
+        fadeBase = max(1, dockOffset)
         settled = false
         hidesToolbar = true
         withAnimation(.smooth(duration: 0.3)) { covering = true }
@@ -168,6 +176,7 @@ import SwiftUI
         moveToDock(velocity: 0)
     }
     private func moveToDock(velocity: CGFloat) {
+        fadeBase = max(1, dockOffset)
         // The real dock replaces the panel when it stops, so it must stop exactly there, not when it is merely close.
         move(to: dockOffset, velocity: velocity, until: .removed) { [weak self] in
             self?.arrived = true
@@ -177,6 +186,15 @@ import SwiftUI
     private func finishDocking() {
         guard docking, arrived, ready else { return }
         leave()
+    }
+    /// Ends the current motion at once, for a panel whose tab just left the screen.
+    func finishMotion() {
+        guard request != nil, !covering else { return }
+        generation += 1
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { offset = docking ? dockOffset : height }
+        if docking { arrived = true; finishDocking() } else { leave() }
     }
     private func leave() {
         docking = false
@@ -261,7 +279,7 @@ struct ComposerPanelHost: View {
                 .onChange(of: proxy.size) { _, _ in record(proxy) }
             if let request = panel.request {
                 let openTop = Self.statusBar + 10
-                let dockOffset = max(1, panel.dockOffset)
+                let dockOffset = panel.fadeBase
                 ZStack(alignment: .top) {
                     PanelDim(offset: panel.offset, dockOffset: dockOffset)
                     PanelMotion(offset: panel.offset, dockOffset: dockOffset, morphing: panel.morphing) {

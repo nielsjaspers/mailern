@@ -85,7 +85,11 @@ struct MailboxView: View {
             }
         }
         .animation(.easeOut(duration: reduceMotion ? 0 : 0.18), value: peeking)
-        .onChange(of: selection) { _, _ in peeking = nil; searching = false; endSelection() }
+        .onChange(of: selection) { _, _ in
+            peeking = nil; searching = false; endSelection()
+            // The panel stays on its own tab, which is now off screen and may not run its spring to the end.
+            panel.finishMotion()
+        }
         .onChange(of: searching) { _, active in if !active { searchScope = .section } }
         // Bulk actions and filters belong to one section, so All mail leaves selection.
         .onChange(of: searchScope) { _, scope in
@@ -215,7 +219,7 @@ struct MailboxView: View {
                 .modifier(MailboxSearchToolbar())
                 .toolbar { mailboxToolbar(status) }
                 .toolbar {
-                    if legacyBottomCompose && !selecting && !panel.hidesToolbar {
+                    if legacyBottomCompose && !selecting {
                         ToolbarItem(placement: .bottomBar) {
                             Button("Compose", systemImage: "square.and.pencil") { compose(.new) }
                         }

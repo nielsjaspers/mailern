@@ -108,7 +108,6 @@ struct DraftThreadView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
-        .toolbar(panel.hidesToolbar ? .hidden : .visible, for: .bottomBar)
         .modifier(DraftStorageAlert(active: true))
         .modifier(DiscardDraftsConfirmation(request: $settling))
         .sheet(isPresented: $snoozing) { SnoozeView(ids: [], draftIDs: [id], onSnooze: { dismiss() }) }
@@ -235,9 +234,19 @@ struct DraftDock: View {
 extension View {
     /// Places the dock at the bottom. On iOS 26 and later it is a bar, so the scroll edge effect stays behind it
     /// instead of fading its text.
-    @ViewBuilder func draftDock() -> some View {
+    func draftDock() -> some View { modifier(DraftDockBar()) }
+}
+
+private struct DraftDockBar: ViewModifier {
+    @Environment(ComposerPanel.self) private var panel
+    func body(content: Content) -> some View {
         let _ = SoftwareKeyboard.shared
-        if #available(iOS 26, *) { safeAreaBar(edge: .bottom, spacing: 0) { DraftDock() } }
-        else { safeAreaInset(edge: .bottom, spacing: 0) { DraftDock() } }
+        Group {
+            if #available(iOS 26, *) { content.safeAreaBar(edge: .bottom, spacing: 0) { DraftDock() } }
+            else { content.safeAreaInset(edge: .bottom, spacing: 0) { DraftDock() } }
+        }
+        // A bottom toolbar draws under the navigation stack's overlay, so it would show through the panel's edges.
+        // It stays hidden while the panel is on screen and slides in once it is gone.
+        .toolbar(panel.hidesToolbar ? .hidden : .automatic, for: .bottomBar)
     }
 }

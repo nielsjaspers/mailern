@@ -168,7 +168,8 @@ struct ComposerView: View {
         .writingToolsBehavior(.disabled)
         .onAppear { load() }
         .onChange(of: canPull, initial: true) { _, value in panel.canPull = value }
-        .onChange(of: DockSummary(draft), initial: true) { _, value in panel.summary = value }
+        // Only a loaded draft: the empty placeholder would show "New Message" on a resuming panel for a frame.
+        .onChange(of: loaded ? DockSummary(draft) : nil, initial: true) { _, value in if let value { panel.summary = value } }
         .onChange(of: panel.settled) { _, settled in
             guard settled, let refocus else { return }
             self.refocus = nil
