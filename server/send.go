@@ -66,11 +66,12 @@ func (a *Account) Send(req SendRequest) error {
 	key := a.messageID(req.ID)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	known := false
+	known, uncertain := false, false
 	var invalidThread bool
 	a.store.Read(func(st *State) {
 		account := st.account(a.cfg.ID)
 		_, known = account.Receipts[key]
+		uncertain = account.Submitting[key]
 		thread := st.Conversations[req.ConversationID]
 		invalidThread = thread != nil && (thread.AccountID != a.cfg.ID || thread.Deleting)
 	})
@@ -98,6 +99,9 @@ func (a *Account) Send(req SendRequest) error {
 		}
 	} else if *a.cfg.AppendSent {
 		return errors.New("configure a Sent mailbox before sending")
+	}
+	if uncertain {
+		return uncertainDelivery
 	}
 	if req.InReplyTo != "" {
 		var present bool
@@ -196,6 +200,7 @@ func (a *Account) record(req SendRequest, key string, toFile []byte) error {
 		if account.Receipts == nil {
 			account.Receipts = make(map[string][]byte)
 		}
+		delete(account.Submitting, key)
 		account.Receipts[key] = toFile
 		if account.Messages[key] != nil {
 			st.Revision++
@@ -344,15 +349,66 @@ func (a *Account) submit(req SendRequest, raw []byte) error {
 	}
 	defer c.Close()
 	recipients := append(append(append([]string{}, req.To...), req.Cc...), req.Bcc...)
-	if err := c.SendMail(a.cfg.Address, recipients, bytes.NewReader(raw)); err != nil {
-		var smtpErr *smtp.SMTPError
-		if errors.As(err, &smtpErr) && smtpErr.Code >= 500 {
-			return badRequest{err}
+	var utf8 bool
+	for _, address := range append(recipients, a.cfg.Address) {
+		if strings.ContainsFunc(address, func(r rune) bool { return r > 127 }) {
+			utf8 = true
 		}
+	}
+	if err := c.Mail(a.cfg.Address, &smtp.MailOptions{UTF8: utf8}); err != nil {
+		return submissionError(err)
+	}
+	for _, addr := range recipients {
+		if err := c.Rcpt(addr, nil); err != nil {
+			return submissionError(err)
+		}
+	}
+	data, err := c.Data()
+	if err != nil {
+		return submissionError(err)
+	}
+	if _, err := data.Write(raw); err != nil {
 		return err
 	}
-	// SendMail already received the final SMTP acceptance.
+	// DATA close sends the terminator that allows the server to accept the mail.
+	key := a.messageID(req.ID)
+	if err := a.markSubmitting(key, true); err != nil {
+		return errors.Join(err, a.markSubmitting(key, false))
+	}
+	if err := data.Close(); err != nil {
+		var rejection *smtp.SMTPError
+		if errors.As(err, &rejection) {
+			return errors.Join(submissionError(err), a.markSubmitting(key, false))
+		}
+		return uncertainDelivery
+	}
 	return nil
+}
+
+var uncertainDelivery = badRequest{errors.New("delivery could not be confirmed; check with the recipient before sending a new copy")}
+
+func submissionError(err error) error {
+	var rejection *smtp.SMTPError
+	if errors.As(err, &rejection) && rejection.Code >= 500 {
+		return badRequest{err}
+	}
+	return err
+}
+
+func (a *Account) markSubmitting(key string, active bool) error {
+	return a.store.Update(func(st *State) error {
+		account := st.account(a.cfg.ID)
+		if active {
+			if account.Submitting == nil {
+				account.Submitting = make(map[string]bool)
+			}
+			account.Submitting[key] = true
+		} else {
+			delete(account.Submitting, key)
+		}
+		st.Revision++
+		return nil
+	})
 }
 
 // badRequest marks errors that a retry cannot fix, such as a rejected recipient.
