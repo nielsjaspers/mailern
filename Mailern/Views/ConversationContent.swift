@@ -244,6 +244,7 @@ struct ConversationContent: View {
 /// One message in a thread or a peek. Folded, it shows who wrote it, when, and its first line. Open, it shows the
 /// recipients, the reply controls, and the whole message.
 private struct MessageRow: View {
+    @Environment(MailStore.self) private var store
     @Environment(\.dynamicTypeSize) private var textSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var activeMatch: MessageMatch?
@@ -296,6 +297,11 @@ private struct MessageRow: View {
         // A message opens as it was first shown, with its quote and addresses hidden.
         .onChange(of: expanded) { _, open in
             if !open { showsQuote = false; showsDetails = false }
+        }
+        // Server mail syncs as text. Its HTML loads the first time the message opens and then stays on the phone.
+        .task(id: expanded && message.remoteHTML == true) {
+            guard expanded, message.remoteHTML == true else { return }
+            await store.loadHTML(message: message.id, in: conversationID)
         }
     }
 

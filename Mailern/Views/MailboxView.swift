@@ -290,7 +290,9 @@ struct MailboxView: View {
                             }
                         }
                     }
-                    Button("Demo", systemImage: "play.circle") { demo = true }
+                    if !store.isServerMailbox {
+                        Button("Demo", systemImage: "play.circle") { demo = true }
+                    }
                     if drafts.needsReload { Button("Retry loading drafts", systemImage: "arrow.clockwise") { Task { await drafts.reload() } } }
                     Button("Settings", systemImage: "gearshape") { settings = true }
                     if store.needsReload { Button("Retry loading mail", systemImage: "arrow.clockwise") { store.reload() } }

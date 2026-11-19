@@ -21,9 +21,12 @@ struct MailernApp: App {
         let drafts: DraftStore
         let defaults: UserDefaults
         let snoozePreferences: SnoozePreferences
+        /// Set for mail from mailern-server. Its mail, drafts, and preferences are separate from the demo's.
+        let sync: ServerSync?
 
         init(benchmark: BenchmarkMailbox?) {
             self.benchmark = benchmark
+            sync = nil
             defaults = TestStorage.preferences(for: benchmark)
             snoozePreferences = SnoozePreferences(defaults: defaults)
             store = MailStore(persistence: SQLitePersistence(url: TestStorage.mailURL(for: benchmark), requiresSeed: benchmark != nil))
@@ -39,6 +42,19 @@ struct MailernApp: App {
                 }
             }
             #endif
+        }
+
+        init(server url: URL) throws {
+            benchmark = nil
+            let directory = TestStorage.directory(forServer: url)
+            // A server mailbox starts empty. Its first sync brings the accounts and mail.
+            try SQLitePersistence(url: directory.appending(path: "mail.sqlite"))
+                .seedIfNeeded { MailData(conversations: [], accounts: []) }
+            defaults = TestStorage.preferences(forServer: url)
+            snoozePreferences = SnoozePreferences(defaults: defaults)
+            store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite"), requiresSeed: true))
+            drafts = makeDrafts(mail: store, url: directory.appending(path: "drafts-v1.json"))
+            sync = ServerSync(url: url, store: store, defaults: defaults)
         }
     }
     private static func makeDrafts(mail: MailStore, url: URL) -> DraftStore {
@@ -64,15 +80,41 @@ struct MailernApp: App {
         let id = UUID()
         private let demo = MailboxSession(benchmark: nil)
         private var fixture = TestStorage.selectedBenchmark.map { MailboxSession(benchmark: $0) }
+        private var server = TestStorage.selectedServer.flatMap { try? MailboxSession(server: $0) }
         @ObservationIgnored private var dueWork: Task<Void, Never>?
         @ObservationIgnored private var selecting = false
         @ObservationIgnored private var switching = false
-        var active: MailboxSession { fixture ?? demo }
+        var active: MailboxSession { server ?? fixture ?? demo }
+        var serverURL: URL? { server == nil ? nil : TestStorage.selectedServer }
+        private var sessions: [MailboxSession] { [demo] + (fixture.map { [$0] } ?? []) + (server.map { [$0] } ?? []) }
 
         var reminderBoxes: [ReminderMailbox] {
-            ([demo] + (fixture.map { [$0] } ?? [])).map {
-                ReminderMailbox(scope: $0.benchmark.map { String($0.id) } ?? "demo", mail: $0.store, drafts: $0.drafts)
+            sessions.map {
+                ReminderMailbox(scope: $0.sync != nil ? "server" : $0.benchmark.map { String($0.id) } ?? "demo", mail: $0.store, drafts: $0.drafts)
             }
+        }
+
+        /// Shows mail from the server at `url`, or the demo mail again when it is nil. A new server must answer first.
+        func connect(_ url: URL?) async throws {
+            guard !selecting else { return }
+            selecting = true
+            defer { selecting = false }
+            if let url {
+                guard url.scheme == "https" || url.host() == "127.0.0.1" || url.host() == "localhost" else {
+                    throw MailServerClient.Failure(status: 0, message: "Use an https address, such as the one mailern-server prints when it starts.")
+                }
+                _ = try await MailServerClient(base: url).sync(since: 0, wait: 0)
+            }
+            switching = true
+            defer { switching = false }
+            await dueWork?.value
+            await server?.drafts.finishPendingWrites()
+            let next = try url.map { try MailboxSession(server: $0) }
+            if let store = next?.store, store.needsReload {
+                throw SQLitePersistence.Failure(message: store.error ?? "The mail server's mailbox could not be loaded.")
+            }
+            TestStorage.selectedServer = url
+            server = next
         }
 
         func select(_ benchmark: BenchmarkMailbox?) async throws {
@@ -101,7 +143,7 @@ struct MailernApp: App {
 
         func processDue() async {
             guard !switching, dueWork == nil else { return }
-            let sessions = [demo] + (fixture.map { [$0] } ?? [])
+            let sessions = self.sessions
             let work = Task {
                 let active: @MainActor () -> Bool = { UIApplication.shared.applicationState == .active }
                 for session in sessions {
@@ -129,6 +171,18 @@ struct MailernApp: App {
                 await notifications.finishPendingChanges()
             })
                 .environment(session.store).environment(session.drafts).environment(session.snoozePreferences).tint(.teal)
+                .environment(\.mailServer, MailServerConnection(url: sessions.serverURL, sync: session.sync) { url in
+                    try await sessions.connect(url)
+                    refreshReminders(sessions)
+                })
+                .task(id: scenePhase == .active ? session.id : nil) {
+                    guard scenePhase == .active else { return }
+                    await session.sync?.run()
+                }
+                .onChange(of: session.store.mailboxRevision) { _, _ in
+                    guard let sync = session.sync else { return }
+                    Task { await sync.push() }
+                }
                 .defaultAppStorage(session.defaults)
                 .id(session.id)
                 .onChange(of: sessions.reminderBoxes.map {
@@ -213,6 +267,21 @@ private enum TestStorage {
             return benchmark
         }
         set { defaultPreferences.set(newValue?.id, forKey: benchmarkKey) }
+    }
+    private static let serverKey = "mailServerURL"
+    static var selectedServer: URL? {
+        get { defaultPreferences.string(forKey: serverKey).flatMap(URL.init(string:)) }
+        set { defaultPreferences.set(newValue?.absoluteString, forKey: serverKey) }
+    }
+    /// Each server gets its own folder and preferences, so switching servers never mixes their mail.
+    private static func serverName(_ url: URL) -> String {
+        "\(url.host() ?? "server")-\(url.port ?? 443)".map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "." ? $0 : "_" }.reduce("") { $0 + String($1) }
+    }
+    static func directory(forServer url: URL) -> URL {
+        directory(for: nil).appending(path: "Server/\(serverName(url))")
+    }
+    static func preferences(forServer url: URL) -> UserDefaults {
+        UserDefaults(suiteName: "\(suite ?? "Mailern").Server.\(serverName(url))")!
     }
     static func mailURL(for benchmark: BenchmarkMailbox?) -> URL {
         directory(for: benchmark).appending(path: "mail.sqlite")

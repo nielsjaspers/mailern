@@ -18,11 +18,15 @@ struct AccountsSettingsView: View {
                     }
                 }
             } footer: {
-                Text("Accounts are stored on this iPhone. No email providers are connected.")
+                Text(store.isServerMailbox
+                     ? "Accounts come from your mail server. Add or remove them in its config file. Names, colors, and signatures stay on this iPhone."
+                     : "Accounts are stored on this iPhone. No email providers are connected.")
             }
-            Section {
-                NavigationLink("Add Account") {
-                    AccountEditor(account: MailAccount(id: UUID().uuidString, name: "", address: "", color: .teal), isNew: true)
+            if !store.isServerMailbox {
+                Section {
+                    NavigationLink("Add Account") {
+                        AccountEditor(account: MailAccount(id: UUID().uuidString, name: "", address: "", color: .teal), isNew: true)
+                    }
                 }
             }
         }
@@ -49,6 +53,7 @@ private struct AccountEditor: View {
                 TextField("Name", text: $account.name)
                 TextField("Email address", text: $account.address)
                     .keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .disabled(store.isServerMailbox)
             }
             Section {
                 Picker("Color", selection: $account.color) {
@@ -66,7 +71,7 @@ private struct AccountEditor: View {
             } header: { Text("Signature") } footer: {
                 Text("Added to new messages, replies, and forwards from this account.")
             }
-            if !isNew {
+            if !isNew && !store.isServerMailbox {
                 Section {
                     Button("Delete Account", role: .destructive) { confirmingDelete = true }
                         .disabled(store.accounts.count == 1)
