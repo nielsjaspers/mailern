@@ -83,6 +83,8 @@ struct ComposerView: View {
         }
     }
     private var awaitingConfirmation: Bool { store.hasPendingRemoteSend(draft.id) }
+    /// Sent, awaiting confirmation, or already filed. Its content can no longer change; Send only finishes it.
+    private var alreadySubmitted: Bool { store.hasSentOrDiscarded(draft.id) }
 
     var body: some View {
         NavigationStack {
@@ -158,7 +160,7 @@ struct ComposerView: View {
                 }
             }
             // An unconfirmed send may already be out, so its content stays as sent until the server answers.
-            .disabled(completed || finishing || awaitingConfirmation)
+            .disabled(completed || finishing || alreadySubmitted)
             .scrollDismissesKeyboard(.immediately)
             // The top inset is the navigation bar, with the large title while it shows: the panel's pull zone.
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.top } action: { _, top in panel.pullZone = top }
@@ -177,7 +179,7 @@ struct ComposerView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     // Hold Send for Send Later and a follow-up reminder, as in Mail.
                     Menu {
-                        if !awaitingConfirmation {
+                        if !alreadySubmitted {
                             Button("Send Later…", systemImage: "calendar.badge.clock") { picking = .sendLater }
                             Button(draft.followUp == nil ? "Remind Me If No Reply…" : "Change Reminder…", systemImage: "hourglass") { picking = .reminder }
                         }
@@ -546,7 +548,7 @@ struct ComposerView: View {
         do {
             let content = try snapshot(input)
             // Retry Send repeats the saved submission. Its schedule and reminder were checked on the first try.
-            let retrying = awaitingConfirmation
+            let retrying = alreadySubmitted
             let sendAt = retrying ? nil : scheduled ?? (undoDelay > 0 ? Date.now.addingTimeInterval(TimeInterval(undoDelay)) : nil)
             if !retrying, let followUp = content.followUp, followUp <= (sendAt ?? .now) {
                 error = "Choose a reminder after the message is sent."
