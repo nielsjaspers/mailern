@@ -98,6 +98,9 @@ func (a *Account) Send(req SendRequest) error {
 	if err := a.submit(req, raw); err != nil {
 		return err
 	}
+	if err := a.record(req, key); err != nil {
+		return err
+	}
 	if *a.cfg.AppendSent && a.mailboxes[RoleSent] != "" {
 		if err := appendMessage(c, a.mailboxes[RoleSent], raw, []imap.Flag{imap.FlagSeen}); err != nil {
 			// The mail went out, so the send succeeds. Without a Sent copy, the message leaves its
@@ -106,9 +109,8 @@ func (a *Account) Send(req SendRequest) error {
 			log.Printf("%s: saving to Sent failed: %v", a.cfg.ID, err)
 		}
 	}
-	err = a.record(req, key)
 	a.Trigger()
-	return err
+	return nil
 }
 
 func appendMessage(c *imapclient.Client, mailbox string, raw []byte, flags []imap.Flag) error {
@@ -282,7 +284,8 @@ func (a *Account) submit(req SendRequest, raw []byte) error {
 		}
 		return err
 	}
-	return c.Quit()
+	// SendMail already received the final SMTP acceptance.
+	return nil
 }
 
 // badRequest marks errors that a retry cannot fix, such as a rejected recipient.
