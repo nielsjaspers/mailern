@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
@@ -25,12 +26,18 @@ const (
 	loseExpungeResponse
 	loseDeletedStoreResponse
 	loseExpungeBeforeCommit
+	loseCopyBeforeCommit
+	loseCopyBeforeCommitThenFailExpunge
 )
 
 func (s copyMoveProvider) Copy(set imap.NumSet, dest string) (*imap.CopyData, error) {
 	s.copies.Add(1)
 	if s.fault.CompareAndSwap(failCopy, 0) {
 		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "test copy refused"}
+	}
+	if s.fault.CompareAndSwap(loseCopyBeforeCommit, 0) || s.fault.CompareAndSwap(loseCopyBeforeCommitThenFailExpunge, failExpunge) {
+		s.conn.Close()
+		return nil, net.ErrClosed
 	}
 	data, err := s.Session.Copy(set, dest)
 	if err == nil && s.fault.CompareAndSwap(loseCopyResponse, 0) {
@@ -206,7 +213,8 @@ func TestProviderUIDPlusMoveLeavesSourceAfterRestoreOrRemap(t *testing.T) {
 			const subject = "Keep source after placement changes"
 			h.deliver("INBOX", subject, "")
 			h.sync()
-			h.set(h.conversations()[subject], func(state *ConversationState) { state.Removal = RoleTrash })
+			thread := h.conversations()[subject]
+			h.set(thread, func(state *ConversationState) { state.Removal = RoleTrash })
 			if err := h.account.Sync(); err == nil || !strings.Contains(err.Error(), "test expunge refused") {
 				t.Fatalf("expected failed expunge, got %v", err)
 			}
@@ -231,12 +239,70 @@ func TestProviderUIDPlusMoveLeavesSourceAfterRestoreOrRemap(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "local restore":
+				h.deliver("Trash", "Unrelated deleted mail", "", imap.FlagDeleted)
 				h.set(h.conversations()[subject], func(state *ConversationState) { state.Removal = "" })
+				restartCopyMoveAccount(t, h)
 			}
 			h.sync()
 			h.sync()
 			if flags, ok := h.mailbox("INBOX")[subject]; copies.Load() != 1 || !ok || slices.Contains(flags, imap.FlagDeleted) {
 				t.Fatalf("invalidated copy caused cleanup or another COPY, got %d attempts, source present=%v, flags=%v", copies.Load(), ok, flags)
+			}
+			if change == "local restore" {
+				if trash := h.mailbox("Trash"); len(trash) != 1 || !slices.Contains(trash["Unrelated deleted mail"], imap.FlagDeleted) {
+					t.Fatalf("undo should expunge only the COPYUID-confirmed copy, got Trash %v", trash)
+				}
+				h.account.store.Read(func(st *State) {
+					c := st.Conversations[thread.ID]
+					if c == nil || c.Pending || c.Removal != "" || len(c.Keys) != 1 {
+						t.Fatalf("undo did not reconcile the conversation: %+v", c)
+					}
+					if pending := st.account(h.account.cfg.ID).Messages[c.Keys[0]].PendingMove; pending != nil {
+						t.Fatalf("undo left a move journal entry: %+v", pending)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestProviderUIDPlusSupersededMovePreservesExternalCopy(t *testing.T) {
+	for _, scenario := range []struct {
+		name  string
+		fault int32
+	}{
+		{"without destination UID", loseCopyBeforeCommit},
+		{"with inferred destination UID", loseCopyBeforeCommitThenFailExpunge},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			h := newHarness(t)
+			copies := serveCopyMoveProvider(t, h, scenario.fault)
+			const subject = "Identical mail added by another client"
+			raw := LabMessage("sam@example.com", labAddress, subject, "Hello.", "", time.Now())
+			if err := h.lab.Deliver(labAddress, "INBOX", raw); err != nil {
+				t.Fatal(err)
+			}
+			h.sync()
+			thread := h.conversations()[subject]
+			h.set(thread, func(state *ConversationState) { state.Removal = RoleTrash })
+			if err := h.account.Sync(); err == nil || len(h.mailbox("Trash")) != 0 {
+				t.Fatalf("expected COPY to be interrupted before commit, got %v", err)
+			}
+			if err := h.lab.Deliver(labAddress, "Trash", raw); err != nil {
+				t.Fatal(err)
+			}
+			if scenario.fault == loseCopyBeforeCommitThenFailExpunge {
+				if err := h.account.Sync(); err == nil || !strings.Contains(err.Error(), "test expunge refused") {
+					t.Fatalf("expected interrupted retry after matching the external copy, got %v", err)
+				}
+			}
+			h.set(h.conversations()[subject], func(state *ConversationState) { state.Removal = RoleJunk })
+			h.sync()
+			if copies.Load() != 2 || len(h.mailbox("INBOX")) != 0 || len(h.mailbox("Junk")) != 1 {
+				t.Fatalf("retargeted move did not finish, got %d COPY attempts", copies.Load())
+			}
+			if flags, ok := h.mailbox("Trash")[subject]; !ok || slices.Contains(flags, imap.FlagDeleted) {
+				t.Fatalf("retargeted move touched the external Trash copy, got present=%v, flags=%v", ok, flags)
 			}
 		})
 	}

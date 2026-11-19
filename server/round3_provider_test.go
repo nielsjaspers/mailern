@@ -45,11 +45,12 @@ func TestProviderRollsBackSourceStoreAfterCopyRemoved(t *testing.T) {
 
 func TestProviderSupersedesPartialCopyWithExplicitTarget(t *testing.T) {
 	for _, scenario := range []struct {
-		name  string
-		fault int32
+		name       string
+		fault      int32
+		trashCount int
 	}{
-		{"COPY", loseCopyResponse},
-		{"STORE", loseDeletedStoreResponse},
+		{"COPY response lost", loseCopyResponse, 1},
+		{"STORE response lost after COPYUID", loseDeletedStoreResponse, 0},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -63,8 +64,8 @@ func TestProviderSupersedesPartialCopyWithExplicitTarget(t *testing.T) {
 			}
 			h.set(h.conversations()[subject], func(s *ConversationState) { s.Removal = RoleJunk })
 			h.sync()
-			if len(h.mailbox("INBOX")) != 0 || len(h.mailbox("Trash")) != 0 || len(h.mailbox("Junk")) != 1 || copies.Load() != 2 {
-				t.Fatalf("expected only the new Junk copy, got %d COPY attempts", copies.Load())
+			if len(h.mailbox("INBOX")) != 0 || len(h.mailbox("Trash")) != scenario.trashCount || len(h.mailbox("Junk")) != 1 || copies.Load() != 2 {
+				t.Fatalf("expected the new Junk copy and %d retained Trash copies, got %d COPY attempts", scenario.trashCount, copies.Load())
 			}
 		})
 	}

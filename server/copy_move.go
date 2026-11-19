@@ -21,12 +21,18 @@ func (m copyMailbox) identity() mailboxIdentity {
 	return mailboxIdentity{m.Name, m.Validity}
 }
 
-// copyMove records the attempt before COPY. To.UID is set only once we have identified the copy.
+func (m copyMailbox) location() location {
+	return location{m.Role, m.UID}
+}
+
+// copyMove records the attempt before COPY. To.UID can also come from a content match
+// when resuming a move, so only HasCopyUID authorizes cleanup of the destination.
 type copyMove struct {
-	From    copyMailbox       `json:"from"`
-	To      copyMailbox       `json:"to"`
-	UIDNext imap.UID          `json:"uidNext"`
-	Digest  [sha256.Size]byte `json:"digest"`
+	From       copyMailbox       `json:"from"`
+	To         copyMailbox       `json:"to"`
+	UIDNext    imap.UID          `json:"uidNext"`
+	Digest     [sha256.Size]byte `json:"digest"`
+	HasCopyUID bool              `json:"hasCopyUID,omitempty"`
 }
 
 type copyMoveSource struct {
@@ -92,7 +98,7 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 			return msg, validate(st)
 		}
 		thread := st.Conversations[msg.ConversationID]
-		if thread == nil || !slices.Contains(planFor(thread, st.messages(thread)).moves, m) {
+		if thread == nil || !slices.Contains(planForMailboxes(thread, st.messages(thread), a.archiveIsAll).moves, m) {
 			return nil, errMoveChanged
 		}
 		return msg, nil
@@ -114,7 +120,7 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 	if checkErr != nil {
 		return checkErr
 	}
-	if pending != nil && (pending.From.Role != m.from.role || pending.From.UID != m.from.uid || pending.From.identity() != from) {
+	if pending != nil && (pending.From.location() != m.from || pending.From.identity() != from) {
 		return errMoveChanged
 	}
 	save := func(value *copyMove) error {
@@ -138,6 +144,9 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 			return err
 		}
 		pending = nil
+	}
+	if m.to == m.from.role {
+		return nil
 	}
 	if pending == nil {
 		data, err := a.selectMailbox(destination, m.to, to, true)
@@ -184,6 +193,7 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 			receipt.DestUIDs[0].Start >= pending.UIDNext {
 			confirmed := *pending
 			confirmed.To.UID = receipt.DestUIDs[0].Start
+			confirmed.HasCopyUID = true
 			pending = &confirmed
 			if err := save(pending); err != nil {
 				return err
@@ -224,6 +234,9 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 }
 
 func (a *Account) discardSupersededCopy(source, destination *imapclient.Client, pending *copyMove) error {
+	if !pending.HasCopyUID || pending.To.UID == 0 {
+		return nil
+	}
 	// Expunging from All Mail can also remove the original.
 	if pending.To.Role == RoleArchive && a.archiveIsAll {
 		return nil
@@ -239,17 +252,10 @@ func (a *Account) discardSupersededCopy(source, destination *imapclient.Client, 
 		sha256.Sum256(msgs[0].FindBodySection(section)) != pending.Digest {
 		return errMoveChanged
 	}
-	data, err := a.selectMailbox(destination, pending.To.Role, pending.To.identity(), false)
-	if err != nil {
+	if _, err := a.selectMailbox(destination, pending.To.Role, pending.To.identity(), false); err != nil {
 		return err
 	}
-	uid, err := pending.confirmCopy(destination, data.UIDNext)
-	if errors.Is(err, errCopyUnconfirmed) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
+	uid := pending.To.UID
 	set := imap.UIDSetNum(uid)
 	flags, err := destination.Fetch(set, &imap.FetchOptions{UID: true, Flags: true}).Collect()
 	if err != nil {

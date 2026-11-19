@@ -16,7 +16,7 @@ type location struct {
 
 type move struct {
 	from location
-	to   Role
+	to   Role // The source role means undo an unfinished COPY on that source.
 }
 
 type flagChange struct {
@@ -40,7 +40,7 @@ func (p plan) empty() bool { return len(p.moves)+len(p.flags)+len(p.expunges) ==
 func placeOf(m *Message) (location, bool) {
 	// A partial copy to Trash must not hide the source before its cleanup finishes.
 	if pending := m.PendingMove; pending != nil && pending.From.UID != 0 && imap.UID(m.Locations[pending.From.Role]) == pending.From.UID {
-		return location{pending.From.Role, pending.From.UID}, true
+		return pending.From.location(), true
 	}
 	for _, role := range []Role{RoleTrash, RoleJunk, RoleInbox, RoleSent, RoleArchive} {
 		if uid, ok := m.Locations[role]; ok {
@@ -74,7 +74,7 @@ func (a *Account) reconcile(st *State) []plan {
 			}
 			continue
 		}
-		p := planFor(c, msgs)
+		p := planForMailboxes(c, msgs, a.archiveIsAll)
 		if !p.empty() {
 			plans = append(plans, p)
 			continue
@@ -154,6 +154,10 @@ func sameTime(a, b *time.Time) bool {
 // Settle archives the conversation's incoming mail. Inbox and Snoozed keep the latest incoming message in the
 // inbox. Trash and Junk take every message, including sent ones, the way Gmail trashes a whole thread.
 func planFor(c *Conversation, msgs []*Message) plan {
+	return planForMailboxes(c, msgs, false)
+}
+
+func planForMailboxes(c *Conversation, msgs []*Message, archiveIsAll bool) plan {
 	var p plan
 	if c.Deleting {
 		p.deleteAt = c.Removal
@@ -164,7 +168,7 @@ func planFor(c *Conversation, msgs []*Message) plan {
 	}
 	in := incoming(msgs)
 	if c.PendingPlacement {
-		p.moves = planMoves(c, msgs, in)
+		p.moves = planMoves(c, msgs, in, archiveIsAll)
 	}
 	if c.PendingRead {
 		placed := slices.DeleteFunc(in, func(m *Message) bool { return len(m.Locations) == 0 })
@@ -197,7 +201,7 @@ func planFor(c *Conversation, msgs []*Message) plan {
 	return p
 }
 
-func planMoves(c *Conversation, msgs, in []*Message) []move {
+func planMoves(c *Conversation, msgs, in []*Message, archiveIsAll bool) []move {
 	var moves []move
 	var primary *Message
 	for _, m := range in {
@@ -223,7 +227,13 @@ func planMoves(c *Conversation, msgs, in []*Message) []move {
 		case at.role != RoleArchive && (at.role != RoleInbox || c.Workflow == WorkflowSettled):
 			target = RoleArchive
 		}
-		if target != at.role {
+		if m.PendingMove != nil && m.PendingMove.From.location() == at {
+			moves = append(moves, move{at, target})
+			continue
+		}
+		// Once the target has a copy, another mailbox can still hold an independent copy.
+		// Gmail's All Mail overlaps with other mailboxes.
+		if target != at.role && (m.Locations[target] == 0 || archiveIsAll && (target == RoleArchive || at.role == RoleArchive)) {
 			moves = append(moves, move{at, target})
 		}
 	}
@@ -240,6 +250,12 @@ func appendFlag(changes []flagChange, m *Message, flag imap.Flag, add bool) []fl
 func (a *Account) checkMove(m move, caps imap.CapSet) error {
 	if m.from.uid == 0 {
 		return fmt.Errorf("move requires a source UID")
+	}
+	if m.to == m.from.role {
+		if !caps.Has(imap.CapUIDPlus) {
+			return fmt.Errorf("unfinished move requires UIDPLUS")
+		}
+		return nil
 	}
 	if a.mailboxes[m.to] == "" || a.mailboxes[m.to] == a.mailboxes[m.from.role] {
 		return fmt.Errorf("no distinct destination mailbox for %s", m.to)
@@ -318,7 +334,7 @@ func (a *Account) applyPlans(c *imapclient.Client, plans []plan, identities map[
 			if err := a.checkMove(m, caps); err != nil {
 				return err
 			}
-			if !(m.from.role == RoleArchive && a.archiveIsAll) && (!caps.Has(imap.CapMove) || sources[m.from].pending) {
+			if m.to == m.from.role || (!(m.from.role == RoleArchive && a.archiveIsAll) && (!caps.Has(imap.CapMove) || sources[m.from].pending)) {
 				if !caps.Has(imap.CapUIDPlus) {
 					return fmt.Errorf("unfinished move requires UIDPLUS")
 				}
