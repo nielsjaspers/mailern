@@ -577,6 +577,13 @@ import os
         store.mergeRemote(sync)
         let html = store.conversation(id)!.messages.first { $0.id == first }!
         assert(html.html == "<p>Saturday?</p>" && html.remoteHTML == nil)
+        // A load canceled because the reader closed is not an error.
+        store.error = nil
+        for cancel in [CancellationError() as Error, URLError(.cancelled)] {
+            store.loadRemoteHTML = { _ in throw cancel }
+            await store.loadHTML(message: first, in: id)
+            assert(store.error == nil)
+        }
         // A server reminder that returns without a reply is overdue; a reply ends it.
         var waiting = store.conversation(id)!
         waiting.followUp = .waiting
