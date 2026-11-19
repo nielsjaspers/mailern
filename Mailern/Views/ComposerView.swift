@@ -76,7 +76,7 @@ struct ComposerView: View {
     }
     private var sender: Binding<Sender> {
         Binding {
-            Sender(accountID: draft.accountID, address: draft.sender(in: account))
+            Sender(accountID: draft.accountID, address: store.senderAddress(for: draft))
         } set: { choice in
             draft.accountID = choice.accountID
             draft.fromAddress = choice.address.caseInsensitiveCompare(store.account(choice.accountID).address) == .orderedSame ? nil : choice.address
@@ -105,7 +105,7 @@ struct ComposerView: View {
                                 }
                             } label: {
                                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                    Text(draft.sender(in: account))
+                                    Text(store.senderAddress(for: draft))
                                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                                         .truncationMode(.middle)
                                         .multilineTextAlignment(.leading)
@@ -116,14 +116,14 @@ struct ComposerView: View {
                                 .padding(.vertical, 12)
                                 .contentShape(Rectangle())
                             }.tint(.primary).disabled(senders.count < 2)
-                                .accessibilityLabel("From, \(draft.sender(in: account))")
+                                .accessibilityLabel("From, \(store.senderAddress(for: draft))")
                         }.frame(minHeight: 48)
                         Divider()
                     } else {
                         Button {
                             withAnimation(.snappy(duration: 0.25)) { expanded = true }
                         } label: {
-                            Text("Cc/Bcc, From:  \(draft.sender(in: account))")
+                            Text("Cc/Bcc, From:  \(store.senderAddress(for: draft))")
                                 .font(.subheadline).foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                                 .contentShape(Rectangle())
@@ -407,7 +407,7 @@ struct ComposerView: View {
     }
     /// An alias can leave the server config while its draft waits or is open. Say which address the draft uses now.
     private func correctSender() {
-        guard let chosen = draft.fromAddress, !store.account(draft.accountID).owns(chosen) else { return }
+        guard !alreadySubmitted, let chosen = draft.fromAddress, !store.account(draft.accountID).owns(chosen) else { return }
         draft.fromAddress = nil
         error = "\(chosen) is no longer an address of this account. This message now goes out from \(store.account(draft.accountID).address)."
     }

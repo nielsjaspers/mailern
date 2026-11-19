@@ -536,13 +536,12 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 func (s *Service) send(w http.ResponseWriter, r *http.Request) {
 	var req SendRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 40<<20)).Decode(&req); err != nil {
-		w.Header().Set("Mailern-Submission", "not-accepted")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	account := s.account(req.AccountID)
 	if account == nil {
-		w.Header().Set("Mailern-Submission", "not-accepted")
+		// Without this account we cannot check the receipt for an earlier attempt.
 		http.Error(w, "unknown account", http.StatusBadRequest)
 		return
 	}

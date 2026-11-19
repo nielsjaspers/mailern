@@ -506,7 +506,7 @@ import os
         try await checkRemoteDelete()
         try await checkRemoteSending()
         try await checkUnconfirmedSendRetry()
-        try checkAccountAliases()
+        try await checkAccountAliases()
         try await checkReplyDuringSend()
         try await checkReplyWinsOverUnsyncedMove()
         try await checkOutboxBackoffAndReplyTo()
@@ -1112,7 +1112,7 @@ import os
         print("PASS: a reply that arrives during a send keeps the thread in Inbox, unread")
     }
 
-    @MainActor static func checkAccountAliases() throws {
+    @MainActor static func checkAccountAliases() async throws {
         let directory = URL.temporaryDirectory.appending(path: "mailern-aliases-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
@@ -1156,6 +1156,12 @@ import os
         var other = reply
         other.fromAddress = nil
         assert(!reply.hasSameSubmission(as: other))
+        store.sendRemote = { _ in throw URLError(.networkConnectionLost) }
+        let accepted = await store.sendNow(reply)
+        assert(!accepted && store.hasPendingRemoteSend(reply.id))
+        account.aliases = []
+        assert(store.mergeRemote(remoteBatch(3, [thread], account: account)))
+        assert(store.senderAddress(for: reply) == "hello@example.test")
         print("PASS: account aliases sync, count as own addresses, and set the reply sender")
     }
 

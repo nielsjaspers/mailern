@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -180,8 +182,17 @@ func TestQueuedSendCannotUseReplacementAccount(t *testing.T) {
 	h.account.cfg.Username = "replacement@example.com"
 	h.account.cfg.ID = mailboxAccountID(h.account.cfg)
 	req := SendRequest{AccountID: mailboxAccountID(old), To: []string{"sam@example.com"}}
-	if code := h.request("POST", "/v1/send", req, nil); code != 400 || len(h.lab.Submitted) != 0 {
-		t.Fatalf("stale account accepted: status %d, deliveries %d", code, len(h.lab.Submitted))
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := h.http.Client().Post(h.http.URL+"/v1/send", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 400 || response.Header.Get("Mailern-Submission") != "" || len(h.lab.Submitted) != 0 {
+		t.Fatalf("unknown account must leave earlier submission unresolved: status %d, marker %q", response.StatusCode, response.Header.Get("Mailern-Submission"))
 	}
 }
 

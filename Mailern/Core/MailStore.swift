@@ -698,6 +698,12 @@ final class MailStore {
     func hasSentOrDiscarded(_ id: UUID) -> Bool {
         discardedDraftIDs.contains(id) || hasPendingRemoteSend(id) || sentConversation(id) != nil
     }
+    func senderAddress(for draft: ComposerDraft) -> String {
+        if let submission = pendingRemoteSends[draft.id]?.prepared {
+            return submission.draft.sender(in: submission.from)
+        }
+        return draft.sender(in: account(draft.accountID))
+    }
     func hasPendingRemoteSend(_ id: UUID) -> Bool {
         pendingRemoteSends[id] != nil
     }
