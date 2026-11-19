@@ -686,9 +686,13 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 				c.Workflow, c.SnoozedUntil, c.ReturnedFromSnoozeAt = WorkflowInbox, nil, nil
 				c.Unread = c.Unread || !account.Messages[key].Seen
 				c.PendingRead = false
-				// A reply rescues a thread from Trash. A conversation in Junk stays there until restored.
+				// A reply rescues a thread from Trash. A conversation in Junk stays there until restored,
+				// so the reply follows it into Junk.
 				if c.Removal == RoleTrash {
 					c.Removal, c.TrashSince = "", nil
+				}
+				if c.Removal == RoleJunk {
+					c.Pending, c.PendingPlacement = true, true
 				}
 			}
 			if arrived[key] && c.Muted {
