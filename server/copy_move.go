@@ -4,10 +4,12 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/google/uuid"
 )
 
 type copyMailbox struct {
@@ -304,12 +306,14 @@ func (p *copyMove) confirmCopy(c *imapclient.Client, uidNext imap.UID) (imap.UID
 	return match, nil
 }
 
-// deletedFlags records which flags this account may have added before losing a STORE or EXPUNGE response.
-// It survives the conversation and its placement intent.
+// deletedFlags records an interrupted STORE or EXPUNGE independently of the placement intent.
+// When the mailbox supports new permanent keywords, Keyword follows the flag through a MOVE
+// that preserves flags. UIDs are only valid in the original mailbox and UIDVALIDITY.
 type deletedFlags struct {
 	Mailbox  string      `json:"mailbox"`
 	Validity uint32      `json:"validity"`
 	UIDs     imap.UIDSet `json:"uids"`
+	Keyword  imap.Flag   `json:"keyword,omitempty"`
 }
 
 func (a *Account) saveOwnedDeleted(mark *deletedFlags) error {
@@ -328,28 +332,48 @@ func (a *Account) expungeOwned(c *imapclient.Client, mailbox mailboxIdentity, se
 		}
 	}
 	if len(owned) == 0 {
-		return expungeUIDs(c, set)
+		if err := c.UIDExpunge(set).Close(); err != nil {
+			return fmt.Errorf("expunge: %w", err)
+		}
+		return nil
 	}
-	if err := a.saveOwnedDeleted(&deletedFlags{mailbox.name, mailbox.validity, owned}); err != nil {
+	mark := &deletedFlags{Mailbox: mailbox.name, Validity: mailbox.validity, UIDs: owned}
+	flags := []imap.Flag{imap.FlagDeleted}
+	if selected := c.Mailbox(); selected != nil && slices.Contains(selected.PermanentFlags, imap.FlagWildcard) {
+		mark.Keyword = imap.Flag("Mailern-" + uuid.NewString())
+		flags = append(flags, mark.Keyword)
+	}
+	if err := a.saveOwnedDeleted(mark); err != nil {
 		return err
 	}
-	if err := expungeUIDs(c, set); err != nil {
+	// Add the keyword and Deleted together so a disconnect between commands cannot separate them.
+	add := &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: flags}
+	err := c.Store(owned, add, nil).Close()
+	if err != nil {
+		err = fmt.Errorf("delete: %w", err)
+	} else if err = c.UIDExpunge(set).Close(); err != nil {
+		err = fmt.Errorf("expunge: %w", err)
+	}
+	if err != nil {
 		select {
 		case <-c.Closed():
 			return err
 		default:
-			return errors.Join(err, a.clearOwnedDeleted(c, owned))
+			return errors.Join(err, a.recoverOwnedDeleted(c))
 		}
 	}
 	return a.saveOwnedDeleted(nil)
 }
 
-func (a *Account) clearOwnedDeleted(c *imapclient.Client, set imap.UIDSet) error {
-	restore := &imap.StoreFlags{Op: imap.StoreFlagsDel, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}
+func clearOwnedDeleted(c *imapclient.Client, set imap.UIDSet, flags []imap.Flag) error {
+	if len(set) == 0 {
+		return nil
+	}
+	restore := &imap.StoreFlags{Op: imap.StoreFlagsDel, Silent: true, Flags: flags}
 	if err := c.Store(set, restore, nil).Close(); err != nil {
 		return fmt.Errorf("clear interrupted delete flags: %w", err)
 	}
-	return a.saveOwnedDeleted(nil)
+	return nil
 }
 
 func (a *Account) recoverOwnedDeleted(c *imapclient.Client) error {
@@ -358,17 +382,74 @@ func (a *Account) recoverOwnedDeleted(c *imapclient.Client) error {
 	if mark == nil {
 		return nil
 	}
+	if mark.Keyword != "" {
+		if err := restoreMarkedDeleted(c, mark); err != nil {
+			return err
+		}
+	} else if err := a.restoreLocalDeleted(c, mark); err != nil {
+		return err
+	}
+	return a.saveOwnedDeleted(nil)
+}
+
+func restoreMarkedDeleted(c *imapclient.Client, mark *deletedFlags) error {
+	boxes, err := c.List("", "*", nil).Collect()
+	if err != nil {
+		return fmt.Errorf("list mailboxes to recover delete flags: %w", err)
+	}
+	// Search by the exact operation keyword. Message-ID and EMAILID can identify several
+	// copies with independent flags. IMAP cannot locate a moved flag if MOVE drops its keyword.
+	criteria := &imap.SearchCriteria{Flag: []imap.Flag{mark.Keyword}}
+	flags := []imap.Flag{imap.FlagDeleted, mark.Keyword}
+	var recoveryErr error
+	for _, box := range boxes {
+		if slices.Contains(box.Attrs, imap.MailboxAttrNoSelect) || slices.Contains(box.Attrs, imap.MailboxAttrNonExistent) {
+			continue
+		}
+		name := box.Mailbox
+		if _, err := c.Select(name, nil).Wait(); err != nil {
+			if mailboxMissing(err) {
+				continue
+			}
+			recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover delete flags in %s: %w", name, err))
+			continue
+		}
+		found, err := c.UIDSearch(criteria, nil).Wait()
+		if err == nil {
+			err = clearOwnedDeleted(c, imap.UIDSetNum(found.AllUIDs()...), flags)
+		}
+		if err != nil {
+			return errors.Join(recoveryErr, fmt.Errorf("recover delete flags in %s: %w", name, err))
+		}
+	}
+	return recoveryErr
+}
+
+func mailboxMissing(err error) bool {
+	var status *imap.Error
+	return errors.As(err, &status) && status.Code == imap.ResponseCodeNonExistent
+}
+
+func (a *Account) restoreLocalDeleted(c *imapclient.Client, mark *deletedFlags) error {
 	// Use the original mailbox even if the provider has reassigned its special-use role.
 	sel, err := c.Select(mark.Mailbox, nil).Wait()
-	if err != nil {
-		var status *imap.Error
-		if errors.As(err, &status) && status.Code == imap.ResponseCodeNonExistent {
-			return a.saveOwnedDeleted(nil)
+	var remaining imap.UIDSet
+	switch {
+	case err == nil && mark.Validity != 0 && sel.UIDValidity == mark.Validity:
+		found, err := c.UIDSearch(&imap.SearchCriteria{UID: []imap.UIDSet{mark.UIDs}}, nil).Wait()
+		if err != nil {
+			return fmt.Errorf("recover delete flags in %s: %w", mark.Mailbox, err)
 		}
+		for _, uid := range found.AllUIDs() {
+			if mark.UIDs.Contains(uid) {
+				remaining.AddNum(uid)
+			}
+		}
+	case err != nil && !mailboxMissing(err):
 		return fmt.Errorf("recover delete flags in %s: %w", mark.Mailbox, err)
 	}
-	if sel.UIDValidity != mark.Validity {
-		return a.saveOwnedDeleted(nil)
+	if !slices.Equal(mark.UIDs, remaining) {
+		log.Printf("%s: some interrupted delete UIDs in %s no longer resolve. Without a persistent keyword, IMAP cannot distinguish moved messages from expunged messages", a.cfg.ID, mark.Mailbox)
 	}
-	return a.clearOwnedDeleted(c, mark.UIDs)
+	return clearOwnedDeleted(c, remaining, []imap.Flag{imap.FlagDeleted})
 }
