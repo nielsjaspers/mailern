@@ -132,8 +132,12 @@ func (a *Account) record(req SendRequest, key string) error {
 		if account.Messages[key] != nil {
 			return nil
 		}
+		sender := a.cfg.SenderName
+		if sender == "" {
+			sender = a.cfg.Address
+		}
 		m := &Message{
-			ID: strings.ToLower(req.ID), Key: key, ConversationID: req.ConversationID, Sender: a.cfg.Name,
+			ID: strings.ToLower(req.ID), Key: key, ConversationID: req.ConversationID, Sender: sender,
 			Address: a.cfg.Address, To: req.To, Cc: req.Cc, Date: now, Subject: req.Subject, Text: req.Text,
 			HasHTML: req.HTML != "", MessageID: key, InReplyTo: req.InReplyTo, References: req.References,
 			Outgoing: true, Seen: true, Locations: map[Role]uint32{}, SentAt: &now,
