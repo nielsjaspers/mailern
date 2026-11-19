@@ -49,7 +49,7 @@ struct DraftDetails: View {
     let draft: ComposerDraft
 
     var body: some View {
-        Text("From: \(store.account(draft.accountID).address)").font(.caption).foregroundStyle(.secondary)
+        Text("From: \(draft.sender(in: store.account(draft.accountID)))").font(.caption).foregroundStyle(.secondary)
         Text(draft.to.isEmpty ? "No recipients" : "To: \(draft.to)").font(.caption).foregroundStyle(.secondary)
         if !draft.cc.isEmpty { Text("Cc: \(draft.cc)").font(.caption).foregroundStyle(.secondary) }
         if !draft.bcc.isEmpty { Text("Bcc: \(draft.bcc)").font(.caption).foregroundStyle(.secondary) }

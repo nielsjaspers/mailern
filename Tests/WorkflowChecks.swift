@@ -506,6 +506,7 @@ import os
         try await checkRemoteDelete()
         try await checkRemoteSending()
         try await checkUnconfirmedSendRetry()
+        try checkAccountAliases()
         try await checkOutboxDuringSourceDelete()
     }
 
@@ -866,6 +867,31 @@ import os
         await ServerSync(client: client, store: saved).push()
         assert(deletedAfterPut && saved.pendingRemoteDeletes.isEmpty)
         print("PASS: delete keeps confirmed IDs and mailbox identity across pulls, restart, and PUT acknowledgment. A conflict refreshes the mailbox.")
+    }
+
+    @MainActor static func checkAccountAliases() throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-aliases-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        var account = remoteAccount
+        account.aliases = ["hello@example.test"]
+        var thread = remoteThread()
+        thread.messages[0].to = ["Hello@example.test"]
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true, account: account)))
+        let synced = store.account(account.id)
+        assert(synced.addresses == [account.address, "hello@example.test"] && synced.owns("HELLO@example.test"))
+        // A reply goes out from the address the message was sent to; Reply All leaves every own address out.
+        var c = store.conversation(thread.id)!
+        let reply = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
+        assert(reply.fromAddress == "hello@example.test" && reply.sender(in: synced) == "hello@example.test" && reply.cc.isEmpty)
+        // Mail to the main address answers from the main address.
+        c.messages[0].to = [account.address]
+        let plain = ComposerDraft.make(mode: .reply(c.id), conversation: c, accounts: store.accounts)
+        assert(plain.fromAddress == nil && plain.sender(in: synced) == account.address)
+        var other = reply
+        other.fromAddress = nil
+        assert(!reply.hasSameSubmission(as: other))
+        print("PASS: account aliases sync, count as own addresses, and set the reply sender")
     }
 
     @MainActor static func checkUnconfirmedSendRetry() async throws {

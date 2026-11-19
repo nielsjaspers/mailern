@@ -137,6 +137,7 @@ struct RemoteAccount: Decodable, Equatable {
     var id: String
     var name: String
     var address: String
+    var aliases: [String]?
     var mailboxIdentities: RemovedMailboxIdentities?
 }
 
@@ -234,6 +235,7 @@ extension MailStore {
                 ?? MailAccount(id: remote.id, name: remote.name, address: remote.address,
                                color: AccountColor.allCases[index % AccountColor.allCases.count])
             account.address = remote.address
+            account.aliases = remote.aliases?.isEmpty == false ? remote.aliases : nil
             account.mailboxIdentities = remote.mailboxIdentities
             return account
         }

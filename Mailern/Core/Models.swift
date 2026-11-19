@@ -48,6 +48,11 @@ struct MailAccount: Codable, Identifiable, Hashable {
     var color: AccountColor
     var signature = ""
     var mailboxIdentities: RemovedMailboxIdentities?
+    /// Other addresses the account receives and sends as. Server accounts list them in the server config.
+    var aliases: [String]?
+    /// The main address first, then the aliases.
+    var addresses: [String] { [address] + (aliases ?? []) }
+    func owns(_ address: String) -> Bool { addresses.contains { $0.caseInsensitiveCompare(address) == .orderedSame } }
     /// Seed data for a new or reset store. The first account is the default sender for new mail.
     static let demo = [
         Self(id: "icloud", name: "Personal", address: "morgan@personal.example.com", color: .blue, signature: "Morgan"),

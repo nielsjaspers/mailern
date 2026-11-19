@@ -31,7 +31,7 @@ struct ConversationContent: View {
     private var latest: MailMessage { conversation.latest }
     private var earlier: [MailMessage] { Array(conversation.messages.dropLast()) }
     private var margin: CGFloat { isPreview ? 18 : 20 }
-    private var ownAddresses: Set<String> { Set(store.accounts.map { $0.address.lowercased() }) }
+    private var ownAddresses: Set<String> { Set(store.accounts.flatMap(\.addresses).map { $0.lowercased() }) }
 
     private struct FindRequest: Equatable { let query: String; let latest: UUID }
 

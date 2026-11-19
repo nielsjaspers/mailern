@@ -75,10 +75,17 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     var holdingForUndo: Bool?
     /// When to return the sent conversation to Inbox if nobody replied.
     var followUp: Date?
+    /// The account address to send as. Nil sends as the account's main address.
+    var fromAddress: String?
+
+    /// The address this draft sends as from `account`: its chosen alias, or the main address.
+    func sender(in account: MailAccount) -> String {
+        fromAddress.flatMap { chosen in account.addresses.first { $0.caseInsensitiveCompare(chosen) == .orderedSame } } ?? account.address
+    }
 
     /// Whether `other` would send the same message: sender, recipients, subject, body, and attachments.
     func hasSameSubmission(as other: Self) -> Bool {
-        accountID == other.accountID && to == other.to && cc == other.cc && bcc == other.bcc && subject == other.subject
+        accountID == other.accountID && fromAddress == other.fromAddress && to == other.to && cc == other.cc && bcc == other.bcc && subject == other.subject
             && text == other.text && richText == other.richText && attachments == other.attachments
     }
 
@@ -141,13 +148,21 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
         guard let c = conversation else { return draft }
         let target = c.message(message)
         let subject = c.subject(at: target)
+        // Answer from the address the message was sent to, as Mail does.
+        if let account = accounts.first(where: { $0.id == c.accountID }), !target.outgoing,
+           let alias = (target.to + target.cc).first(where: account.owns), alias.caseInsensitiveCompare(account.address) != .orderedSame {
+            draft.fromAddress = account.addresses.first { $0.caseInsensitiveCompare(alias) == .orderedSame }
+        } else if target.outgoing, let account = accounts.first(where: { $0.id == c.accountID }), account.owns(target.address),
+                  target.address.caseInsensitiveCompare(account.address) != .orderedSame {
+            draft.fromAddress = target.address
+        }
         switch mode {
         case .reply, .replyAll:
             draft.answering = target.id
             draft.to = target.outgoing ? target.to.joined(separator: ", ") : target.address
             draft.subject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
             if case .replyAll = mode {
-                var seen = Set(accounts.map { $0.address.lowercased() } + addresses(draft.to).map { $0.lowercased() })
+                var seen = Set(accounts.flatMap(\.addresses).map { $0.lowercased() } + addresses(draft.to).map { $0.lowercased() })
                 draft.cc = (target.to + target.cc).filter { seen.insert($0.lowercased()).inserted }.joined(separator: ", ")
             }
             draft.text += "\n\n\(QuotedText.attribution(for: target))\n\(target.body)"

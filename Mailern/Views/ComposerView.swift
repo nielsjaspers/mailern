@@ -68,6 +68,20 @@ struct ComposerView: View {
     private let attachmentLimit = 25 * 1024 * 1024
     private var importing: Bool { importsInFlight > 0 }
 
+    private struct Sender: Hashable { let accountID: String; let address: String }
+    /// Every address the draft can send as. A reply stays with its conversation's account.
+    private var senders: [Sender] {
+        let accounts = draft.mode.replyID != nil ? [account] : store.accounts
+        return accounts.flatMap { account in account.addresses.map { Sender(accountID: account.id, address: $0) } }
+    }
+    private var sender: Binding<Sender> {
+        Binding {
+            Sender(accountID: draft.accountID, address: draft.sender(in: account))
+        } set: { choice in
+            draft.accountID = choice.accountID
+            draft.fromAddress = choice.address.caseInsensitiveCompare(store.account(choice.accountID).address) == .orderedSame ? nil : choice.address
+        }
+    }
     private var awaitingConfirmation: Bool { store.hasPendingRemoteSend(draft.id) }
 
     var body: some View {
@@ -84,12 +98,12 @@ struct ComposerView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text("From:").foregroundStyle(.secondary).fixedSize()
                             Menu {
-                                Picker("From", selection: $draft.accountID) {
-                                    ForEach(store.accounts) { Text($0.address).tag($0.id) }
+                                Picker("From", selection: sender) {
+                                    ForEach(senders, id: \.self) { Text($0.address).tag($0) }
                                 }
                             } label: {
                                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                    Text(account.address)
+                                    Text(draft.sender(in: account))
                                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                                         .truncationMode(.middle)
                                         .multilineTextAlignment(.leading)
@@ -99,15 +113,15 @@ struct ComposerView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 12)
                                 .contentShape(Rectangle())
-                            }.tint(.primary).disabled(draft.mode.replyID != nil)
-                                .accessibilityLabel("From, \(account.address)")
+                            }.tint(.primary).disabled(senders.count < 2)
+                                .accessibilityLabel("From, \(draft.sender(in: account))")
                         }.frame(minHeight: 48)
                         Divider()
                     } else {
                         Button {
                             withAnimation(.snappy(duration: 0.25)) { expanded = true }
                         } label: {
-                            Text("Cc/Bcc, From:  \(account.address)")
+                            Text("Cc/Bcc, From:  \(draft.sender(in: account))")
                                 .font(.subheadline).foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                                 .contentShape(Rectangle())
@@ -376,7 +390,7 @@ struct ComposerView: View {
         contacts = false
     }
     private var recipients: [(name: String, address: String)] {
-        var seen = Set(store.accounts.map(\.address))
+        var seen = Set(store.accounts.flatMap(\.addresses))
         return store.conversations.flatMap(\.messages).filter { seen.insert($0.address).inserted }
             .map { (name: $0.sender, address: $0.address) }.sorted { $0.name < $1.name }
     }

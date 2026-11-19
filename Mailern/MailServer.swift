@@ -79,6 +79,7 @@ struct MailServerClient: RemoteMailboxClient {
         var inReplyTo: String?
         var references: [String]?
         var attachments: [Attachment]
+        var from: String
     }
 
     func send(_ message: Outgoing) async throws {
@@ -111,7 +112,8 @@ extension ServerSync {
             html: draft.richText.flatMap { html(RichText.decode($0, fallback: draft.text)) },
             inReplyTo: target?.threadingID,
             references: target?.references,
-            attachments: draft.attachments.map { .init(name: $0.name, contentType: $0.contentType, data: $0.data) })
+            attachments: draft.attachments.map { .init(name: $0.name, contentType: $0.contentType, data: $0.data) },
+            from: draft.sender(in: prepared.from))
     }
 
     /// Formatted mail goes out with an HTML part, so other clients show the formatting.

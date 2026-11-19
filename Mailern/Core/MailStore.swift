@@ -831,7 +831,7 @@ final class MailStore {
             updated[index].messages[messageIndex].richText = draft.richText
             updated[index].messages[messageIndex].attachments = attachments
         } else {
-            var message = MailMessage(id: draft.id, sender: accepted.from.name, address: accepted.from.address,
+            var message = MailMessage(id: draft.id, sender: accepted.from.name, address: draft.sender(in: accepted.from),
                                       to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
                                       date: .now, body: draft.text, outgoing: true, bcc: bcc.isEmpty ? nil : bcc,
                                       richText: draft.richText, attachments: attachments, subject: subject,
