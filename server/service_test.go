@@ -401,6 +401,9 @@ func TestHTMLIsFetchedOnDemand(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
+	if resp.Header.Get("Content-Type") != "text/plain; charset=utf-8" || resp.Header.Get("X-Content-Type-Options") != "nosniff" || resp.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("unsafe mail response headers: %v", resp.Header)
+	}
 	var body bytes.Buffer
 	body.ReadFrom(resp.Body)
 	if !bytes.Contains(body.Bytes(), []byte("<b>there</b>")) {
@@ -423,6 +426,27 @@ func TestHTMLRejectsStaleMailboxIdentity(t *testing.T) {
 	})
 	if _, err := h.account.FetchHTML(at, validity+1); err != errNotFound {
 		t.Fatalf("stale mailbox identity returned %v", err)
+	}
+}
+
+func TestReconfiguredMailboxDropsOldMailFromSync(t *testing.T) {
+	h := newHarness(t)
+	h.deliver("INBOX", "Old account", "")
+	h.sync()
+	var before syncResponse
+	h.request("GET", "/v1/sync?since=0", nil, &before)
+	id := before.Conversations[0].ID
+	err := h.account.store.Update(func(st *State) error {
+		st.configureAccounts([]AccountConfig{{ID: "lab", Address: "new@example.com"}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after syncResponse
+	h.request("GET", fmt.Sprintf("/v1/sync?since=%d", before.Revision), nil, &after)
+	if !slices.Contains(after.Deleted, id) || len(h.conversations()) != 0 {
+		t.Fatal("reconfigured mailbox still exposes old mail")
 	}
 }
 

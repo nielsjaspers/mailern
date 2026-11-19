@@ -74,12 +74,8 @@ func serve(ctx context.Context, configPath, listen string) error {
 	if err != nil {
 		return err
 	}
-	service, err := start(ctx, cfg)
-	if err != nil {
-		return err
-	}
 	if listen != "" {
-		return serveLocal(ctx, service, listen)
+		return serveLocal(ctx, cfg, listen)
 	}
 	if len(cfg.Tailscale.AllowedUsers) == 0 {
 		return errors.New("set tailscale.allowedUsers to the Tailscale login names that may use this service")
@@ -94,6 +90,11 @@ func serve(ctx context.Context, configPath, listen string) error {
 		return err
 	}
 	ln, err := ts.ListenTLS("tcp", ":443")
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+	service, err := start(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -119,6 +120,12 @@ func start(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := store.Update(func(st *State) error {
+		st.configureAccounts(cfg.Accounts)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	service := &Service{store: store}
 	for _, ac := range cfg.Accounts {
 		a := NewAccount(ac, store, cfg.window())
@@ -129,7 +136,7 @@ func start(ctx context.Context, cfg Config) (*Service, error) {
 	return service, nil
 }
 
-func serveLocal(ctx context.Context, service *Service, listen string) error {
+func serveLocal(ctx context.Context, cfg Config, listen string) error {
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
 		return err
@@ -138,6 +145,11 @@ func serveLocal(ctx context.Context, service *Service, listen string) error {
 		return errors.New("-listen serves without encryption or sign-in, so it accepts only a loopback address")
 	}
 	ln, err := net.Listen("tcp", listen)
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+	service, err := start(ctx, cfg)
 	if err != nil {
 		return err
 	}

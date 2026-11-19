@@ -86,6 +86,8 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/messages/{id}/html", s.html)
 	mux.HandleFunc("POST /v1/send", s.send)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if s.authorize != nil {
 			if err := s.authorize(r); err != nil {
 				http.Error(w, err.Error(), http.StatusForbidden)
@@ -280,7 +282,7 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprint(w, html)
 }
 

@@ -82,6 +82,7 @@ type Conversation struct {
 type AccountState struct {
 	// A receipt outlives the synced message. Its bytes are kept only until Sent filing succeeds.
 	Receipts    map[string][]byte `json:"receipts,omitempty"`
+	Address     string            `json:"address"`
 	UIDValidity map[Role]uint32   `json:"uidValidity"`
 	// Messages by key: the Message-ID header, or a stand-in for mail without one.
 	Messages map[string]*Message `json:"messages"`
@@ -176,6 +177,32 @@ func (s *Store) saveLocked() error {
 	}
 	s.dirty = false
 	return nil
+}
+
+// Removed mailboxes must disappear from both the cache and clients that already synced them.
+func (st *State) configureAccounts(accounts []AccountConfig) {
+	active := make(map[string]string, len(accounts))
+	for _, cfg := range accounts {
+		active[cfg.ID] = cfg.Address
+	}
+	for id, cached := range st.Accounts {
+		if address, ok := active[id]; ok && cached.Address == address {
+			continue
+		}
+		for threadID, c := range st.Conversations {
+			if c.AccountID == id {
+				st.removeConversation(threadID)
+			}
+		}
+		delete(st.Accounts, id)
+		st.Revision++
+	}
+	for id, address := range active {
+		if st.Accounts[id] == nil {
+			st.account(id).Address = address
+			st.Revision++
+		}
+	}
 }
 
 func (st *State) account(id string) *AccountState {
