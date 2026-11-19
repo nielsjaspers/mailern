@@ -87,6 +87,8 @@ type ConversationState struct {
 	Unread       bool       `json:"unread"`
 	Pinned       bool       `json:"pinned"`
 	Muted        bool       `json:"muted"`
+	// The conversation's message IDs as the phone knew them. Nil skips the check.
+	MessageIDs []string `json:"messageIDs,omitempty"`
 }
 
 func (s *Service) Handler() http.Handler {
@@ -241,6 +243,15 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 			return errNotFound
 		}
 		previousRemoval, wasMoving := c.Removal, c.PendingPlacement
+		// A reply the phone has not seen yet wins, as an arrival does in Mailern: the change neither moves the
+		// thread out of Inbox nor marks it read. The response brings the reply to the phone.
+		if state.MessageIDs != nil && slices.ContainsFunc(st.messages(c), func(m *Message) bool {
+			return !m.Outgoing && !slices.Contains(state.MessageIDs, m.ID)
+		}) {
+			state.Fields = slices.DeleteFunc(slices.Clone(state.Fields), func(field string) bool {
+				return (field == "workflow" && state.Workflow != WorkflowInbox) || (field == "unread" && !state.Unread)
+			})
+		}
 		if slices.Contains(state.Fields, "workflow") && (c.Workflow != state.Workflow || !sameTime(c.SnoozedUntil, state.SnoozedUntil)) {
 			c.PendingPlacement = true
 			c.Workflow, c.SnoozedUntil, c.ReturnedFromSnoozeAt = state.Workflow, state.SnoozedUntil, nil

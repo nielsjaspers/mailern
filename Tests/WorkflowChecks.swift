@@ -508,6 +508,7 @@ import os
         try await checkUnconfirmedSendRetry()
         try checkAccountAliases()
         try await checkReplyDuringSend()
+        try await checkReplyWinsOverUnsyncedMove()
         try await checkOutboxDuringSourceDelete()
     }
 
@@ -544,11 +545,13 @@ import os
         assert(store.conversations.map(\.id) == [inserted.id, id])
         assert(store.conversation(id)?.subject == "Updated thread")
         store.mergeRemote(sync)
-        // A local Settle waits for the server. A sync that still shows Inbox brings the reply but keeps the Settle.
+        // A local Settle waits for the server. A sync that still shows Inbox brings a sent copy but keeps the Settle.
+        // (A new incoming reply would win instead, as an arrival does; checkReplyWinsOverUnsyncedMove covers that.)
         store.move(id, to: .settled)
         assert(store.conversation(id)!.hasUnsyncedChanges)
         sync.reset = false
         var reply = sync.conversations[0].messages[0]
+        reply.outgoing = true
         reply.id = UUID()
         reply.date = reply.date.addingTimeInterval(60)
         sync.conversations[0].messages.append(reply)
@@ -607,7 +610,7 @@ import os
         var remove: (UUID, RemoteDelete) async throws -> Bool = { _, _ in fatalError("Unexpected delete request") }
 
         func sync(since revision: UInt64, wait: Int) async throws -> RemoteSync { try await fetch(revision, wait) }
-        func setState(_ id: UUID, _ state: RemoteState, fields: Set<RemoteStateField>) async throws -> RemoteConversation? {
+        func setState(_ id: UUID, _ state: RemoteState, fields: Set<RemoteStateField>, messageIDs: [UUID]) async throws -> RemoteConversation? {
             try await update(id, state, fields)
         }
         func delete(_ id: UUID, _ request: RemoteDelete) async throws -> Bool { try await remove(id, request) }
@@ -766,9 +769,11 @@ import os
         assert(submitted == [.inbox, .settled] && recovered.conversation(thread.id)?.latest.id == reply.id)
         assert(recovered.conversation(thread.id)?.hasUnsyncedChanges == false)
         assert(recovered.conversation(thread.id)?.pendingRemoteWrite == nil && recovered.conversation(thread.id)?.pinned == true)
-        let body = try RemoteJSON.encoder.encode(RemoteStateWrite(state: thread.state, fields: [.workflow, .unread]))
+        let known = thread.messages[0].id
+        let body = try RemoteJSON.encoder.encode(RemoteStateWrite(state: thread.state, fields: [.workflow, .unread], messageIDs: [known]))
         let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
         assert(json["fields"] as? [String] == ["workflow", "unread"] && json["workflow"] as? String == "inbox")
+        assert(json["messageIDs"] as? [String] == [known.uuidString.lowercased()])
         print("PASS: Undo survives a stale pull, a lost PUT response, and restart. PUT acknowledgment adopts unrelated state and keeps a newly sent reply.")
     }
 
@@ -870,6 +875,31 @@ import os
         print("PASS: delete keeps confirmed IDs and mailbox identity across pulls, restart, and PUT acknowledgment. A conflict refreshes the mailbox.")
     }
 
+    @MainActor static func checkReplyWinsOverUnsyncedMove() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-reply-wins-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        let thread = remoteThread()
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        assert(store.move(thread.id, to: .settled) && !store.conversation(thread.id)!.remoteWriteFields.isEmpty)
+        // The server answers the Settle with a reply the phone had not seen. The reply wins, as an arrival does.
+        var answered = thread
+        answered.unread = true
+        answered.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                               date: .now, body: "One more thing", outgoing: false, subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(2, [answered])))
+        let c = store.conversation(thread.id)!
+        assert(c.workflow == .inbox && c.unread && !c.remoteWriteFields.contains(.workflow))
+        // A send from an alias the server no longer lists is refused instead of going out from the main address.
+        var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        draft.to = "alex@example.test"
+        draft.fromAddress = "gone@example.test"
+        store.sendRemote = { _ in fatalError("must not send") }
+        let refused = await store.sendNow(draft)
+        assert(!refused && store.error?.contains("no longer an address") == true)
+        print("PASS: a reply wins over an unconfirmed move, and a removed alias is refused")
+    }
+
     @MainActor static func checkReplyDuringSend() async throws {
         let directory = URL.temporaryDirectory.appending(path: "mailern-reply-during-send-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -913,6 +943,12 @@ import os
         c.messages[0].to = [account.address]
         let plain = ComposerDraft.make(mode: .reply(c.id), conversation: c, accounts: store.accounts)
         assert(plain.fromAddress == nil && plain.sender(in: synced) == account.address)
+        // Reply All to your own message goes to its other recipients, not back to your alias.
+        c.messages[0].outgoing = true
+        c.messages[0].address = account.address
+        c.messages[0].to = ["Hello@example.test", "sam@example.test"]
+        let own = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
+        assert(own.to == "sam@example.test")
         var other = reply
         other.fromAddress = nil
         assert(!reply.hasSameSubmission(as: other))

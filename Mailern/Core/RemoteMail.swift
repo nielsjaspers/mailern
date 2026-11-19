@@ -29,13 +29,16 @@ enum RemoteStateField: String, Codable, CaseIterable {
 struct RemoteStateWrite: Encodable {
     let state: RemoteState
     let fields: Set<RemoteStateField>
+    /// The messages the phone knew when it made the change. The server keeps a newer reply in Inbox.
+    let messageIDs: [UUID]
 
-    private enum CodingKeys: String, CodingKey { case fields }
+    private enum CodingKeys: String, CodingKey { case fields, messageIDs }
 
     func encode(to encoder: Encoder) throws {
         try state.encode(to: encoder)
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(RemoteStateField.allCases.filter(fields.contains), forKey: .fields)
+        try container.encode(messageIDs.map { $0.uuidString.lowercased() }, forKey: .messageIDs)
     }
 }
 
@@ -310,7 +313,8 @@ extension MailStore {
         if c.messages.isEmpty, let local { c.messages = local.messages }
         let replied = c.messages.contains { !$0.outgoing && !known.contains($0.id) } && local != nil
         if replied, c.followUp == .waiting { c.followUp = nil }
-        c.adoptRemoteState(remote, keeping: fields)
+        // A new reply wins over a move the server has not confirmed, as an arrival does in Mailern.
+        c.adoptRemoteState(remote, keeping: replied && !remote.muted ? fields.subtracting([.workflow, .unread]) : fields)
         return c
     }
 }
@@ -318,7 +322,7 @@ extension MailStore {
 @MainActor
 protocol RemoteMailboxClient {
     func sync(since revision: UInt64, wait: Int) async throws -> RemoteSync
-    func setState(_ id: UUID, _ state: RemoteState, fields: Set<RemoteStateField>) async throws -> RemoteConversation?
+    func setState(_ id: UUID, _ state: RemoteState, fields: Set<RemoteStateField>, messageIDs: [UUID]) async throws -> RemoteConversation?
     func delete(_ id: UUID, _ request: RemoteDelete) async throws -> Bool
 }
 
@@ -430,9 +434,10 @@ final class ServerSync {
             while let conversation = store.conversation(id), !conversation.remoteWriteFields.isEmpty {
                 let state = conversation.remoteState
                 let fields = conversation.remoteWriteFields
+                let messageIDs = conversation.messages.map(\.id)
                 do {
                     guard store.recordPendingRemoteWrite(id, fields: fields) else { throw saveFailure }
-                    guard let confirmed = try await client.setState(id, state, fields: fields) else {
+                    guard let confirmed = try await client.setState(id, state, fields: fields, messageIDs: messageIDs) else {
                         needsFullSync = true
                         break
                     }

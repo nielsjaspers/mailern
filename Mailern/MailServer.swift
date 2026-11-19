@@ -40,9 +40,9 @@ struct MailServerClient: RemoteMailboxClient {
         return try RemoteJSON.decoder.decode(RemoteSync.self, from: data)
     }
 
-    func setState(_ id: UUID, _ state: RemoteState, fields: Set<RemoteStateField>) async throws -> RemoteConversation? {
+    func setState(_ id: UUID, _ state: RemoteState, fields: Set<RemoteStateField>, messageIDs: [UUID]) async throws -> RemoteConversation? {
         do {
-            let body = try RemoteJSON.encoder.encode(RemoteStateWrite(state: state, fields: fields))
+            let body = try RemoteJSON.encoder.encode(RemoteStateWrite(state: state, fields: fields, messageIDs: messageIDs))
             let data = try await send("PUT", "v1/conversations/\(id.uuidString.lowercased())", body: body)
             return try RemoteJSON.decoder.decode(RemoteConversation.self, from: data)
         } catch let failure as Failure where failure.status == 404 {

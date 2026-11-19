@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -21,6 +22,27 @@ func TestReplyRescuesWholeThreadFromTrash(t *testing.T) {
 	}
 	if h.count("Trash") != 0 || h.count("Archive") != 1 || h.count("INBOX") != 1 {
 		t.Fatalf("older mail must leave Trash before it expires: Trash %d, Archive %d, Inbox %d", h.count("Trash"), h.count("Archive"), h.count("INBOX"))
+	}
+}
+
+func TestSettleDoesNotHideAReplyThePhoneHasNotSeen(t *testing.T) {
+	h := newHarness(t)
+	root := h.deliver("INBOX", "Dinner", "")
+	h.sync()
+	seen := h.conversations()["Dinner"]
+	h.deliver("INBOX", "Re: Dinner", root)
+	h.sync()
+	state := ConversationState{Fields: []string{"workflow", "unread"}, Workflow: WorkflowSettled,
+		MessageIDs: []string{seen.Messages[0].ID}}
+	if code := h.request("PUT", "/v1/conversations/"+seen.ID, state, nil); code != http.StatusOK {
+		t.Fatalf("set state: %d", code)
+	}
+	h.sync()
+	if c := h.conversations()["Dinner"]; c.Workflow != WorkflowInbox || !c.Unread || len(c.Messages) != 2 {
+		t.Fatalf("the unseen reply should keep the thread in Inbox, unread: %s unread=%v", c.Workflow, c.Unread)
+	}
+	if h.count("INBOX") == 0 {
+		t.Fatal("the unseen reply should stay in the server inbox")
 	}
 }
 
