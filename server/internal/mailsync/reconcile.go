@@ -27,10 +27,10 @@ type flagChange struct {
 
 // plan lists the server changes that make one conversation match the state Mailern wants.
 type plan struct {
-	moves    []move
-	flags    []flagChange
-	deleteAt Role
-	expunges []imap.UID
+	moves []move
+	flags []flagChange
+	// A permanent delete expunges every copy, so one left in Sent or Archive cannot bring the thread back.
+	expunges map[Role][]imap.UID
 }
 
 func (p plan) empty() bool { return len(p.moves)+len(p.flags)+len(p.expunges) == 0 }
@@ -200,9 +200,11 @@ func planFor(c *Conversation, msgs []*Message) plan {
 func planForMailboxes(c *Conversation, msgs []*Message, archiveIsAll bool) plan {
 	var p plan
 	if c.Deleting {
-		p.deleteAt = c.Removal
+		p.expunges = map[Role][]imap.UID{}
 		for _, m := range msgs {
-			p.expunges = append(p.expunges, imap.UID(m.Locations[p.deleteAt]))
+			for role, uid := range m.Locations {
+				p.expunges[role] = append(p.expunges[role], imap.UID(uid))
+			}
 		}
 		return p
 	}
@@ -414,8 +416,8 @@ func (a *Account) applyPlans(c *imapclient.Client, plans []plan, identities map[
 			}
 			moves[m.from.role][m.to] = append(moves[m.from.role][m.to], m.from.uid)
 		}
-		if len(p.expunges) > 0 {
-			expunges[p.deleteAt] = append(expunges[p.deleteAt], p.expunges)
+		for role, uids := range p.expunges {
+			expunges[role] = append(expunges[role], uids)
 		}
 	}
 	for _, role := range syncedRoles {

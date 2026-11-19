@@ -340,6 +340,22 @@ func TestSettleArchivesYourOwnReplyFromTheInbox(t *testing.T) {
 	if _, ok := h.mailbox("Archive")["Re: Dinner"]; !ok {
 		t.Fatal("the Inbox copy of your reply should be archived")
 	}
+	// Trash and a permanent delete then take both copies of the reply.
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Removal = RoleTrash })
+	h.sync()
+	if code := h.delete(h.conversations()["Dinner"], RoleTrash); code != http.StatusNoContent {
+		t.Fatalf("delete: %d", code)
+	}
+	h.sync()
+	h.sync()
+	for _, mailbox := range []string{"INBOX", "Archive", "Sent", "Trash"} {
+		if n := h.count(mailbox); n != 0 {
+			t.Fatalf("delete left %d messages in %s", n, mailbox)
+		}
+	}
+	if _, ok := h.conversations()["Dinner"]; ok {
+		t.Fatal("the deleted thread came back")
+	}
 }
 
 func TestChangesFromOtherClientsAreAdopted(t *testing.T) {
