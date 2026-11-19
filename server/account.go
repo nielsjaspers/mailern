@@ -540,9 +540,10 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 	changed := map[string]bool{}
 	locationsChanged := map[string]bool{}
 	arrived := map[string]bool{}
-	// The config's addresses decide what counts as the user's own mail, so an added alias applies to stored mail too.
+	// An added alias applies to stored mail too.
 	for _, m := range account.Messages {
-		if _, own := a.cfg.ownAddress(m.Address); own != m.Outgoing && m.SentAt == nil {
+		// Only ever toward the user's own: removing an alias does not change who wrote mail sent from it.
+		if _, own := a.cfg.ownAddress(m.Address); own && !m.Outgoing {
 			m.Outgoing = own
 			changed[m.ConversationID] = true
 		}

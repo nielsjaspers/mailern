@@ -125,3 +125,19 @@ func TestRestorePutsNewestLiveMessageInInbox(t *testing.T) {
 		t.Fatalf("Restore should put the newest live message in Inbox, Inbox: %v", h.mailbox("INBOX"))
 	}
 }
+
+func TestRemovedAliasKeepsSentMailOutgoing(t *testing.T) {
+	h := newHarness(t)
+	const alias = "morgan@alias.example.com"
+	h.account.cfg.Aliases = []string{alias}
+	raw := LabMessage("Morgan <"+alias+">", "sam@example.com", "Sent as alias", "Hi.", "", time.Now())
+	if err := h.lab.Deliver(labAddress, "Sent", raw, imap.FlagSeen); err != nil {
+		t.Fatal(err)
+	}
+	h.sync()
+	h.account.cfg.Aliases = nil
+	h.sync()
+	if !h.conversations()["Sent as alias"].Messages[0].Outgoing {
+		t.Fatal("removing an alias must not turn mail sent from it into incoming mail")
+	}
+}
