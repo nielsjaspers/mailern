@@ -785,7 +785,7 @@ final class MailStore {
         }
         return PreparedRemoteSend(draft: draft, conversationID: draft.mode.replyID ?? draft.id, from: from, replyTo: source.map {
             PreparedRemoteSend.Reply(id: $0.id, threadingID: $0.threadingID, references: ($0.references ?? []) + [$0.threadingID])
-        })
+        }, incomingIDs: draft.mode.replyID.flatMap(conversation).map { $0.messages.filter { !$0.outgoing }.map(\.id) })
     }
 
     func fileReadyRemoteSends() {
@@ -841,11 +841,17 @@ final class MailStore {
             updated[index].messages.append(message)
         }
         updated[index].removal = nil
-        if let followUp = draft.followUp, followUp > .now {
-            updated[index].move(to: .snoozed, until: followUp)
-            updated[index].followUp = .waiting
-        } else {
-            updated[index].move(to: .settled)
+        // A reply that arrived while the send was out keeps the thread in Inbox, unread, instead of settling it.
+        let answered = accepted.incomingIDs.map { known in
+            updated[index].messages.contains { !$0.outgoing && !known.contains($0.id) }
+        } ?? false
+        if !answered {
+            if let followUp = draft.followUp, followUp > .now {
+                updated[index].move(to: .snoozed, until: followUp)
+                updated[index].followUp = .waiting
+            } else {
+                updated[index].move(to: .settled)
+            }
         }
         guard save(replacingConversations: updated, draftDiscards: discardedDraftIDs.union([draft.id]),
                    pendingSends: pending, reportFailure: false) else {

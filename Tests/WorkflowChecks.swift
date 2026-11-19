@@ -507,6 +507,7 @@ import os
         try await checkRemoteSending()
         try await checkUnconfirmedSendRetry()
         try checkAccountAliases()
+        try await checkReplyDuringSend()
         try await checkOutboxDuringSourceDelete()
     }
 
@@ -867,6 +868,30 @@ import os
         await ServerSync(client: client, store: saved).push()
         assert(deletedAfterPut && saved.pendingRemoteDeletes.isEmpty)
         print("PASS: delete keeps confirmed IDs and mailbox identity across pulls, restart, and PUT acknowledgment. A conflict refreshes the mailbox.")
+    }
+
+    @MainActor static func checkReplyDuringSend() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-reply-during-send-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        let thread = remoteThread()
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        var draft = ComposerDraft.make(mode: .reply(thread.id), conversation: store.conversation(thread.id), accounts: store.accounts)
+        draft.text = "On my way."
+        // The correspondent answers while the send request is still open.
+        store.sendRemote = { prepared in
+            var answered = thread
+            answered.unread = true
+            answered.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                                   date: .now, body: "See you there", outgoing: false, subject: "Re: Plans", hasHTML: false))
+            answered.messages.append(RemoteMessage(id: prepared.draft.id, sender: "Me", address: remoteAccount.address, date: .now,
+                                                   body: prepared.draft.text, outgoing: true, subject: "Re: Plans", hasHTML: false))
+            assert(store.mergeRemote(remoteBatch(2, [answered])))
+        }
+        let sent = await store.sendNow(draft)
+        let c = store.conversation(thread.id)!
+        assert(sent && c.messages.count == 3 && c.workflow == .inbox && c.unread)
+        print("PASS: a reply that arrives during a send keeps the thread in Inbox, unread")
     }
 
     @MainActor static func checkAccountAliases() throws {

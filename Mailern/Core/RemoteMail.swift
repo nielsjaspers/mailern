@@ -196,6 +196,8 @@ struct PreparedRemoteSend: Codable, Equatable {
     let conversationID: UUID
     let from: MailAccount
     let replyTo: Reply?
+    /// The thread's incoming messages when the send started. A reply that arrives during the send is not among them.
+    var incomingIDs: [UUID]?
 }
 
 struct PendingRemoteSend: Codable, Equatable {
