@@ -100,7 +100,14 @@ func (a *Account) reconcile(st *State) []plan {
 			if adopt(c, msgs, a.archiveIsAll) {
 				st.Touch(c)
 			}
-			continue
+			// Your own reply can reach the Inbox after its thread settled, for example with yourself in CC.
+			// A thread of only your own mail, such as a note to yourself, keeps its Inbox copy.
+			if c.Workflow != WorkflowSettled || c.Removal != "" || len(incoming(msgs)) == 0 ||
+				!slices.ContainsFunc(msgs, func(m *Message) bool { return m.Outgoing && !m.Deleted && m.Locations[RoleInbox] != 0 }) {
+				continue
+			}
+			c.Pending, c.PendingPlacement = true, true
+			st.Touch(c)
 		}
 		p := planForMailboxes(c, msgs, a.archiveIsAll)
 		if !p.empty() {

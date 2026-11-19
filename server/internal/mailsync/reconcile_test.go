@@ -358,6 +358,45 @@ func TestSettleArchivesYourOwnReplyFromTheInbox(t *testing.T) {
 	}
 }
 
+func TestSettledThreadArchivesYourReplyThatReachesTheInboxLater(t *testing.T) {
+	h := newHarness(t)
+	parent := h.deliver("INBOX", "Dinner", "")
+	own := maillab.Message("Me <"+labAddress+">", labAddress, "Re: Dinner", "Count me in.", parent, time.Now())
+	if err := h.lab.Deliver(labAddress, "Sent", own, imap.FlagSeen); err != nil {
+		t.Fatal(err)
+	}
+	h.sync()
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Workflow, s.Unread = WorkflowSettled, false })
+	h.sync()
+	// The copy for yourself in CC arrives after the thread settled.
+	if err := h.lab.Deliver(labAddress, "INBOX", own, imap.FlagSeen); err != nil {
+		t.Fatal(err)
+	}
+	h.sync()
+	h.sync()
+	if inbox := h.mailbox("INBOX"); len(inbox) != 0 {
+		t.Fatalf("your reply stayed in the inbox of a settled thread: %v", inbox)
+	}
+	if c := h.conversations()["Dinner"]; c.Workflow != WorkflowSettled {
+		t.Fatalf("the thread should stay settled, got %s", c.Workflow)
+	}
+}
+
+func TestNoteToYourselfStaysInTheInbox(t *testing.T) {
+	h := newHarness(t)
+	note := maillab.Message("Me <"+labAddress+">", labAddress, "Note", "Buy milk.", "", time.Now())
+	for _, mailbox := range []string{"Sent", "INBOX"} {
+		if err := h.lab.Deliver(labAddress, mailbox, note); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.sync()
+	h.sync()
+	if _, ok := h.mailbox("INBOX")["Note"]; !ok {
+		t.Fatal("a note to yourself should stay in the inbox")
+	}
+}
+
 func TestChangesFromOtherClientsAreAdopted(t *testing.T) {
 	h := newHarness(t)
 	h.deliver("INBOX", "Dinner", "")
