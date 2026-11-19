@@ -100,6 +100,21 @@ func (h *harness) set(c wireConversation, change func(*ConversationState)) {
 	state := ConversationState{Workflow: c.Workflow, SnoozedUntil: c.SnoozedUntil, Removal: c.Removal,
 		Unread: c.Unread, Pinned: c.Pinned, Muted: c.Muted}
 	change(&state)
+	if c.Workflow != state.Workflow || !sameTime(c.SnoozedUntil, state.SnoozedUntil) {
+		state.Fields = append(state.Fields, "workflow")
+	}
+	if c.Removal != state.Removal {
+		state.Fields = append(state.Fields, "removal")
+	}
+	if c.Unread != state.Unread {
+		state.Fields = append(state.Fields, "unread")
+	}
+	if c.Pinned != state.Pinned {
+		state.Fields = append(state.Fields, "pinned")
+	}
+	if c.Muted != state.Muted {
+		state.Fields = append(state.Fields, "muted")
+	}
 	if code := h.request("PUT", "/v1/conversations/"+c.ID, state, nil); code != http.StatusOK {
 		h.t.Fatalf("set state: %d", code)
 	}

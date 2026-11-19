@@ -65,3 +65,18 @@ func TestSentFilingFailureAllowsIncomingMail(t *testing.T) {
 		t.Fatal("filing blocked incoming mail")
 	}
 }
+
+func TestStaleSettlePreservesProviderStar(t *testing.T) {
+	h := newHarness(t)
+	h.deliver("INBOX", "Starred", "", imap.FlagFlagged)
+	h.sync()
+	c := h.conversations()["Starred"]
+	stale := ConversationState{Workflow: WorkflowSettled, Pinned: false, Fields: []string{"workflow", "unread"}}
+	if code := h.request("PUT", "/v1/conversations/"+c.ID, stale, nil); code != 200 {
+		t.Fatalf("Settle status %d", code)
+	}
+	h.sync()
+	if got := h.conversations()["Starred"]; !got.Pinned || got.Workflow != WorkflowSettled {
+		t.Fatal("Settle must preserve the provider's star")
+	}
+}

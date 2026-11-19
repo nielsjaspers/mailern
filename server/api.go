@@ -70,6 +70,7 @@ type syncResponse struct {
 
 // ConversationState is what the phone sets on a conversation. The service changes the server to match.
 type ConversationState struct {
+	Fields       []string   `json:"fields"`
 	Workflow     Workflow   `json:"workflow"`
 	SnoozedUntil *time.Time `json:"snoozedUntil,omitempty"`
 	Removal      Role       `json:"removal,omitempty"`
@@ -196,6 +197,11 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid conversation state", http.StatusBadRequest)
 		return
 	}
+	allowed := []string{"workflow", "removal", "unread", "pinned", "muted"}
+	if len(state.Fields) == 0 || slices.ContainsFunc(state.Fields, func(field string) bool { return !slices.Contains(allowed, field) }) {
+		http.Error(w, "specify the changed state fields", http.StatusBadRequest)
+		return
+	}
 	var out wireConversation
 	var account *Account
 	err := s.store.Update(func(st *State) error {
@@ -203,20 +209,30 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 		if c == nil || c.Deleting {
 			return errNotFound
 		}
-		if c.Workflow != state.Workflow || !sameTime(c.SnoozedUntil, state.SnoozedUntil) {
-			c.ReturnedFromSnoozeAt = nil
+		if slices.Contains(state.Fields, "workflow") && (c.Workflow != state.Workflow || !sameTime(c.SnoozedUntil, state.SnoozedUntil)) {
+			c.PendingPlacement = true
+			c.Workflow, c.SnoozedUntil, c.ReturnedFromSnoozeAt = state.Workflow, state.SnoozedUntil, nil
+			if state.Workflow == WorkflowSettled {
+				c.Unread, c.PendingRead = false, true
+			}
 		}
-		if state.Removal == RoleTrash && c.Removal != RoleTrash {
-			now := time.Now()
-			c.TrashSince = &now
-		} else if state.Removal != RoleTrash {
-			c.TrashSince = nil
+		if slices.Contains(state.Fields, "removal") && state.Removal != c.Removal {
+			c.PendingPlacement = true
+			c.Removal, c.TrashSince = state.Removal, nil
+			if state.Removal == RoleTrash {
+				now := time.Now()
+				c.TrashSince = &now
+			}
 		}
-		c.PendingRead = c.PendingRead || c.Unread != state.Unread || (c.Workflow != WorkflowSettled && state.Workflow == WorkflowSettled)
-		c.PendingPin = c.PendingPin || c.Pinned != state.Pinned
-		c.PendingPlacement = c.PendingPlacement || c.Workflow != state.Workflow || c.Removal != state.Removal
-		c.Workflow, c.SnoozedUntil, c.Removal = state.Workflow, state.SnoozedUntil, state.Removal
-		c.Unread, c.Pinned, c.Muted = state.Unread, state.Pinned, state.Muted
+		if slices.Contains(state.Fields, "unread") {
+			c.Unread, c.PendingRead = state.Unread && c.Workflow != WorkflowSettled, true
+		}
+		if slices.Contains(state.Fields, "pinned") {
+			c.Pinned, c.PendingPin = state.Pinned, true
+		}
+		if slices.Contains(state.Fields, "muted") {
+			c.Muted = state.Muted
+		}
 		c.Pending = c.Pending || c.PendingRead || c.PendingPin || c.PendingPlacement
 		st.Touch(c)
 		out = wire(st, c)
