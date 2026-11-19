@@ -169,6 +169,7 @@ struct ComposerView: View {
         .presentationDetents([.medium, .large], selection: $detent)
         .onChange(of: detent) { _, value in if value == .medium { Task { await minimize() } } }
         .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
         .interactiveDismissDisabled()
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear(perform: load)
@@ -346,12 +347,12 @@ struct ComposerView: View {
             RichText.markQuote(in: text, from: start, body: bodyRange.location)
         }
         editor.text = text
-        let resume = drafts.minimized.flatMap { $0.id == draft.id ? $0.selection : nil }
+        let resume = drafts.minimized.flatMap { $0.id == draft.id ? $0 : nil }
         if resume != nil { drafts.minimized = nil }
-        let start = min(resume?.location ?? 0, text.length)
-        let selection = NSRange(location: start, length: min(resume?.length ?? 0, text.length - start))
+        let start = min(resume?.selection.location ?? 0, text.length)
+        let selection = NSRange(location: start, length: min(resume?.selection.length ?? 0, text.length - start))
         editor.selection = selection
-        editor.typing = [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
+        editor.typing = resume?.typing ?? [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
         if missingAccount { replaceSignature(with: account.signature) }
         initial = draft
         loaded = true
@@ -361,7 +362,7 @@ struct ComposerView: View {
                 guard let view = editor.view else { return }
                 view.becomeFirstResponder()
                 view.selectedRange = selection
-                view.typingAttributes = [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
+                view.typingAttributes = resume?.typing ?? [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
             }
         }
     }
@@ -388,12 +389,14 @@ struct ComposerView: View {
     }
     private func minimize() async {
         guard loaded, !completed, !finishing, !importing else { detent = .large; return }
-        let selection = editor.view?.selectedRange ?? editor.selection
+        if mode == .new && !dirty && !saved { completed = true; dismiss(); return }
+        let position = DraftStore.Minimized(id: draft.id, selection: editor.view?.selectedRange ?? editor.selection,
+                                            typing: editor.view?.typingAttributes ?? editor.typing)
         autosave?.cancel()
-        await saveDraft(dismissAfter: true, minimizedSelection: selection)
+        await saveDraft(dismissAfter: true, minimized: position)
         if !completed { detent = .large }
     }
-    private func saveDraft(dismissAfter: Bool, submitted: DraftInput? = nil, minimizedSelection: NSRange? = nil) async {
+    private func saveDraft(dismissAfter: Bool, submitted: DraftInput? = nil, minimized: DraftStore.Minimized? = nil) async {
         guard loaded, !completed, !finishing else { return }
         let activity = DraftSaveActivity()
         defer { activity.end() }
@@ -410,7 +413,13 @@ struct ComposerView: View {
             guard await drafts.save(content) else { return }
             if drafts.drafts.first(where: { $0.id == content.id })?.matchesContent(of: content) == true { savedInput = submitted }
             if dismissAfter {
-                if let minimizedSelection { drafts.minimized = (content.id, minimizedSelection) }
+                if let minimized {
+                    guard drafts.drafts.contains(where: { $0.matchesContent(of: content) }) else {
+                        error = "This draft is no longer available."
+                        return
+                    }
+                    drafts.minimized = minimized
+                }
                 completed = true
                 dismiss()
             }

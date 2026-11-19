@@ -170,7 +170,12 @@ final class DraftStore {
     var undoable: UUID?
     /// A draft to open in the composer, set when Undo Send or Edit takes scheduled mail back.
     var reopening: UUID?
-    var minimized: (id: UUID, selection: NSRange)?
+    struct Minimized {
+        let id: UUID
+        let selection: NSRange
+        let typing: [NSAttributedString.Key: Any]
+    }
+    var minimized: Minimized?
     var error: String?
     /// Counts Pin, Snooze, Restore, Settle, and Discard on standalone drafts, like `MailStore.actionCount`.
     private(set) var actionCount = 0
