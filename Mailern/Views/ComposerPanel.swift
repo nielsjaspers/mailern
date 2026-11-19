@@ -32,11 +32,13 @@ import SwiftUI
     /// The dock's text for the draft in the panel, shown on the panel's top as it reaches the dock.
     var summary = DockSummary(title: "", recipients: "")
     /// The height of the dock's header. The dock and the panel both measure it, so a text size change applies at once.
-    var headerHeight: CGFloat = 64
+    var headerHeight: CGFloat = 64 {
+        didSet { if docking, headerHeight != oldValue { retarget() } }
+    }
     /// Where the dock ends, in screen coordinates: the top of the tab bar or toolbar. A change while the panel heads
     /// for the dock, such as a rotation or the toolbar's place, moves the panel's target with it.
     var dockBottom: CGFloat? {
-        didSet { if docking, !arrived, dockBottom != oldValue { moveToDock(velocity: 0) } }
+        didSet { if docking, dockBottom != oldValue { retarget() } }
     }
 
     /// Distance of the panel's top edge below its open position. Only the host reads it, so a drag redraws the host
@@ -48,6 +50,8 @@ import SwiftUI
     fileprivate var height: CGFloat = 1000
     fileprivate var dockOffset: CGFloat { max(0, (dockBottom ?? openTop + height) - headerHeight - openTop) }
     private var pullStart: CGFloat = 0
+    /// Where a drag on the dock started. The tab bar hides as the panel rises, which moves the dock under the finger.
+    private var dragOrigin: CGFloat = 0
     private var generation = 0
     private var docking = false
     private var arrived = false
@@ -70,16 +74,17 @@ import SwiftUI
     func beginResume(_ id: UUID, summary: DockSummary) {
         guard request == nil else { return }
         self.summary = summary
-        start(Request(mode: .draft(id)), at: dockOffset, morphing: true)
+        dragOrigin = dockOffset
+        start(Request(mode: .draft(id)), at: dragOrigin, morphing: true)
     }
     func followDock(_ translation: CGFloat) {
-        guard request != nil, !settled else { return }
-        offset = max(0, dockOffset + translation)
+        guard request != nil, !settled, !docking else { return }
+        offset = max(0, dragOrigin + translation)
     }
     /// Ends a drag on the dock. A drag the system canceled goes back to the dock.
     func endDockDrag(translation: CGFloat = 0, predicted: CGFloat = 0, velocity: CGFloat = 0) {
         guard request != nil, !settled, !docking else { return }
-        if predicted < -80 || translation < -dockOffset / 3 { open(velocity: velocity) }
+        if predicted < -80 || translation < -dragOrigin / 3 { open(velocity: velocity) }
         else { dock(velocity: velocity); dockReady() }
     }
     /// Moves the panel to the dock. It leaves once the composer has saved and called `dockReady`.
@@ -101,15 +106,21 @@ import SwiftUI
         guard request != nil else { return }
         docking = false
         withAnimation(.smooth(duration: 0.3)) { covering = true }
-        move(to: 0, velocity: velocity) { [weak self] in self?.settled = true }
+        move(to: 0, velocity: velocity) { [weak self] in
+            self?.settled = true
+            // Open and still, the panel is a plain composer again, so a later close does not turn it into the dock.
+            self?.morphing = false
+        }
     }
     /// Slides the panel off the screen, after a send, a discard, or Save Draft.
     func close() {
         guard request != nil else { return }
         docking = false
         settled = false
+        // An untouched message pulled only part of the way leaves as a composer, not through the dock's header.
+        if offset < dockOffset * 0.55 { morphing = false }
         withAnimation(.smooth(duration: 0.3)) { covering = false }
-        move(to: height) { [weak self] in self?.leave() }
+        move(to: height, until: .removed) { [weak self] in self?.leave() }
     }
 
     fileprivate func pullChanged(start: CGFloat, translation: CGSize) {
@@ -125,8 +136,13 @@ import SwiftUI
         // Above the open position the panel resists, like a sheet.
         offset = distance >= 0 ? distance : -sqrt(-distance)
     }
-    /// Ends a pull. A pull the system canceled goes back up.
-    fileprivate func pullEnded(translation: CGFloat = 0, predicted: CGFloat = 0, velocity: CGFloat = 0) {
+    /// A pull the system canceled goes back up, however far it got.
+    fileprivate func pullCanceled() {
+        guard pulling else { return }
+        pulling = false
+        open()
+    }
+    fileprivate func pullEnded(translation: CGFloat, predicted: CGFloat, velocity: CGFloat) {
         guard pulling else { return }
         pulling = false
         if offset > 120 || (predicted - translation > 160 && offset > 24) {
@@ -145,8 +161,15 @@ import SwiftUI
         hidesToolbar = true
         withAnimation(.smooth(duration: 0.3)) { covering = true }
     }
+    /// The dock moved while the panel heads for it, or waits there for the save: a rotation, the toolbar or tab bar
+    /// coming back, or a text size change. The spring keeps its speed toward the new place.
+    private func retarget() {
+        arrived = false
+        moveToDock(velocity: 0)
+    }
     private func moveToDock(velocity: CGFloat) {
-        move(to: dockOffset, velocity: velocity) { [weak self] in
+        // The real dock replaces the panel when it stops, so it must stop exactly there, not when it is merely close.
+        move(to: dockOffset, velocity: velocity, until: .removed) { [weak self] in
             self?.arrived = true
             self?.finishDocking()
         }
@@ -162,7 +185,8 @@ import SwiftUI
         offset = 0
         withAnimation(.smooth(duration: 0.3)) { hidesToolbar = false }
     }
-    private func move(to target: CGFloat, velocity: CGFloat = 0, then done: @escaping () -> Void) {
+    private func move(to target: CGFloat, velocity: CGFloat = 0, until criteria: AnimationCompletionCriteria = .logicallyComplete,
+                      then done: @escaping () -> Void) {
         generation += 1
         let current = generation
         // Test runs turn animations off. The panel then moves at once, as UIKit views do.
@@ -174,7 +198,7 @@ import SwiftUI
         let distance = target - offset
         // The spring starts at the finger's speed, as a share of the distance left.
         let relative = abs(distance) > 1 ? velocity / distance : 0
-        withAnimation(.interpolatingSpring(duration: 0.4, bounce: 0, initialVelocity: relative), completionCriteria: .logicallyComplete) {
+        withAnimation(.interpolatingSpring(duration: 0.4, bounce: 0, initialVelocity: relative), completionCriteria: criteria) {
             offset = target
         } completion: { [weak self] in
             guard self?.generation == current else { return }
@@ -226,7 +250,7 @@ struct PanelGrabber: View {
     }
 }
 
-/// Shows the open composer over one tab's screens and under its tab bar. Only the selected tab hosts it.
+/// Shows the open composer over one tab's screens and under its tab bar. Only the tab it opened in hosts it.
 struct ComposerPanelHost: View {
     @Environment(ComposerPanel.self) private var panel
     @GestureState private var dragging = false
@@ -248,6 +272,8 @@ struct ComposerPanelHost: View {
                             .ignoresSafeArea(.container, edges: .bottom)
                     } header: {
                         DockHeader(summary: panel.summary)
+                            // The dock sits inside the side safe area in landscape, so its text does too.
+                            .padding(.horizontal, max(Self.window?.safeAreaInsets.left ?? 0, Self.window?.safeAreaInsets.right ?? 0))
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panel.headerHeight = $0 }
                             .allowsHitTesting(false)
                     }
@@ -271,14 +297,14 @@ struct ComposerPanelHost: View {
         // `onEnded` does not run for a pull the system cancels. It runs first for a pull that ends normally, so this
         // only catches a canceled one, which goes back up.
         .onChange(of: dragging) { _, active in
-            if !active { DispatchQueue.main.async { panel.pullEnded() } }
+            if !active { DispatchQueue.main.async { panel.pullCanceled() } }
         }
     }
     /// The panel stops below the status bar, as a sheet does. A reader that ignores the safe area reports no insets,
     /// so the window's inset decides.
-    private static var statusBar: CGFloat {
-        let scene = UIApplication.shared.connectedScenes.lazy.compactMap { $0 as? UIWindowScene }.first
-        return scene?.keyWindow?.safeAreaInsets.top ?? 0
+    private static var statusBar: CGFloat { window?.safeAreaInsets.top ?? 0 }
+    private static var window: UIWindow? {
+        UIApplication.shared.connectedScenes.lazy.compactMap { $0 as? UIWindowScene }.first?.keyWindow
     }
     private func record(_ proxy: GeometryProxy) {
         panel.openTop = Self.statusBar + 10

@@ -160,7 +160,8 @@ struct DraftDock: View {
                                 .fill(ComposerPanel.background)
                                 .shadow(color: .black.opacity(0.15), radius: 12)
                                 .padding(.bottom, -200)
-                                .ignoresSafeArea(edges: .bottom)
+                                // Full width in landscape too, like the panel it turns into.
+                                .ignoresSafeArea(edges: [.horizontal, .bottom])
                         }
                         .overlay(alignment: .top) { PanelGrabber() }
                         .contentShape(.rect)
@@ -193,7 +194,6 @@ struct DraftDock: View {
         .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { bottom = $0; report() }
         .onAppear { shown = true; report() }
         .onDisappear { shown = false }
-        .onChange(of: panel.covering) { _, _ in report() }
         // `onEnded` does not run for a drag the system cancels. The panel then goes back to the dock.
         .onChange(of: touching) { _, active in
             guard !active else { return }
@@ -204,9 +204,10 @@ struct DraftDock: View {
             }
         }
     }
-    /// Tells the panel where to stop. Only the screen on show counts, and only while its tab bar or toolbar shows.
+    /// Tells the panel where to stop. Only the screen on show counts. While the panel covers it, the dock follows
+    /// the layout without the tab bar, and the panel retargets once the tab bar comes back.
     private func report() {
-        if shown, !panel.covering, let bottom { panel.dockBottom = bottom }
+        if shown, let bottom { panel.dockBottom = bottom }
     }
 }
 

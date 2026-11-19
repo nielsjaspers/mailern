@@ -29,6 +29,9 @@ struct MailboxView: View {
     @AppStorage("leftSwipeTertiary") private var leftTertiary: MailboxSwipeAction = .none
     @AppStorage("rightSwipeTertiary") private var rightTertiary: MailboxSwipeAction = .none
     @State private var panel = ComposerPanel()
+    /// The tab the open composer belongs to. A tab switch while it docks keeps its editor alive there, so a failed save
+    /// can bring that same editor back.
+    @State private var panelTab: Workflow?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var demo = false
     @State private var snoozing: Conversation?
@@ -108,6 +111,11 @@ struct MailboxView: View {
             guard let id = state.id, !state.open else { return }
             drafts.reopening = nil
             compose(.draft(id))
+        }
+        .onChange(of: panel.request?.id) { _, id in panelTab = id == nil ? nil : (panelTab ?? selection) }
+        // A failed save brings the composer back up, on its own tab.
+        .onChange(of: panel.covering) { _, covering in
+            if covering, let panelTab, panelTab != selection { selection = panelTab }
         }
         .modifier(DraftStorageAlert(active: paths[selection, default: []].isEmpty))
         .sheet(isPresented: $settings) {
@@ -252,7 +260,7 @@ struct MailboxView: View {
                 }
         }
         // Over the tab's screens and under its tab bar, so the tab bar floats over the docked panel.
-        .overlay { if status == selection { ComposerPanelHost() } }
+        .overlay { if status == (panelTab ?? selection) { ComposerPanelHost() } }
     }
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
