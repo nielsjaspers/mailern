@@ -335,6 +335,33 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
 
 final class MinimizedDraftUITests: MailernUITestCase {
     @MainActor
+    func testSecondDraftReplacesBarAndPreservesEarlierReply() {
+        let app = TestApplication()
+        app.launch()
+        let subject = "Dinner on Saturday?"
+        row(subject, in: app).tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Hey! Are you free")).firstMatch.tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera")).firstMatch.tap()
+        let body = app.textViews["Message body"]
+        body.typeText("Earlier reply")
+        app.buttons["Minimize draft"].tap()
+        let replyBar = app.buttons["Resume draft, Re: " + subject]
+        XCTAssertTrue(replyBar.waitForExistence(timeout: 5))
+        app.navigationBars.buttons["Inbox"].tap()
+        app.buttons["Compose"].tap()
+        body.tap()
+        body.typeText("Independent draft")
+        app.buttons["Minimize draft"].tap()
+        XCTAssertTrue(app.buttons["Resume draft, New Message"].waitForExistence(timeout: 5))
+        XCTAssertFalse(replyBar.exists)
+        row(subject, in: app).tap()
+        app.buttons["Edit draft"].tap()
+        let restored = body.value as? String ?? ""
+        XCTAssertTrue(restored.hasPrefix("Earlier reply"))
+        XCTAssertTrue(restored.contains("Are you free on Saturday?"))
+        app.buttons["Cancel"].tap()
+    }
+    @MainActor
     func testFailedMinimizeKeepsReplyOpen() {
         let app = TestApplication()
         defer { app.terminate() }
@@ -356,7 +383,8 @@ final class MinimizedDraftUITests: MailernUITestCase {
         app.buttons["Compose"].tap()
         let body = app.textViews["Message body"]
         body.tap()
-        body.typeText("First")
+        body.typeText("First!")
+        body.typeKey(.leftArrow, modifierFlags: [])
         let bar = app.navigationBars.firstMatch
         let handle = bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
         handle.press(forDuration: 0.1, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 450)))
@@ -366,7 +394,7 @@ final class MinimizedDraftUITests: MailernUITestCase {
         XCTAssertTrue(app.navigationBars["Settled"].waitForExistence(timeout: 5))
         resume.tap()
         body.typeText(" second")
-        XCTAssertTrue((body.value as? String ?? "").contains("First second"))
+        XCTAssertTrue((body.value as? String ?? "").contains("First second!"))
     }
 }
 

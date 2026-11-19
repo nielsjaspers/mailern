@@ -159,7 +159,10 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
 final class DraftStore {
     /// Drafts and scheduled mail, as stored.
     private(set) var all: [ComposerDraft] = [] {
-        didSet { reminderRevision &+= 1 }
+        didSet {
+            reminderRevision &+= 1
+            if let id = minimized?.id, !all.contains(where: { $0.id == id && $0.sendAt == nil }) { minimized = nil }
+        }
     }
     private(set) var reminderRevision: UInt64 = 0
     /// Drafts being written. Scheduled mail waits in `outbox` instead.
