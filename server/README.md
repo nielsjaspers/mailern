@@ -40,7 +40,7 @@ Only the Tailscale users in `allowedUsers` can use the service. Keep the service
 
 | Key | Meaning |
 | --- | --- |
-| `stateDir` | Where the service keeps its state and its Tailscale device. Defaults to `mailern-server` in your user config directory. |
+| `stateDir` | Where the service keeps its state and its Tailscale device. Defaults to `mailern-server` in your user config directory. A relative path is relative to the config file. |
 | `pollSeconds` | How often each account checks for changes. Defaults to 60. Changes from Mailern sync at once. |
 | `windowDays` | How many days of archived and sent mail to keep. Defaults to 90. |
 | `accounts[].provider` | `gmail`, `icloud`, `proton-bridge`, or `imap` with `imap` and `smtp` endpoints (`host`, `port`, `security`: `tls` or `starttls`). |

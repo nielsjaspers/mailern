@@ -92,7 +92,8 @@ func LoadConfig(path string) (Config, error) {
 	return c, c.resolve(filepath.Dir(path))
 }
 
-// resolve fills in defaults and reads passwords. Relative password files are relative to the config file.
+// resolve fills in defaults and reads passwords. Relative paths are relative to the config file, so the service
+// finds the same state and Tailscale device from any working directory.
 func (c *Config) resolve(base string) error {
 	if c.StateDir == "" {
 		dir, err := os.UserConfigDir()
@@ -100,6 +101,8 @@ func (c *Config) resolve(base string) error {
 			return err
 		}
 		c.StateDir = filepath.Join(dir, "mailern-server")
+	} else if !filepath.IsAbs(c.StateDir) {
+		c.StateDir = filepath.Join(base, c.StateDir)
 	}
 	if c.Tailscale.Hostname == "" {
 		c.Tailscale.Hostname = "mailern"
