@@ -503,8 +503,12 @@
       "source_digest": "fbeba221d9511a9188c4fbea6fe18a2245765f61985e52fbf259c8c37acd19a1",
       "build": 72,
       "version": "0.7.5",
-      "status": "reserved",
-      "created_at": "2026-11-19T17:42:07+00:00"
+      "status": "exported",
+      "created_at": "2026-11-19T17:42:07+00:00",
+      "repository": "nielsjaspers/mailern",
+      "finished_at": "2026-11-19T17:42:22+00:00",
+      "bundle_id": "com.example.mailern",
+      "ipa_sha256": "fe13a1ed0a436b41bda3721ac2504fab8c3111c25382edbc5f6aec82cefb955a"
     }
   ]
 }
