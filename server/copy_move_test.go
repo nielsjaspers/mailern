@@ -307,3 +307,23 @@ func TestProviderUIDPlusSupersededMovePreservesExternalCopy(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderUIDPlusRetriesCopyThatNeverCommitted(t *testing.T) {
+	h := newHarness(t)
+	copies := serveCopyMoveProvider(t, h, loseCopyBeforeCommit)
+	const subject = "Connection drops before COPY"
+	h.deliver("INBOX", subject, "")
+	h.sync()
+	h.set(h.conversations()[subject], func(s *ConversationState) { s.Workflow = WorkflowSettled })
+	if err := h.account.Sync(); err == nil || len(h.mailbox("Archive")) != 0 {
+		t.Fatalf("expected COPY to be interrupted before commit, got %v", err)
+	}
+	restartCopyMoveAccount(t, h)
+	h.sync()
+	if copies.Load() != 2 || len(h.mailbox("INBOX")) != 0 || len(h.mailbox("Archive")) != 1 {
+		t.Fatalf("Settle should copy again once, got %d COPY attempts", copies.Load())
+	}
+	if c := h.conversations()[subject]; c.Workflow != WorkflowSettled {
+		t.Fatalf("thread should be settled, got %s", c.Workflow)
+	}
+}

@@ -157,6 +157,19 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 	if m.to == m.from.role {
 		return nil
 	}
+	if pending != nil && pending.To.UID == 0 && pending.To.Role == m.to {
+		data, err := a.selectMailbox(destination, m.to, to, true)
+		if err != nil {
+			return err
+		}
+		// Any copy that reached the destination advanced UIDNEXT. Unchanged, the COPY never committed: start again.
+		if data.UIDNext == pending.UIDNext {
+			if err := save(nil); err != nil {
+				return err
+			}
+			pending = nil
+		}
+	}
 	if pending == nil {
 		data, err := a.selectMailbox(destination, m.to, to, true)
 		if err != nil {
