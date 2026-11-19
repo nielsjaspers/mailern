@@ -384,6 +384,7 @@ func TestDeleteAfterLocalMove(t *testing.T) {
 	}{
 		{name: "offline move"},
 		{name: "acknowledged move", priorPUT: true},
+		{name: "lost move acknowledgment", priorPUT: true},
 		{name: "UIDPLUS fallback", uidPlusOnly: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -396,7 +397,9 @@ func TestDeleteAfterLocalMove(t *testing.T) {
 			c := h.conversations()["Dinner"]
 			if test.priorPUT {
 				h.set(c, func(s *ConversationState) { s.Removal = RoleTrash })
-				c = h.conversations()["Dinner"]
+				if test.name != "lost move acknowledgment" {
+					c = h.conversations()["Dinner"]
+				}
 			}
 			if code := h.delete(c, RoleTrash); code != http.StatusNoContent {
 				t.Fatalf("delete after local move: %d", code)

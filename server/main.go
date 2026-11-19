@@ -17,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/google/uuid"
 	"tailscale.com/tsnet"
 )
 
@@ -114,8 +115,18 @@ func serve(ctx context.Context, configPath, listen string) error {
 	return serveHTTP(ctx, service, ln)
 }
 
+// The phone embeds this ID in queued sends. Replacing a login must invalidate those sends.
+func mailboxAccountID(cfg AccountConfig) string {
+	identity := strings.Join([]string{cfg.ID, cfg.Address, cfg.Username, cfg.IMAP.Address()}, "\x00")
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(identity)).String()
+}
+
 // start opens the state file and starts one sync loop per account, plus the snooze timer.
 func start(ctx context.Context, cfg Config) (*Service, error) {
+	cfg.Accounts = slices.Clone(cfg.Accounts)
+	for i, account := range cfg.Accounts {
+		cfg.Accounts[i].ID = mailboxAccountID(account)
+	}
 	store, err := OpenStore(filepath.Join(cfg.StateDir, "state.json"))
 	if err != nil {
 		return nil, err

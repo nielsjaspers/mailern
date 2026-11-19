@@ -85,10 +85,10 @@ type Conversation struct {
 }
 
 type AccountState struct {
-	Submitting map[string]bool `json:"submitting,omitempty"`
-	Login      string          `json:"login"`
-	IMAP       string          `json:"imap"`
-	Mailboxes  map[Role]string `json:"mailboxes"`
+	Submitting map[string]submission `json:"submitting,omitempty"`
+	Login      string                `json:"login"`
+	IMAP       string                `json:"imap"`
+	Mailboxes  map[Role]string       `json:"mailboxes"`
 	// A receipt outlives the synced message. Its bytes are kept only until Sent filing succeeds.
 	Receipts    map[string][]byte `json:"receipts,omitempty"`
 	Address     string            `json:"address"`

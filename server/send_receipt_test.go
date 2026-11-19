@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"net/http/httptest"
 	"net/textproto"
 	"path/filepath"
 	"strings"
@@ -71,5 +72,57 @@ func TestRestartAfterSMTPAcceptanceDoesNotResubmit(t *testing.T) {
 	restarted := NewAccount(h.account.cfg, store, time.Hour)
 	if err := restarted.Send(req); err != uncertainDelivery || len(h.lab.Submitted) != 1 {
 		t.Fatalf("restart after acceptance: %v, deliveries %d", err, len(h.lab.Submitted))
+	}
+}
+
+func TestSentCopyAfterInterruptedSendKeepsClientIDs(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	req := SendRequest{ID: "d0f877cc-fd2d-4d45-b159-303799cf83e3", ConversationID: "8777e255-4038-4f3f-8f78-c4b2efcff783", To: []string{"sam@example.com"}, Subject: "Delivery"}
+	raw, err := h.account.compose(req, h.account.messageID(req.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.account.submit(req, raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.lab.Deliver(labAddress, "Sent", raw); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(h.account.store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewAccount(h.account.cfg, store, time.Hour)
+	if err := restarted.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Send(req); err != nil {
+		t.Fatal(err)
+	}
+	store.Read(func(st *State) {
+		c := st.Conversations[req.ConversationID]
+		if c == nil || len(st.Conversations) != 1 || len(c.Keys) != 1 || st.messages(c)[0].ID != req.ID || len(h.lab.Submitted) != 1 {
+			t.Error("the synced Sent copy must resolve the original submission with its original IDs")
+		}
+	})
+}
+
+func TestQueuedSendCannotUseReplacementAccount(t *testing.T) {
+	h := newHarness(t)
+	old := h.account.cfg
+	h.account.cfg.Username = "replacement@example.com"
+	h.account.cfg.ID = mailboxAccountID(h.account.cfg)
+	req := SendRequest{AccountID: mailboxAccountID(old), To: []string{"sam@example.com"}}
+	if code := h.request("POST", "/v1/send", req, nil); code != 400 || len(h.lab.Submitted) != 0 {
+		t.Fatalf("stale account accepted: status %d, deliveries %d", code, len(h.lab.Submitted))
+	}
+}
+
+func TestAmbiguousDeliveryPreservesClientSubmission(t *testing.T) {
+	response := httptest.NewRecorder()
+	writeError(response, uncertainDelivery)
+	if response.Code != 409 {
+		t.Fatalf("ambiguous delivery returned status %d", response.Code)
 	}
 }

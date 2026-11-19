@@ -71,7 +71,7 @@ func (a *Account) Send(req SendRequest) error {
 	a.store.Read(func(st *State) {
 		account := st.account(a.cfg.ID)
 		_, known = account.Receipts[key]
-		uncertain = account.Submitting[key]
+		_, uncertain = account.Submitting[key]
 		thread := st.Conversations[req.ConversationID]
 		invalidThread = thread != nil && (thread.AccountID != a.cfg.ID || thread.Deleting)
 	})
@@ -372,20 +372,20 @@ func (a *Account) submit(req SendRequest, raw []byte) error {
 	}
 	// DATA close sends the terminator that allows the server to accept the mail.
 	key := a.messageID(req.ID)
-	if err := a.markSubmitting(key, true); err != nil {
-		return errors.Join(err, a.markSubmitting(key, false))
+	if err := a.markSubmitting(key, &submission{strings.ToLower(req.ID), req.ConversationID}); err != nil {
+		return errors.Join(err, a.markSubmitting(key, nil))
 	}
 	if err := data.Close(); err != nil {
 		var rejection *smtp.SMTPError
 		if errors.As(err, &rejection) {
-			return errors.Join(submissionError(err), a.markSubmitting(key, false))
+			return errors.Join(submissionError(err), a.markSubmitting(key, nil))
 		}
 		return uncertainDelivery
 	}
 	return nil
 }
 
-var uncertainDelivery = badRequest{errors.New("delivery could not be confirmed; check with the recipient before sending a new copy")}
+var uncertainDelivery = errors.New("delivery could not be confirmed; check with the recipient before sending a new copy")
 
 func submissionError(err error) error {
 	var rejection *smtp.SMTPError
@@ -395,14 +395,19 @@ func submissionError(err error) error {
 	return err
 }
 
-func (a *Account) markSubmitting(key string, active bool) error {
+type submission struct {
+	MessageID      string `json:"messageID"`
+	ConversationID string `json:"conversationID"`
+}
+
+func (a *Account) markSubmitting(key string, attempt *submission) error {
 	return a.store.Update(func(st *State) error {
 		account := st.account(a.cfg.ID)
-		if active {
+		if attempt != nil {
 			if account.Submitting == nil {
-				account.Submitting = make(map[string]bool)
+				account.Submitting = make(map[string]submission)
 			}
-			account.Submitting[key] = true
+			account.Submitting[key] = *attempt
 		} else {
 			delete(account.Submitting, key)
 		}

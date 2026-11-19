@@ -332,7 +332,10 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 					return errNotFound
 				}
 				messages := st.messages(c)
-				matchesPlacement := c.Workflow == request.ExpectedWorkflow && c.Removal == request.ExpectedRemoval
+				matchesConfirmation := func() bool {
+					return c.Workflow == request.ExpectedWorkflow && (c.Removal == request.ExpectedRemoval || c.Removal == request.Removal)
+				}
+				matchesPlacement := matchesConfirmation()
 				if !c.PendingPlacement {
 					observed := *c
 					adopt(&observed, messages)
@@ -348,7 +351,7 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 						st.Touch(c)
 					}
 					if !moved {
-						matchesPlacement = matchesPlacement && c.Workflow == request.ExpectedWorkflow && c.Removal == request.ExpectedRemoval
+						matchesPlacement = matchesPlacement && matchesConfirmation()
 					}
 				}
 				ids := make([]string, 0, len(messages))
@@ -481,6 +484,8 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, uncertainDelivery):
+		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.As(err, &bad):
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 	default:

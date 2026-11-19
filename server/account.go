@@ -649,6 +649,22 @@ type parsedArrival struct {
 
 // thread adds a new message to the conversation holding the message it answers, or starts one.
 func (a *Account) thread(st *State, account *AccountState, m *Message, role Role) {
+	if attempt, ok := account.Submitting[m.Key]; ok && m.Outgoing {
+		m.ID, m.ConversationID = attempt.MessageID, attempt.ConversationID
+		c := st.Conversations[m.ConversationID]
+		if c == nil {
+			c = &Conversation{ID: m.ConversationID, AccountID: a.cfg.ID, Subject: m.Subject, Workflow: WorkflowSettled}
+			st.Conversations[c.ID] = c
+		}
+		c.Keys = append(c.Keys, m.Key)
+		sortMessages(c, account)
+		if account.Receipts == nil {
+			account.Receipts = make(map[string][]byte)
+		}
+		account.Receipts[m.Key] = nil
+		delete(account.Submitting, m.Key)
+		return
+	}
 	parents := append(slices.Clone(m.References), m.InReplyTo)
 	for i := len(parents) - 1; i >= 0; i-- {
 		parent := account.Messages[parents[i]]
