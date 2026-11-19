@@ -6,6 +6,10 @@ struct ThreadView: View {
     @Environment(\.dismiss) private var dismiss
     let id: UUID
     var inboxAccountID: String?
+    var initialQuery = ""
+    var previousID: UUID?
+    var nextID: UUID?
+    @State private var finding = false
     /// The conversation below this one in the list it was opened from, read before Settle removes it.
     let next: () -> UUID?
     /// Replaces this thread with another conversation.
@@ -39,7 +43,7 @@ struct ThreadView: View {
     var body: some View {
         Group {
             if let c = store.conversation(id) {
-                ConversationContent(conversation: c, drafts: attachedDrafts, scheduled: scheduled, editDraft: { mode = .draft($0) }, discardDraft: { draftID in
+                ConversationContent(conversation: c, initialQuery: initialQuery, finding: $finding, drafts: attachedDrafts, scheduled: scheduled, editDraft: { mode = .draft($0) }, discardDraft: { draftID in
                     Task {
                         deleting = true
                         defer { deleting = false }
@@ -54,8 +58,17 @@ struct ThreadView: View {
                 })
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        if !finding {
+                            Button("Previous conversation", systemImage: "chevron.up") { if let previousID { open(previousID) } }
+                                .disabled(previousID == nil)
+                            Button("Next conversation", systemImage: "chevron.down") { if let nextID { open(nextID) } }
+                                .disabled(nextID == nil)
+                        }
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
+                            Button("Find in conversation", systemImage: "magnifyingglass") { finding = true }
                             if c.removal == nil {
                                 Button(c.pinned ? "Unpin" : "Pin", systemImage: "pin") { store.togglePin(id) }
                             }

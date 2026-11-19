@@ -37,7 +37,7 @@ struct MailboxView: View {
     @State private var paths: [Workflow: [MailboxRoute]] = [:]
     /// Each section's list as it was when a conversation opened from it. Opening can drop a conversation from a
     /// filtered list, so Settle and next walks this order.
-    @State private var openedOrder: [Workflow: [UUID]] = [:]
+    @State private var readerLists: [Workflow: [Int: ReaderList]] = [:]
     var body: some View {
         let pullDistance = pull.distance
         let armCount = pull.armCount
@@ -226,19 +226,16 @@ struct MailboxView: View {
                 .toolbar(selecting || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
                 .navigationDestination(for: MailboxRoute.self) { route in
                     switch route {
-                    case .conversation(let id):
+                    case .conversation(let id, let depth):
                         if store.conversation(id) != nil {
-                            ThreadView(id: id, inboxAccountID: paths[status]?.count == 1 ? composeInboxAccount : nil, next: {
-                                if case .sender(let sender) = paths[status]?.dropLast().last {
-                                    let order = store.conversations(with: sender.address).map(\.id)
-                                    return MailboxItem.conversation(after: id, in: order, available: Set(order))
-                                }
-                                let available = Set(projection(status).items.compactMap { $0.conversation?.id })
-                                return MailboxItem.conversation(after: id, in: openedOrder[status] ?? [], available: available)
-                            }, open: { next in
-                                guard paths[status]?.last == .conversation(id) else { return }
+                            let list = readerLists[status]?[depth]
+                            let neighbors = list?.neighbors(of: id, available: readerAvailability(status, depth: depth, list: list))
+                            ThreadView(id: id, inboxAccountID: depth == 1 ? composeInboxAccount : nil,
+                                       initialQuery: list?.query ?? "", previousID: neighbors?.previous, nextID: neighbors?.next,
+                                       next: { neighbors?.next ?? neighbors?.previous }, open: { next in
+                                guard paths[status]?.last == .conversation(id, depth: depth) else { return }
                                 paths[status]?.removeLast()
-                                paths[status]?.append(.conversation(next))
+                                paths[status]?.append(.conversation(next, depth: depth))
                             }, showSender: { sender in
                                 paths[status, default: []].append(.sender(sender))
                             })
@@ -246,8 +243,8 @@ struct MailboxView: View {
                             .id(id)
                         }
                         else { DraftThreadView(id: id) }
-                    case .sender(let sender): SenderHistoryView(sender: sender)
-                    case .removed(let mailbox): RemovedMailboxView(mailbox: mailbox)
+                    case .sender(let sender): SenderHistoryView(sender: sender) { id, order in openSecondary(id, status: status, order: order, query: "") }
+                    case .removed(let mailbox): RemovedMailboxView(mailbox: mailbox) { id, order, query in openSecondary(id, status: status, order: order, query: query) }
                     case .scheduled: ScheduledMailboxView()
                     case .scheduledMessage(let id): ScheduledMessageView(id: id)
                     }
@@ -422,12 +419,12 @@ struct MailboxView: View {
                 if selectedIDs.contains(item.id) { selectedIDs.remove(item.id) }
                 else { selectedIDs.insert(item.id) }
             } else if peeking == nil {
-                openedOrder[status] = order
+                captureList(status, order: order)
                 paths[status, default: []].append(.conversation(item.id))
             }
         } label: {
             switch item {
-            case .thread(let conversation, let replies): ConversationRow(conversation: conversation, hasDraft: !replies.isEmpty)
+            case .thread(let conversation, let replies): ConversationRow(query: search, conversation: conversation, hasDraft: !replies.isEmpty)
             case .draft(let draft): DraftRow(draft: draft)
             }
         }
@@ -596,8 +593,29 @@ struct MailboxView: View {
         if pullAction == .search { withTransaction(transaction) { searching = true } }
         if pullAction == .compose { openComposer(.new) }
     }
+    private func captureList(_ status: Workflow, order: [UUID]) {
+        let scope: Workflow? = allMail(status) ? nil : status
+        readerLists[status, default: [:]][1] = ReaderList(order: order, query: search, scope: scope, filter: filters[status])
+    }
+    private func openSecondary(_ id: UUID, status: Workflow, order: [UUID], query: String) {
+        let depth = paths[status, default: []].count + 1
+        readerLists[status, default: [:]][depth] = ReaderList(order: order, query: query, scope: nil, filter: MailboxFilter())
+        paths[status, default: []].append(.conversation(id, depth: depth))
+    }
+    private func readerAvailability(_ status: Workflow, depth: Int, list: ReaderList?) -> Set<UUID> {
+        guard let list else { return [] }
+        if depth > 1, let path = paths[status], path.count >= depth {
+            switch path[depth - 2] {
+            case .sender(let sender): return Set(store.conversations(with: sender.address).map(\.id))
+            case .removed(let mailbox): return Set(store.list(mailbox, search: list.query).map(\.id))
+            default: break
+            }
+        }
+        return store.mailbox(drafts: drafts.drafts, status: list.scope, query: list.query,
+                             filter: list.scope == nil ? MailboxFilter() : list.filter).selection.eligible
+    }
     private func peek(_ id: UUID, in status: Workflow, order: [UUID]) {
-        openedOrder[status] = order
+        captureList(status, order: order)
         peeking = id
     }
     private var composeInboxAccount: String? {
@@ -616,7 +634,7 @@ struct MailboxView: View {
 
 enum MailboxRoute: Hashable {
     case sender(Sender)
-    case conversation(UUID)
+    case conversation(UUID, depth: Int = 1)
     case removed(RemovedMailbox)
     case scheduled
     case scheduledMessage(UUID)

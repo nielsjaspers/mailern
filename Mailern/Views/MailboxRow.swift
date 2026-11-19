@@ -130,6 +130,7 @@ extension AccountColor {
 }
 
 struct ConversationRow: View {
+    var query = ""
     static let unreadBackground = Color(uiColor: UIColor { traits in
         UIColor.systemBlue.resolvedColor(with: traits).withAlphaComponent(traits.userInterfaceStyle == .dark ? 0.22 : 0.07)
     })
@@ -141,7 +142,7 @@ struct ConversationRow: View {
         MailboxRow(
             avatar: SenderAvatar(name: conversation.avatarName),
             title: conversation.participants, count: conversation.messages.count, date: conversation.latest.date,
-            subject: conversation.subject, snippet: conversation.latest.body.snippet, account: store.account(conversation.accountID),
+            subject: conversation.subject, snippet: conversation.messageMatches(query, firstOnly: true).first?.snippet ?? conversation.latest.body.snippet, account: store.account(conversation.accountID),
             unread: conversation.unread, draft: hasDraft, pinned: conversation.pinned, muted: conversation.muted == true,
             followUp: conversation.followUp, snoozedUntil: conversation.snoozedUntil
         )
