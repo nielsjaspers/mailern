@@ -33,6 +33,8 @@ type AccountConfig struct {
 	Address string `json:"address"`
 	// The name recipients see on mail from this account.
 	SenderName string `json:"senderName,omitempty"`
+	// Other addresses this account receives and sends as, such as Proton addresses on a custom domain.
+	Aliases []string `json:"aliases,omitempty"`
 	// "gmail", "icloud", "proton-bridge", or "imap" with explicit endpoints.
 	Provider string `json:"provider"`
 	// Defaults to Address.
@@ -120,6 +122,11 @@ func (c *Config) resolve(base string) error {
 		if !strings.Contains(a.Address, "@") {
 			return fmt.Errorf("account %q needs an email address", a.ID)
 		}
+		for _, alias := range a.Aliases {
+			if !strings.Contains(alias, "@") || strings.EqualFold(alias, a.Address) {
+				return fmt.Errorf("account %q: alias %q must be another email address", a.ID, alias)
+			}
+		}
 		if a.Name == "" {
 			a.Name = a.ID
 		}
@@ -164,4 +171,14 @@ func (c *Config) resolve(base string) error {
 		}
 	}
 	return nil
+}
+
+// ownAddress returns the account's spelling of address when the account sends as it.
+func (a AccountConfig) ownAddress(address string) (string, bool) {
+	for _, own := range append([]string{a.Address}, a.Aliases...) {
+		if strings.EqualFold(own, address) {
+			return own, true
+		}
+	}
+	return "", false
 }

@@ -44,6 +44,7 @@ Only the Tailscale users in `allowedUsers` can use the service. Keep the service
 | `pollSeconds` | How often each account checks for changes. Defaults to 60. Changes from Mailern sync at once. |
 | `windowDays` | How many days of archived and sent mail to keep. Defaults to 90. |
 | `accounts[].provider` | `gmail`, `icloud`, `proton-bridge`, or `imap` with `imap` and `smtp` endpoints (`host`, `port`, `security`: `tls` or `starttls`). |
+| `accounts[].aliases` | Other addresses of the account, such as Proton addresses on your own domain. Mail from them counts as yours, and Mailern can send from them. Bridge delivers mail for all of them to the same inbox. |
 | `accounts[].username` | Defaults to the address. iCloud needs its own iCloud Mail address here when `address` is a custom domain. |
 | `accounts[].passwordFile`, `passwordEnv` | Where to read the app password. |
 | `accounts[].appendSent` | Saves a copy of sent mail in Sent. On by default for iCloud, which does not save mail sent over SMTP. |

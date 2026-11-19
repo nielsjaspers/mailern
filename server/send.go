@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -25,18 +26,20 @@ type OutgoingAttachment struct {
 // SendRequest is a message from the phone. ID is the draft's ID; it also names the Message-ID, so a retry
 // after a lost response finds the first copy instead of sending a second one.
 type SendRequest struct {
-	ID             string               `json:"id"`
-	ConversationID string               `json:"conversationID"`
-	AccountID      string               `json:"accountID"`
-	To             []string             `json:"to"`
-	Cc             []string             `json:"cc"`
-	Bcc            []string             `json:"bcc"`
-	Subject        string               `json:"subject"`
-	Text           string               `json:"text"`
-	HTML           string               `json:"html,omitempty"`
-	InReplyTo      string               `json:"inReplyTo,omitempty"`
-	References     []string             `json:"references,omitempty"`
-	Attachments    []OutgoingAttachment `json:"attachments,omitempty"`
+	ID             string   `json:"id"`
+	ConversationID string   `json:"conversationID"`
+	AccountID      string   `json:"accountID"`
+	To             []string `json:"to"`
+	Cc             []string `json:"cc"`
+	Bcc            []string `json:"bcc"`
+	Subject        string   `json:"subject"`
+	Text           string   `json:"text"`
+	HTML           string   `json:"html,omitempty"`
+	// One of the account's addresses. Empty means its main address.
+	From        string               `json:"from,omitempty"`
+	InReplyTo   string               `json:"inReplyTo,omitempty"`
+	References  []string             `json:"references,omitempty"`
+	Attachments []OutgoingAttachment `json:"attachments,omitempty"`
 }
 
 func (r SendRequest) validate() error {
@@ -63,6 +66,14 @@ func (a *Account) Send(req SendRequest) error {
 	if err := req.validate(); err != nil {
 		return badRequest{err}
 	}
+	if req.From == "" {
+		req.From = a.cfg.Address
+	}
+	from, ok := a.cfg.ownAddress(req.From)
+	if !ok {
+		return badRequest{fmt.Errorf("this account does not send as %s", req.From)}
+	}
+	req.From = from
 	key := a.messageID(req.ID)
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -211,11 +222,11 @@ func (a *Account) record(req SendRequest, key string, toFile []byte) error {
 		}
 		sender := a.cfg.SenderName
 		if sender == "" {
-			sender = a.cfg.Address
+			sender = cmp.Or(req.From, a.cfg.Address)
 		}
 		m := &Message{
 			ID: strings.ToLower(req.ID), Key: key, ConversationID: req.ConversationID, Sender: sender,
-			Address: a.cfg.Address, To: req.To, Cc: req.Cc, Date: now, Subject: req.Subject, Text: req.Text,
+			Address: cmp.Or(req.From, a.cfg.Address), To: req.To, Cc: req.Cc, Date: now, Subject: req.Subject, Text: req.Text,
 			HasHTML: req.HTML != "", MessageID: key, InReplyTo: req.InReplyTo, References: req.References,
 			Outgoing: true, Seen: true, Locations: map[Role]uint32{}, SentAt: &now,
 		}
@@ -239,7 +250,7 @@ func (a *Account) record(req SendRequest, key string, toFile []byte) error {
 func (a *Account) compose(req SendRequest, key string) ([]byte, error) {
 	var h mail.Header
 	h.SetDate(time.Now())
-	h.SetAddressList("From", []*mail.Address{{Name: a.cfg.SenderName, Address: a.cfg.Address}})
+	h.SetAddressList("From", []*mail.Address{{Name: a.cfg.SenderName, Address: cmp.Or(req.From, a.cfg.Address)}})
 	h.SetAddressList("To", mailAddresses(req.To))
 	if len(req.Cc) > 0 {
 		h.SetAddressList("Cc", mailAddresses(req.Cc))
@@ -353,12 +364,12 @@ func (a *Account) submit(req SendRequest, raw []byte) error {
 	defer c.Close()
 	recipients := append(append(append([]string{}, req.To...), req.Cc...), req.Bcc...)
 	var utf8 bool
-	for _, address := range append(recipients, a.cfg.Address) {
+	for _, address := range append(recipients, cmp.Or(req.From, a.cfg.Address)) {
 		if strings.ContainsFunc(address, func(r rune) bool { return r > 127 }) {
 			utf8 = true
 		}
 	}
-	if err := c.Mail(a.cfg.Address, &smtp.MailOptions{UTF8: utf8}); err != nil {
+	if err := c.Mail(cmp.Or(req.From, a.cfg.Address), &smtp.MailOptions{UTF8: utf8}); err != nil {
 		return submissionError(err)
 	}
 	for _, addr := range recipients {

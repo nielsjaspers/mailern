@@ -26,6 +26,7 @@ type wireAccount struct {
 	ID                string          `json:"id"`
 	Name              string          `json:"name"`
 	Address           string          `json:"address"`
+	Aliases           []string        `json:"aliases,omitempty"`
 	MailboxIdentities map[Role]string `json:"mailboxIdentities,omitempty"`
 }
 
@@ -168,7 +169,7 @@ func (s *Service) changes(st *State, since uint64) syncResponse {
 		since = 0
 	}
 	for _, a := range s.accounts {
-		account := wireAccount{ID: a.cfg.ID, Name: a.cfg.Name, Address: a.cfg.Address}
+		account := wireAccount{ID: a.cfg.ID, Name: a.cfg.Name, Address: a.cfg.Address, Aliases: a.cfg.Aliases}
 		if state := st.Accounts[a.cfg.ID]; state != nil {
 			account.MailboxIdentities = map[Role]string{}
 			for _, role := range []Role{RoleTrash, RoleJunk} {

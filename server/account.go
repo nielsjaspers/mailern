@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -596,7 +595,7 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 					}
 					m = &p.Message
 					m.ID, m.Key = uuid.NewString(), key
-					m.Outgoing = strings.EqualFold(m.Address, a.cfg.Address)
+					_, m.Outgoing = a.cfg.ownAddress(m.Address)
 					m.Locations = map[Role]uint32{}
 					account.Messages[key] = m
 					fresh = append(fresh, &parsedArrival{m, role})

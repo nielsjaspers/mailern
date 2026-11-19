@@ -23,7 +23,9 @@
     {
       "id": "proton",
       "name": "Proton",
-      "address": "you@proton.me",
+      "address": "you@example.com",
+      "aliases": ["hello@example.com", "you@proton.me"],
+      "username": "you@proton.me",
       "senderName": "Your Name",
       "provider": "proton-bridge",
       "passwordFile": "secrets/proton"
