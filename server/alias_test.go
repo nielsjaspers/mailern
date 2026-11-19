@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -66,5 +68,45 @@ func TestConfigRefusesAnAddressListedTwice(t *testing.T) {
 		if err := cfg.resolve(t.TempDir()); err == nil {
 			t.Errorf("%s: an address listed twice must be refused", name)
 		}
+	}
+}
+
+func TestRetryAcceptedDraftAfterRemovingAlias(t *testing.T) {
+	h := newHarness(t)
+	h.account.cfg.Aliases = []string{"morgan@alias.example.com"}
+	req := SendRequest{ID: uuid.NewString(), ConversationID: uuid.NewString(), AccountID: "lab", To: []string{"sam@example.com"}, From: h.account.cfg.Aliases[0]}
+	if code := h.request("POST", "/v1/send", req, nil); code != 204 {
+		t.Fatalf("initial send: %d", code)
+	}
+	h.account.cfg.Aliases = nil
+	for _, address := range []string{req.From, labAddress} {
+		req.From = address
+		if code := h.request("POST", "/v1/send", req, nil); code != 204 || len(h.lab.Submitted) != 1 {
+			t.Fatalf("retry: status %d, deliveries %d", code, len(h.lab.Submitted))
+		}
+	}
+}
+
+func TestSMTPConnectionRefusedIsConfirmedUnsent(t *testing.T) {
+	h := newHarness(t)
+	socket, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := endpointFor(socket)
+	socket.Close()
+	h.account.cfg.SMTP = &endpoint
+	req := SendRequest{ID: uuid.NewString(), ConversationID: uuid.NewString(), AccountID: "lab", To: []string{"sam@example.com"}}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := h.http.Client().Post(h.http.URL+"/v1/send", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 503 || resp.Header.Get("Mailern-Submission") != "not-accepted" || len(h.lab.Submitted) != 0 {
+		t.Fatalf("unexpected submission result: %d %q", resp.StatusCode, resp.Header.Get("Mailern-Submission"))
 	}
 }

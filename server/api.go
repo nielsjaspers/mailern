@@ -555,11 +555,15 @@ var errNotFound = errors.New("not found")
 
 func writeError(w http.ResponseWriter, err error) {
 	var bad badRequest
+	var unsent notSubmitted
 	switch {
 	case errors.Is(err, errNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, uncertainDelivery):
 		http.Error(w, err.Error(), http.StatusConflict)
+	case errors.As(err, &unsent):
+		w.Header().Set("Mailern-Submission", "not-accepted")
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 	case errors.As(err, &bad):
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 	default:

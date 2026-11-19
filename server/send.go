@@ -59,7 +59,7 @@ func (r SendRequest) validate() error {
 // so it finds the same Message-ID.
 func (a *Account) messageID(req SendRequest) string {
 	from := cmp.Or(req.From, a.cfg.Address)
-	return "<" + strings.ToLower(req.ID) + "@" + from[strings.LastIndex(from, "@")+1:] + ">"
+	return "<" + strings.ToLower(req.ID) + "@" + strings.ToLower(from[strings.LastIndex(from, "@")+1:]) + ">"
 }
 
 // Send delivers a message and files it in its conversation. A message that already went out, according to this
@@ -71,20 +71,32 @@ func (a *Account) Send(req SendRequest) error {
 	if req.From == "" {
 		req.From = a.cfg.Address
 	}
-	from, ok := a.cfg.ownAddress(req.From)
-	if !ok {
-		return badRequest{fmt.Errorf("this account does not send as %s", req.From)}
-	}
-	req.From = from
 	key := a.messageID(req)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	known, uncertain := false, false
-	var invalidThread bool
+	var invalidThread, differentAttempt bool
 	a.store.Read(func(st *State) {
 		account := st.account(a.cfg.ID)
 		_, known = account.Receipts[key]
 		_, uncertain = account.Submitting[key]
+		if !known && !uncertain {
+			// A draft UUID belongs to this account even if its From domain changes.
+			prefix := "<" + strings.ToLower(req.ID) + "@"
+			for receipt := range account.Receipts {
+				if strings.HasPrefix(receipt, prefix) {
+					known = true
+					break
+				}
+			}
+			for attempt := range account.Submitting {
+				if strings.HasPrefix(attempt, prefix) {
+					differentAttempt = true
+					uncertain = true
+					break
+				}
+			}
+		}
 		thread := st.Conversations[req.ConversationID]
 		invalidThread = thread != nil && (thread.AccountID != a.cfg.ID || thread.Deleting)
 	})
@@ -92,6 +104,16 @@ func (a *Account) Send(req SendRequest) error {
 		// An earlier state write might still need to reach disk.
 		a.Trigger()
 		return a.store.Update(func(*State) error { return nil })
+	}
+	if differentAttempt {
+		return uncertainDelivery
+	}
+	from, ok := a.cfg.ownAddress(req.From)
+	if !ok && !uncertain {
+		return badRequest{fmt.Errorf("this account does not send as %s", req.From)}
+	}
+	if ok {
+		req.From = from
 	}
 	if invalidThread {
 		if uncertain {
@@ -361,7 +383,7 @@ func (a *Account) checkSMTP() error {
 func (a *Account) submit(req SendRequest, raw []byte) error {
 	c, err := a.smtpClient()
 	if err != nil {
-		return err
+		return notSubmitted{err}
 	}
 	defer c.Close()
 	recipients := append(append(append([]string{}, req.To...), req.Cc...), req.Bcc...)
@@ -408,8 +430,10 @@ func submissionError(err error) error {
 	if errors.As(err, &rejection) && rejection.Code >= 500 {
 		return badRequest{err}
 	}
-	return err
+	return notSubmitted{err}
 }
+
+type notSubmitted struct{ error }
 
 type submission struct {
 	MessageID      string `json:"messageID"`

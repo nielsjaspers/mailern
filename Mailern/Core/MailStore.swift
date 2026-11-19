@@ -765,12 +765,13 @@ final class MailStore {
                 }
                 // A connection that never opened sent nothing, so the attempt can be dropped: the draft stays
                 // scheduled and can still be canceled or edited.
-                if previousAttempt == nil, let failure = error as? URLError, [.notConnectedToInternet, .cannotFindHost, .cannotConnectToHost,
-                                                       .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff].contains(failure.code) {
+                let unreachable = (error as? URLError).map { [.notConnectedToInternet, .cannotFindHost, .cannotConnectToHost,
+                        .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff].contains($0.code) } ?? false
+                if error is RemoteSendUnavailable || (previousAttempt == nil && unreachable) {
                     var pending = pendingRemoteSends
                     pending.removeValue(forKey: draft.id)
                     guard save(replacingConversations: conversations, pendingSends: pending) else { return .waitingToFile }
-                    self.error = "Mailern could not reach the mail server, so nothing was sent. \(error.localizedDescription)"
+                    self.error = "The mail server was unavailable. Nothing was sent. \(error.localizedDescription)"
                     return .waitingToFile
                 }
                 self.error = "Delivery is unconfirmed. Retry to finish sending this message. \(error.localizedDescription)"

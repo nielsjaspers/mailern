@@ -219,6 +219,11 @@ struct PendingRemoteSend: Codable, Equatable {
     var accepted = false
 }
 
+struct RemoteSendUnavailable: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 struct RemoteSendRejection: LocalizedError {
     let message: String
     var errorDescription: String? { message }

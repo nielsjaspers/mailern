@@ -3,12 +3,18 @@ import UIKit
 
 /// Talks to mailern-server over HTTPS on the tailnet, or plain HTTP on this machine during development.
 struct MailServerClient: RemoteMailboxClient {
+    private final class SendRedirectPolicy: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(task.originalRequest?.httpMethod == "POST" ? nil : request)
+        }
+    }
     let base: URL
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 70
         configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration, delegate: SendRedirectPolicy(), delegateQueue: nil)
     }()
 
     struct Failure: LocalizedError {
@@ -29,7 +35,11 @@ struct MailServerClient: RemoteMailboxClient {
         let (data, response) = try await Self.session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
-            throw Failure(status: status, message: String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+            let message = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            if method == "POST", status == 503, (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Mailern-Submission") == "not-accepted" {
+                throw RemoteSendUnavailable(message: message)
+            }
+            throw Failure(status: status, message: message)
         }
         return data
     }
