@@ -919,6 +919,17 @@ import os
         assert(store.mergeRemote(remoteBatch(5, [answered])))
         let quiet = store.conversation(thread.id)!
         assert(quiet.workflow == .settled && quiet.followUp == nil && quiet.snoozedUntil == nil)
+        // A message another client marked deleted is not a reply, so it leaves a waiting reminder alone.
+        var reminded = store.conversation(thread.id)!
+        reminded.move(to: .snoozed, until: .now.addingTimeInterval(3600))
+        reminded.followUp = .waiting
+        store.replaceRemote(conversations: [reminded], accounts: store.accounts, invalidatingUndo: [])
+        var deletedReply = RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                         date: .now, body: "Never mind", outgoing: false, subject: "Re: Plans", hasHTML: false)
+        deletedReply.deleted = true
+        answered.messages.append(deletedReply)
+        assert(store.mergeRemote(remoteBatch(6, [answered])))
+        assert(store.conversation(thread.id)!.followUp == .waiting)
         // A send from an alias the server no longer lists is refused instead of going out from the main address.
         var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
         draft.to = "alex@example.test"

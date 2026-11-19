@@ -158,6 +158,8 @@ struct RemoteMessage: Decodable, Equatable {
     var messageID: String?
     var inReplyTo: String?
     var references: [String]?
+    /// Another client marked the message deleted. It is on its way out and does not count as a reply.
+    var deleted: Bool?
 }
 
 struct RemoteConversation: Decodable, Equatable {
@@ -311,7 +313,7 @@ extension MailStore {
             return m
         }
         if c.messages.isEmpty, let local { c.messages = local.messages }
-        let replied = c.messages.contains { !$0.outgoing && !known.contains($0.id) } && local != nil
+        let replied = remote.messages.contains { !$0.outgoing && $0.deleted != true && !known.contains($0.id) } && local != nil
         // A new reply wins over a move the server has not confirmed, as an arrival does in Mailern: it returns the
         // thread to Inbox, rescues it from Trash, and ends its reminder.
         var keeping = fields

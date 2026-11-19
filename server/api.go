@@ -51,6 +51,8 @@ type wireMessage struct {
 	MessageID  string    `json:"messageID,omitempty"`
 	InReplyTo  string    `json:"inReplyTo,omitempty"`
 	References []string  `json:"references,omitempty"`
+	// Another client marked the message deleted. It still shows, but it is not a new reply.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 type wireConversation struct {
@@ -132,7 +134,7 @@ func wire(st *State, c *Conversation) wireConversation {
 		out.Messages = append(out.Messages, wireMessage{
 			ID: m.ID, Sender: m.Sender, Address: m.Address, To: m.To, Cc: m.Cc, Date: wireTime(m.Date), Body: m.Text,
 			Outgoing: m.Outgoing, Subject: m.Subject, HasHTML: m.HasHTML, MessageID: m.MessageID,
-			InReplyTo: m.InReplyTo, References: m.References,
+			InReplyTo: m.InReplyTo, References: m.References, Deleted: m.Deleted,
 		})
 	}
 	return out
