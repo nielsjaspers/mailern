@@ -113,6 +113,7 @@ func (c *Config) resolve(base string) error {
 		return errors.New("add at least one account")
 	}
 	seen := map[string]bool{}
+	addresses := map[string]string{}
 	for i := range c.Accounts {
 		a := &c.Accounts[i]
 		if a.ID == "" || seen[a.ID] {
@@ -123,9 +124,16 @@ func (c *Config) resolve(base string) error {
 			return fmt.Errorf("account %q needs an email address", a.ID)
 		}
 		for _, alias := range a.Aliases {
-			if !strings.Contains(alias, "@") || strings.EqualFold(alias, a.Address) {
-				return fmt.Errorf("account %q: alias %q must be another email address", a.ID, alias)
+			if !strings.Contains(alias, "@") {
+				return fmt.Errorf("account %q: alias %q must be an email address", a.ID, alias)
 			}
+		}
+		// Mail from an address counts as the user's own in its account, so each address belongs to one account once.
+		for _, address := range append([]string{a.Address}, a.Aliases...) {
+			if owner, taken := addresses[strings.ToLower(address)]; taken {
+				return fmt.Errorf("address %s is listed twice, in accounts %q and %q", address, owner, a.ID)
+			}
+			addresses[strings.ToLower(address)] = a.ID
 		}
 		if a.Name == "" {
 			a.Name = a.ID
