@@ -203,10 +203,22 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var out wireConversation
+	id := r.PathValue("id")
 	var account *Account
+	s.store.Read(func(st *State) {
+		if c := st.Conversations[id]; c != nil {
+			account = s.account(c.AccountID)
+		}
+	})
+	if account == nil {
+		writeError(w, errNotFound)
+		return
+	}
+	// Serialize the placement change with IMAP writes and conditional deletes on this account.
+	account.mu.Lock()
 	err := s.store.Update(func(st *State) error {
-		c := st.Conversations[r.PathValue("id")]
-		if c == nil || c.Deleting {
+		c := st.Conversations[id]
+		if c == nil || c.Deleting || c.AccountID != account.cfg.ID {
 			return errNotFound
 		}
 		if slices.Contains(state.Fields, "workflow") && (c.Workflow != state.Workflow || !sameTime(c.SnoozedUntil, state.SnoozedUntil)) {
@@ -236,43 +248,179 @@ func (s *Service) setState(w http.ResponseWriter, r *http.Request) {
 		c.Pending = c.Pending || c.PendingRead || c.PendingPin || c.PendingPlacement
 		st.Touch(c)
 		out = wire(st, c)
-		account = s.account(c.AccountID)
 		return nil
 	})
+	account.mu.Unlock()
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if account != nil {
-		account.Trigger()
-	}
+	account.Trigger()
 	writeJSON(w, out)
 }
 
-// delete removes a conversation from Trash or Junk for good.
+// delete checks the confirmation against a fresh provider scan before moving or queuing any mail.
 func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		MessageIDs       []string `json:"messageIDs"`
+		ExpectedWorkflow Workflow `json:"expectedWorkflow"`
+		ExpectedRemoval  Role     `json:"expectedRemoval"`
+		Removal          Role     `json:"removal"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(request.MessageIDs) == 0 ||
+		!slices.Contains([]Workflow{WorkflowInbox, WorkflowSnoozed, WorkflowSettled}, request.ExpectedWorkflow) ||
+		!slices.Contains([]Role{"", RoleTrash, RoleJunk}, request.ExpectedRemoval) ||
+		(request.Removal != RoleTrash && request.Removal != RoleJunk) {
+		writeError(w, badRequest{errors.New("delete requires confirmed messages and a valid placement")})
+		return
+	}
+	slices.Sort(request.MessageIDs)
+	id := r.PathValue("id")
 	var account *Account
-	err := s.store.Update(func(st *State) error {
-		c := st.Conversations[r.PathValue("id")]
-		if c == nil || c.Deleting {
+	s.store.Read(func(st *State) {
+		if c := st.Conversations[id]; c != nil {
+			account = s.account(c.AccountID)
+		}
+	})
+	if account == nil {
+		writeError(w, errNotFound)
+		return
+	}
+
+	conflict := errors.New("the messages or their placement changed before deletion")
+	err := func() error {
+		account.mu.Lock()
+		defer account.mu.Unlock()
+
+		previousRoles := map[string]Role{}
+		active := false
+		s.store.Read(func(st *State) {
+			if c := st.Conversations[id]; c != nil && c.AccountID == account.cfg.ID && !c.Deleting {
+				active = true
+				for _, m := range st.messages(c) {
+					at, _ := placeOf(m)
+					previousRoles[m.ID] = at.role
+				}
+			}
+		})
+		if !active {
 			return errNotFound
 		}
-		if c.Removal == "" {
-			return badRequest{errors.New("only mail in Trash or Junk can be deleted")}
+		client, err := account.connect()
+		if err != nil {
+			return err
 		}
-		c.DeleteKeys = slices.Clone(c.Keys)
-		c.Deleting, c.Pending = true, true
-		st.Touch(c)
-		account = s.account(c.AccountID)
-		return nil
-	})
+		// The first pass may move only the confirmed members. The second pass checks the
+		// resulting placement and membership before making the expunge eligible to run.
+		moveConflict := false
+		for moved := false; ; moved = true {
+			if err := account.read(client); err != nil {
+				account.disconnect()
+				return err
+			}
+			queued := false
+			var movement plan
+			var identities map[Role]mailboxIdentity
+			var movementRevision uint64
+			err := s.store.Update(func(st *State) error {
+				c := st.Conversations[id]
+				if c == nil || c.Deleting || c.AccountID != account.cfg.ID {
+					return errNotFound
+				}
+				messages := st.messages(c)
+				matchesPlacement := c.Workflow == request.ExpectedWorkflow && c.Removal == request.ExpectedRemoval
+				if !c.PendingPlacement {
+					observed := *c
+					adopt(&observed, messages)
+					if c.PendingRead && observed.Workflow != WorkflowSettled {
+						observed.Unread = c.Unread
+					}
+					if c.PendingPin {
+						observed.Pinned = c.Pinned
+					}
+					if observed.Workflow != c.Workflow || observed.Removal != c.Removal ||
+						observed.Unread != c.Unread || observed.Pinned != c.Pinned {
+						*c = observed
+						st.Touch(c)
+					}
+					if !moved {
+						matchesPlacement = matchesPlacement && c.Workflow == request.ExpectedWorkflow && c.Removal == request.ExpectedRemoval
+					}
+				}
+				ids := make([]string, 0, len(messages))
+				for _, m := range messages {
+					ids = append(ids, m.ID)
+				}
+				slices.Sort(ids)
+				if moveConflict || !matchesPlacement || !slices.Equal(ids, request.MessageIDs) || len(ids) != len(c.Keys) {
+					return conflict
+				}
+				for _, m := range messages {
+					at, ok := placeOf(m)
+					if !ok || (!moved && at.role != previousRoles[m.ID]) {
+						return conflict
+					}
+					if at.role == request.Removal {
+						continue
+					}
+					if moved || (!c.PendingPlacement && request.ExpectedRemoval == request.Removal) {
+						return conflict
+					}
+					movement.moves = append(movement.moves, move{at, request.Removal})
+				}
+				if !client.Caps().Has(imap.CapUIDPlus) {
+					return errDeleteUnsupported
+				}
+				if !movement.empty() {
+					identities = mailboxIdentities(st.account(c.AccountID))
+					movementRevision = c.Revision
+					return nil
+				}
+				if c.Removal != request.Removal {
+					c.Removal, c.TrashSince = request.Removal, nil
+					if c.Removal == RoleTrash {
+						now := time.Now()
+						c.TrashSince = &now
+					}
+				}
+				c.DeleteKeys = slices.Clone(c.Keys)
+				c.PendingPlacement, c.PendingRead, c.PendingPin = false, false, false
+				c.Deleting, c.Pending = true, true
+				st.Touch(c)
+				queued = true
+				return nil
+			})
+			if err != nil || queued {
+				return err
+			}
+			err = account.applyConfirmedMoves(client, movement, identities, func(st *State) error {
+				c := st.Conversations[id]
+				if c == nil || c.Deleting || c.Revision != movementRevision {
+					return conflict
+				}
+				return nil
+			})
+			if err != nil {
+				moveConflict = errors.Is(err, errMoveChanged) || errors.Is(err, conflict)
+				if !moveConflict {
+					return err
+				}
+			}
+		}
+	}()
+	if errors.Is(err, conflict) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if account != nil {
-		account.Trigger()
-	}
+	account.Trigger()
 	w.WriteHeader(http.StatusNoContent)
 }
 

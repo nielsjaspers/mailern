@@ -22,12 +22,96 @@ struct RemoteState: Codable, Equatable {
     }
 }
 
+enum RemoteStateField: String, Codable, CaseIterable {
+    case workflow, removal, unread, pinned, muted
+}
+
+struct RemoteStateWrite: Encodable {
+    let state: RemoteState
+    let fields: Set<RemoteStateField>
+
+    private enum CodingKeys: String, CodingKey { case fields }
+
+    func encode(to encoder: Encoder) throws {
+        try state.encode(to: encoder)
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(RemoteStateField.allCases.filter(fields.contains), forKey: .fields)
+    }
+}
+
+struct DeleteConfirmation {
+    let mailbox: RemovedMailbox
+    let members: [UUID: Set<UUID>]
+
+    var ids: Set<UUID> { Set(members.keys) }
+}
+
+struct RemoteDelete: Codable, Equatable {
+    let messageIDs: Set<UUID>
+    var expectedWorkflow: Workflow
+    var expectedRemoval: RemovedMailbox?
+    let removal: RemovedMailbox
+
+    private enum CodingKeys: String, CodingKey { case messageIDs, expectedWorkflow, expectedRemoval, removal }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(messageIDs.map { $0.uuidString.lowercased() }.sorted(), forKey: .messageIDs)
+        try container.encode(expectedWorkflow, forKey: .expectedWorkflow)
+        try container.encodeIfPresent(expectedRemoval, forKey: .expectedRemoval)
+        try container.encode(removal, forKey: .removal)
+    }
+}
+
+struct PendingRemoteDelete: Codable, Equatable {
+    var request: RemoteDelete
+    let cached: Conversation
+    var needsRefresh = false
+}
+
+extension RemoteState {
+    func changedFields(since baseline: RemoteState?) -> Set<RemoteStateField> {
+        guard let baseline else { return Set(RemoteStateField.allCases) }
+        var fields: Set<RemoteStateField> = []
+        if workflow != baseline.workflow || snoozedUntil != baseline.snoozedUntil { fields.insert(.workflow) }
+        if removal != baseline.removal { fields.insert(.removal) }
+        if unread != baseline.unread { fields.insert(.unread) }
+        if pinned != baseline.pinned { fields.insert(.pinned) }
+        if muted != baseline.muted { fields.insert(.muted) }
+        return fields
+    }
+}
+
 extension Conversation {
     var remoteState: RemoteState {
         RemoteState(workflow: workflow, snoozedUntil: snoozedUntil, removal: removal?.mailbox, unread: unread, pinned: pinned, muted: muted == true)
     }
     /// A change the server has not confirmed yet. Conversations the server never confirmed count as changed.
     var hasUnsyncedChanges: Bool { synced != remoteState }
+    var remoteWriteFields: Set<RemoteStateField> {
+        remoteState.changedFields(since: synced).union(pendingRemoteWrite ?? [])
+    }
+
+    mutating func adoptRemoteState(_ remote: RemoteConversation, keeping fields: Set<RemoteStateField>) {
+        if !fields.contains(.workflow) {
+            workflow = remote.workflow
+            snoozedUntil = remote.snoozedUntil
+            returnedFromSnoozeAt = remote.returnedFromSnoozeAt
+            if followUp == .waiting, workflow != .snoozed { followUp = .noReply }
+        }
+        if !fields.contains(.removal) {
+            removal = switch remote.removal {
+            case .trash: .trash(since: remote.trashSince ?? .now)
+            case .junk: .junk
+            case nil: nil
+            }
+        }
+        if !fields.contains(.unread) { unread = remote.unread }
+        if workflow == .settled { unread = false }
+        if !fields.contains(.pinned) { pinned = remote.pinned }
+        if !fields.contains(.muted) { muted = remote.muted ? true : nil }
+        synced = remote.state
+    }
 }
 
 struct RemoteAccount: Decodable, Equatable {
@@ -80,11 +164,27 @@ struct RemoteSync: Decodable, Equatable {
     var deleted: [UUID]
 }
 
-struct PreparedRemoteSend {
+struct PreparedRemoteSend: Codable, Equatable {
+    struct Reply: Codable, Equatable {
+        let id: UUID
+        let threadingID: String
+        let references: [String]
+    }
+
     let draft: ComposerDraft
     let conversationID: UUID
     let from: MailAccount
-    let replyTo: MailMessage?
+    let replyTo: Reply?
+}
+
+struct PendingRemoteSend: Codable, Equatable {
+    let prepared: PreparedRemoteSend
+    var accepted = false
+}
+
+struct RemoteSendRejection: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }
 
 enum DraftDelivery {
@@ -106,10 +206,8 @@ enum RemoteJSON {
 }
 
 extension MailStore {
-    /// Applies a sync from the mail server. Conversations with unsynced local changes keep their workflow state until
-    /// the server confirms it, but always take new messages. Local-only state stays: reminders, blocked replies,
-    /// and the HTML, rich text, and attachments the phone already holds.
-    @discardableResult func mergeRemote(_ sync: RemoteSync, preservingLocalState ids: Set<UUID> = []) -> Bool {
+    /// A pull takes new messages and keeps only the state fields with local edits.
+    @discardableResult func mergeRemote(_ sync: RemoteSync, resolvingDeletes: Set<UUID> = []) -> Bool {
         guard !needsReload else { return false }
         var accounts = sync.accounts.enumerated().map { index, remote in
             var account = self.accounts.first { $0.id == remote.id }
@@ -122,15 +220,22 @@ extension MailStore {
         if !sync.reset && sync.conversations.isEmpty && sync.deleted.isEmpty {
             return replaceRemote(conversations: conversations, accounts: accounts, invalidatingUndo: [], revision: sync.revision)
         }
+        let pending = pendingRemoteDeletes.filter { !resolvingDeletes.contains($0.key) }
         var updated = sync.reset ? [] : conversations
         let originalCount = updated.count
         let localByID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
         var positions = Dictionary(uniqueKeysWithValues: updated.enumerated().map { ($0.element.id, $0.offset) })
         let deleted = Set(sync.deleted)
         var invalidated = deleted
-        for remote in sync.conversations where pendingRemoteDeletes[remote.id] == nil {
-            let local = localByID[remote.id]
-            let merged = merge(remote, into: local, keepLocalState: local.map { ids.contains(remote.id) || $0.hasUnsyncedChanges } ?? false)
+        for remote in sync.conversations where pending[remote.id] == nil {
+            let recovering = resolvingDeletes.contains(remote.id)
+            let local = localByID[remote.id] ?? (recovering ? pendingRemoteDeletes[remote.id]?.cached : nil)
+            var merged = merge(remote, into: local, keeping: recovering ? [] : local?.remoteWriteFields ?? [])
+            if recovering { merged.pendingRemoteWrite = nil }
+            if local == nil, !recovering,
+               let sender = merged.messages.last(where: { !$0.outgoing })?.address, isSenderBlocked(sender) {
+                merged.removal = .junk
+            }
             if let local, merged.messages.map(\.id) != local.messages.map(\.id) { invalidated.insert(remote.id) }
             if let index = positions[remote.id] {
                 updated[index] = merged
@@ -141,21 +246,24 @@ extension MailStore {
         }
         // Move the appended rows to the front after all updates have used the original indices.
         updated = updated.dropFirst(originalCount).reversed() + updated.prefix(originalCount)
-        updated.removeAll { deleted.contains($0.id) || pendingRemoteDeletes[$0.id] != nil }
+        updated.removeAll { deleted.contains($0.id) || pending[$0.id] != nil }
         if sync.reset { invalidated.formUnion(localByID.keys.filter { positions[$0] == nil }) }
-        return replaceRemote(conversations: updated, accounts: accounts, invalidatingUndo: invalidated, revision: sync.revision)
+        return replaceRemote(conversations: updated, accounts: accounts, invalidatingUndo: invalidated,
+                             revision: sync.revision, pendingDeletes: pending)
     }
 
-    func acknowledgeRemoteState(_ remote: RemoteConversation) -> Bool {
-        // A delete can commit while the state request is in flight.
-        guard let index = conversations.firstIndex(where: { $0.id == remote.id }) else { return true }
+    func acknowledgeRemoteState(_ remote: RemoteConversation, sent: RemoteState, fields: Set<RemoteStateField>) -> Bool {
+        guard let index = conversations.firstIndex(where: { $0.id == remote.id }) else {
+            return acknowledgePlacementBeforeDelete(remote, sent: sent, fields: fields)
+        }
         var updated = conversations
-        // The PUT confirms the new baseline. Undo or sending a reply can change the local copy while it is in flight.
-        updated[index].synced = remote.state
+        let editedAfterSend = updated[index].remoteState.changedFields(since: sent)
+        updated[index].adoptRemoteState(remote, keeping: editedAfterSend)
+        updated[index].pendingRemoteWrite = nil
         return replaceRemote(conversations: updated, accounts: accounts, invalidatingUndo: [])
     }
 
-    private func merge(_ remote: RemoteConversation, into local: Conversation?, keepLocalState: Bool) -> Conversation {
+    private func merge(_ remote: RemoteConversation, into local: Conversation?, keeping fields: Set<RemoteStateField>) -> Conversation {
         var c = local ?? Conversation(id: remote.id, accountID: remote.accountID, subject: remote.subject, messages: [])
         let known = Set(local?.messages.map(\.id) ?? [])
         c.accountID = remote.accountID
@@ -176,31 +284,8 @@ extension MailStore {
         }
         if c.messages.isEmpty, let local { c.messages = local.messages }
         let replied = c.messages.contains { !$0.outgoing && !known.contains($0.id) } && local != nil
-        if !keepLocalState {
-            let state = remote.state
-            c.workflow = state.workflow
-            c.snoozedUntil = state.snoozedUntil
-            c.removal = switch state.removal {
-            case .trash: .trash(since: remote.trashSince ?? .now)
-            case .junk: .junk
-            case nil: nil
-            }
-            c.unread = state.unread && state.workflow != .settled
-            c.pinned = state.pinned
-            c.muted = state.muted ? true : nil
-            c.returnedFromSnoozeAt = remote.returnedFromSnoozeAt
-            // A reply ends a reminder. Without one, a reminder that returned to Inbox is overdue.
-            if c.followUp == .waiting, state.workflow != .snoozed {
-                c.followUp = replied ? nil : .noReply
-            }
-        } else if replied, c.followUp == .waiting {
-            c.followUp = nil
-        }
-        c.synced = remote.state
-        if local == nil, let sender = c.messages.last(where: { !$0.outgoing })?.address, isSenderBlocked(sender) {
-            // New mail from a blocked sender goes to Junk. The change syncs back like any other.
-            c.removal = .junk
-        }
+        if replied, c.followUp == .waiting { c.followUp = nil }
+        c.adoptRemoteState(remote, keeping: fields)
         return c
     }
 }
@@ -208,8 +293,8 @@ extension MailStore {
 @MainActor
 protocol RemoteMailboxClient {
     func sync(since revision: UInt64, wait: Int) async throws -> RemoteSync
-    func setState(_ id: UUID, _ state: RemoteState) async throws -> RemoteConversation?
-    func delete(_ id: UUID) async throws
+    func setState(_ id: UUID, _ state: RemoteState, fields: Set<RemoteStateField>) async throws -> RemoteConversation?
+    func delete(_ id: UUID, _ request: RemoteDelete) async throws -> Bool
 }
 
 @MainActor @Observable
@@ -222,7 +307,7 @@ final class ServerSync {
     @ObservationIgnored private var pushRequested = false
     @ObservationIgnored private var pushGeneration: UInt64 = 0
     @ObservationIgnored private var needsFullSync = false
-    @ObservationIgnored private var unconfirmedStateWrites: Set<UUID> = []
+    @ObservationIgnored private var deleteConflicts: Set<UUID> = []
 
     init(client: any RemoteMailboxClient, store: MailStore) {
         self.client = client
@@ -231,6 +316,7 @@ final class ServerSync {
 
     func run() async {
         var wait = 0
+        store.fileReadyRemoteSends()
         await push()
         while !Task.isCancelled {
             do {
@@ -254,13 +340,13 @@ final class ServerSync {
         try Task.checkCancellation()
         let generation = pushGeneration
         let sendGeneration = store.remoteSendGeneration
-        let changes = try await client.sync(since: needsFullSync ? 0 : store.remoteRevision, wait: wait)
+        let resolving = conflictedDeletes
+        let changes = try await client.sync(since: needsFullSync || !resolving.isEmpty ? 0 : store.remoteRevision, wait: wait)
         await pushTask?.value
         try Task.checkCancellation()
         // A long poll can return a snapshot taken before a concurrent write was acknowledged.
         guard generation == pushGeneration, sendGeneration == store.remoteSendGeneration else { return false }
-        guard store.mergeRemote(changes, preservingLocalState: unconfirmedStateWrites) else { throw saveFailure }
-        unconfirmedStateWrites.formIntersection(store.conversations.map(\.id))
+        try applyPull(changes, resolvingDeletes: resolving)
         needsFullSync = false
         problem = nil
         lastSync = .now
@@ -274,7 +360,7 @@ final class ServerSync {
             return
         }
         guard !store.needsReload,
-              !store.pendingRemoteDeletes.isEmpty || store.conversations.contains(where: needsStateWrite) else { return }
+              !store.pendingRemoteDeletes.isEmpty || store.conversations.contains(where: { !$0.remoteWriteFields.isEmpty }) else { return }
         pushGeneration &+= 1
         let task = Task {
             repeat {
@@ -288,39 +374,66 @@ final class ServerSync {
     }
 
     private func pushChanges() async {
-        for (id, state) in store.pendingRemoteDeletes {
+        for (id, pending) in store.pendingRemoteDeletes where !pending.needsRefresh && !deleteConflicts.contains(id) {
             do {
-                // Trash or Junk may have been changed locally just before the permanent delete.
-                if try await client.setState(id, state) != nil { try await client.delete(id) }
-                guard store.confirmRemoteDelete(id) else { throw saveFailure }
-                unconfirmedStateWrites.remove(id)
+                if try await client.delete(id, pending.request) {
+                    guard store.confirmRemoteDelete(id) else { throw saveFailure }
+                } else {
+                    deleteConflicts.insert(id)
+                    guard store.markRemoteDeleteConflict(id) else { throw saveFailure }
+                    deleteConflicts.remove(id)
+                }
             } catch {
                 problem = error.localizedDescription
             }
         }
-        let ids = store.conversations.filter(needsStateWrite).map(\.id)
+        let resolving = conflictedDeletes
+        if !resolving.isEmpty {
+            do {
+                let sendGeneration = store.remoteSendGeneration
+                let changes = try await client.sync(since: 0, wait: 0)
+                if sendGeneration == store.remoteSendGeneration {
+                    try applyPull(changes, resolvingDeletes: resolving)
+                    lastSync = .now
+                }
+            } catch {
+                problem = error.localizedDescription
+            }
+        }
+        let ids = store.conversations.filter { !$0.remoteWriteFields.isEmpty }.map(\.id)
         for id in ids {
-            while let conversation = store.conversation(id), needsStateWrite(conversation) {
+            while let conversation = store.conversation(id), !conversation.remoteWriteFields.isEmpty {
                 let state = conversation.remoteState
-                unconfirmedStateWrites.insert(id)
+                let fields = conversation.remoteWriteFields
                 do {
-                    guard let confirmed = try await client.setState(id, state) else {
-                        unconfirmedStateWrites.remove(id)
+                    guard store.recordPendingRemoteWrite(id, fields: fields) else { throw saveFailure }
+                    guard let confirmed = try await client.setState(id, state, fields: fields) else {
                         needsFullSync = true
                         break
                     }
-                    guard store.acknowledgeRemoteState(confirmed) else { throw saveFailure }
-                    unconfirmedStateWrites.remove(id)
+                    guard store.acknowledgeRemoteState(confirmed, sent: state, fields: fields) else { throw saveFailure }
                 } catch {
                     problem = error.localizedDescription
                     break
                 }
             }
+            if store.pendingRemoteDeletes[id] != nil { pushRequested = true }
         }
     }
 
-    private func needsStateWrite(_ conversation: Conversation) -> Bool {
-        conversation.hasUnsyncedChanges || unconfirmedStateWrites.contains(conversation.id)
+    private func applyPull(_ changes: RemoteSync, resolvingDeletes: Set<UUID>) throws {
+        guard store.mergeRemote(changes, resolvingDeletes: resolvingDeletes) else { throw saveFailure }
+        store.fileReadyRemoteSends()
+        if !resolvingDeletes.isEmpty {
+            deleteConflicts.subtract(resolvingDeletes)
+            store.error = "Mail changed before deletion. Review it before deleting again."
+        }
+    }
+
+    private var conflictedDeletes: Set<UUID> {
+        Set(store.pendingRemoteDeletes.compactMap { id, pending in
+            pending.needsRefresh || deleteConflicts.contains(id) ? id : nil
+        })
     }
 
     private var saveFailure: CocoaError {

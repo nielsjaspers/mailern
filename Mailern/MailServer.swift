@@ -40,18 +40,27 @@ struct MailServerClient: RemoteMailboxClient {
         return try RemoteJSON.decoder.decode(RemoteSync.self, from: data)
     }
 
-    func setState(_ id: UUID, _ state: RemoteState) async throws -> RemoteConversation? {
+    func setState(_ id: UUID, _ state: RemoteState, fields: Set<RemoteStateField>) async throws -> RemoteConversation? {
         do {
-            let data = try await send("PUT", "v1/conversations/\(id.uuidString.lowercased())", body: RemoteJSON.encoder.encode(state))
+            let body = try RemoteJSON.encoder.encode(RemoteStateWrite(state: state, fields: fields))
+            let data = try await send("PUT", "v1/conversations/\(id.uuidString.lowercased())", body: body)
             return try RemoteJSON.decoder.decode(RemoteConversation.self, from: data)
         } catch let failure as Failure where failure.status == 404 {
             return nil
         }
     }
 
-    func delete(_ id: UUID) async throws {
-        do { _ = try await send("DELETE", "v1/conversations/\(id.uuidString.lowercased())") }
-        catch let failure as Failure where failure.status == 404 {}
+    /// A conflict leaves the conversation on the server and requires a fresh mailbox snapshot.
+    func delete(_ id: UUID, _ request: RemoteDelete) async throws -> Bool {
+        do {
+            let body = try RemoteJSON.encoder.encode(request)
+            _ = try await send("DELETE", "v1/conversations/\(id.uuidString.lowercased())", body: body)
+            return true
+        } catch let failure as Failure where failure.status == 404 {
+            return true
+        } catch let failure as Failure where failure.status == 409 {
+            return false
+        }
     }
 
     func html(_ messageID: UUID) async throws -> String {
@@ -73,7 +82,11 @@ struct MailServerClient: RemoteMailboxClient {
     }
 
     func send(_ message: Outgoing) async throws {
-        _ = try await send("POST", "v1/send", body: RemoteJSON.encoder.encode(message))
+        do {
+            _ = try await send("POST", "v1/send", body: RemoteJSON.encoder.encode(message))
+        } catch let failure as Failure where [400, 403, 404, 422].contains(failure.status) {
+            throw RemoteSendRejection(message: failure.localizedDescription)
+        }
     }
 }
 
@@ -97,7 +110,7 @@ extension ServerSync {
             text: draft.text,
             html: draft.richText.flatMap { html(RichText.decode($0, fallback: draft.text)) },
             inReplyTo: target?.threadingID,
-            references: target.map { ($0.references ?? []) + [$0.threadingID] },
+            references: target?.references,
             attachments: draft.attachments.map { .init(name: $0.name, contentType: $0.contentType, data: $0.data) })
     }
 

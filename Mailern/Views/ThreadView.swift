@@ -22,8 +22,7 @@ struct ThreadView: View {
     @State private var snooze = false
     @State private var deleting = false
     @State private var settling: DraftDiscard?
-    @State private var deletingConversation = false
-    @State private var confirmedMailbox = RemovedMailbox.trash
+    @State private var deletingConversation: DeleteConfirmation?
     private var scheduled: [ComposerDraft] { drafts.outbox.filter { $0.mode.replyID == id } }
     private var attachedDrafts: [ComposerDraft] { drafts.drafts.filter { $0.mode.replyID == id }.sorted { $0.updatedAt < $1.updatedAt } }
     /// A per-message reply targets `message`. The toolbar passes nil, which targets the latest message.
@@ -94,8 +93,7 @@ struct ThreadView: View {
                             }
                             Spacer()
                             Button("Delete Permanently", systemImage: "trash") {
-                                confirmedMailbox = mailbox
-                                deletingConversation = true
+                                deletingConversation = store.prepareDelete([id], from: mailbox)
                             }
                         } else {
                             Button(c.workflow == .settled ? "Restore" : "Settle", systemImage: c.workflow == .settled ? "tray" : "checkmark") {
@@ -127,14 +125,18 @@ struct ThreadView: View {
         .onAppear { store.markRead(id) }
         .modifier(DraftStorageAlert(active: true))
         .modifier(DiscardDraftsConfirmation(request: $settling, onDone: { leave(after: settleNext) }))
-        .confirmationDialog("Delete this conversation permanently?", isPresented: $deletingConversation, titleVisibility: .visible) {
+        .confirmationDialog("Delete this conversation permanently?",
+                            isPresented: Binding(get: { deletingConversation != nil }, set: { if !$0 { deletingConversation = nil } }),
+                            titleVisibility: .visible, presenting: deletingConversation) { confirmation in
             Button("Delete Permanently", role: .destructive) {
                 Task {
-                    let committed = await drafts.discardDrafts(for: [id], scheduled: true) { store.deletePermanently([id], from: confirmedMailbox, discarding: $0) }
+                    let committed = await drafts.discardDrafts(for: confirmation.ids, scheduled: true) {
+                        store.deletePermanently(confirmation, discarding: $0)
+                    }
                     if committed { dismiss() }
                 }
             }
-        } message: { Text("This can't be undone.") }
+        } message: { _ in Text("This can't be undone.") }
         .sheet(isPresented: $snooze) { SnoozeView(ids: [id], onSnooze: { dismiss() }) }
     }
 }

@@ -118,6 +118,8 @@ struct Conversation: Codable, Identifiable, Equatable {
     var blockedReplySourceID: UUID?
     /// The state the mail server last confirmed. Nil for demo mail and for changes the server has not seen.
     var synced: RemoteState?
+    /// The fields of a PUT that may have reached the server without a saved acknowledgment.
+    var pendingRemoteWrite: Set<RemoteStateField>?
     var messages: [MailMessage]
     var latest: MailMessage { messages[messages.count - 1] }
     var effectiveSubject: String { subject(at: latest) }

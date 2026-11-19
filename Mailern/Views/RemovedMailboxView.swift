@@ -10,8 +10,7 @@ struct RemovedMailboxView: View {
     private var search: String { searchInput.text }
     @State private var selecting = false
     @State private var selectedIDs: Set<UUID> = []
-    // Conversations waiting for confirmation before permanent deletion.
-    @State private var deleting: Set<UUID> = []
+    @State private var deleting: DeleteConfirmation?
     // A thread pushed on top shows its own draft storage alert.
     @State private var visible = false
 
@@ -48,30 +47,30 @@ struct RemovedMailboxView: View {
                         }
                         .disabled(selectedIDs.isEmpty)
                         Spacer()
-                        Button("Delete Permanently", systemImage: "trash") { deleting = selectedIDs }
+                        Button("Delete Permanently", systemImage: "trash") { deleting = store.prepareDelete(selectedIDs, from: mailbox) }
                             .disabled(selectedIDs.isEmpty)
                     } else if mailbox == .trash {
                         Spacer()
-                        Button("Empty Trash") { deleting = Set(store.list(.trash).map(\.id)) }
+                        Button("Empty Trash") { deleting = store.prepareDelete(Set(store.list(.trash).map(\.id)), from: .trash) }
                             .disabled(store.list(.trash).isEmpty)
                     }
                 }
             }
             .confirmationDialog(
-                deleting.count == 1 ? "Delete this conversation permanently?" : "Delete \(deleting.count) conversations permanently?",
-                isPresented: Binding(get: { !deleting.isEmpty }, set: { if !$0 { deleting = [] } }),
-                titleVisibility: .visible
-            ) {
+                deleting?.members.count == 1 ? "Delete this conversation permanently?" : "Delete \(deleting?.members.count ?? 0) conversations permanently?",
+                isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                titleVisibility: .visible, presenting: deleting
+            ) { confirmation in
                 Button("Delete Permanently", role: .destructive) {
-                    let ids = deleting
-                    deleting = []
                     Task {
                         // Some conversations in Junk still have scheduled or saved replies.
-                        let committed = await drafts.discardDrafts(for: ids, scheduled: true) { store.deletePermanently(ids, from: mailbox, discarding: $0) }
+                        let committed = await drafts.discardDrafts(for: confirmation.ids, scheduled: true) {
+                            store.deletePermanently(confirmation, discarding: $0)
+                        }
                         if committed { endSelection() }
                     }
                 }
-            } message: { Text("This can't be undone.") }
+            } message: { _ in Text("This can't be undone.") }
             .modifier(DraftStorageAlert(active: visible))
             .onAppear { visible = true }
             .onDisappear { visible = false }
@@ -107,7 +106,7 @@ struct RemovedMailboxView: View {
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             if !selecting {
                                 Button(restoreTitle, systemImage: "arrow.uturn.backward") { apply([conversation.id]) }.tint(.blue)
-                                Button("Delete", systemImage: "trash") { deleting = [conversation.id] }.tint(.red)
+                                Button("Delete", systemImage: "trash") { deleting = store.prepareDelete([conversation.id], from: mailbox) }.tint(.red)
                             }
                         }
                     }

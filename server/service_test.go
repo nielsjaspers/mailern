@@ -289,6 +289,17 @@ func TestMutedReplyStaysSettled(t *testing.T) {
 	}
 }
 
+func (h *harness) delete(c wireConversation, target Role) int {
+	h.t.Helper()
+	ids := make([]string, 0, len(c.Messages))
+	for _, m := range c.Messages {
+		ids = append(ids, m.ID)
+	}
+	return h.request("DELETE", "/v1/conversations/"+c.ID, map[string]any{
+		"messageIDs": ids, "expectedWorkflow": c.Workflow, "expectedRemoval": c.Removal, "removal": target,
+	}, nil)
+}
+
 func TestTrashRestoreAndDelete(t *testing.T) {
 	h := newHarness(t)
 	h.deliver("INBOX", "Dinner", "")
@@ -302,7 +313,7 @@ func TestTrashRestoreAndDelete(t *testing.T) {
 	if c.Removal != RoleTrash || c.Workflow != WorkflowInbox {
 		t.Fatalf("trashed thread should keep its workflow: %s/%q", c.Workflow, c.Removal)
 	}
-	if code := h.request("DELETE", "/v1/conversations/"+c.ID, nil, nil); code != http.StatusNoContent {
+	if code := h.delete(c, c.Removal); code != http.StatusNoContent {
 		t.Fatalf("delete: %d", code)
 	}
 	h.sync()
@@ -320,8 +331,81 @@ func TestDeleteOutsideTrashIsRefused(t *testing.T) {
 	h := newHarness(t)
 	h.deliver("INBOX", "Dinner", "")
 	h.sync()
-	if code := h.request("DELETE", "/v1/conversations/"+h.conversations()["Dinner"].ID, nil, nil); code != http.StatusUnprocessableEntity {
+	if code := h.delete(h.conversations()["Dinner"], RoleInbox); code != http.StatusUnprocessableEntity {
 		t.Fatalf("deleting inbox mail should fail, got %d", code)
+	}
+}
+
+func TestDeleteRejectsStaleConfirmation(t *testing.T) {
+	for _, change := range []string{"reply", "different ID", "restore", "junk"} {
+		t.Run(change, func(t *testing.T) {
+			h := newHarness(t)
+			parent := h.deliver("Trash", "Dinner", "")
+			h.sync()
+			c := h.conversations()["Dinner"]
+			switch change {
+			case "reply":
+				h.deliver("Trash", "New reply", parent)
+			case "different ID":
+				c.Messages[0].ID = uuid.NewString()
+			default:
+				client, err := h.account.dial()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer client.Close()
+				if _, err := client.Select("Trash", nil).Wait(); err != nil {
+					t.Fatal(err)
+				}
+				name := "INBOX"
+				if change == "junk" {
+					name = "Junk"
+				}
+				if _, err := client.Move(imap.SeqSetNum(1), name).Wait(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if code := h.delete(c, RoleTrash); code != http.StatusConflict {
+				t.Fatalf("stale delete: %d", code)
+			}
+			got := h.conversations()[c.Subject]
+			if got.ID != c.ID || change == "reply" && len(got.Messages) != 2 ||
+				change == "restore" && got.Removal != "" || change == "junk" && got.Removal != RoleJunk {
+				t.Fatalf("conflict did not preserve the provider change: %+v", got)
+			}
+		})
+	}
+}
+
+func TestDeleteAfterLocalMove(t *testing.T) {
+	for _, test := range []struct {
+		name                  string
+		priorPUT, uidPlusOnly bool
+	}{
+		{name: "offline move"},
+		{name: "acknowledged move", priorPUT: true},
+		{name: "UIDPLUS fallback", uidPlusOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newHarness(t)
+			if test.uidPlusOnly {
+				serveProvider(t, h, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapUIDPlus: {}}, nil)
+			}
+			h.deliver("INBOX", "Dinner", "")
+			h.sync()
+			c := h.conversations()["Dinner"]
+			if test.priorPUT {
+				h.set(c, func(s *ConversationState) { s.Removal = RoleTrash })
+				c = h.conversations()["Dinner"]
+			}
+			if code := h.delete(c, RoleTrash); code != http.StatusNoContent {
+				t.Fatalf("delete after local move: %d", code)
+			}
+			h.sync()
+			if len(h.conversations()) != 0 || len(h.mailbox("INBOX")) != 0 || len(h.mailbox("Trash")) != 0 {
+				t.Fatal("the confirmed message should be expunged")
+			}
+		})
 	}
 }
 

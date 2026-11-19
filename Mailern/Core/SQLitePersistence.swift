@@ -58,7 +58,10 @@ final class SQLitePersistence: ConversationPersistence {
             data.remoteRevision = try decoder.decode(UInt64.self, from: revision)
         }
         if let pendingDeletes = try setting(db, "pendingRemoteDeletes") {
-            data.pendingRemoteDeletes = try decoder.decode([UUID: RemoteState].self, from: pendingDeletes)
+            data.pendingRemoteDeletes = try decoder.decode([UUID: PendingRemoteDelete].self, from: pendingDeletes)
+        }
+        if let pendingSends = try setting(db, "pendingRemoteSends") {
+            data.pendingRemoteSends = try decoder.decode([UUID: PendingRemoteSend].self, from: pendingSends)
         }
         var loaded: [UUID: Int] = [:]
         try query(db, "SELECT position, payload FROM conversations ORDER BY position") { row in
@@ -148,6 +151,9 @@ final class SQLitePersistence: ConversationPersistence {
             if data.pendingRemoteDeletes != (previous?.pendingRemoteDeletes ?? [:]) {
                 try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('pendingRemoteDeletes', ?)", [.blob(encoder.encode(data.pendingRemoteDeletes))])
             }
+            if data.pendingRemoteSends != (previous?.pendingRemoteSends ?? [:]) {
+                try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('pendingRemoteSends', ?)", [.blob(encoder.encode(data.pendingRemoteSends))])
+            }
             try saveDraftDiscards(db, data.discardedDraftIDs)
             try exec(db, "COMMIT")
         } catch {
@@ -156,8 +162,12 @@ final class SQLitePersistence: ConversationPersistence {
         }
         stored = data
         self.positions = positions
-        if previous == nil || !removed.isEmpty {
-            AttachmentJSON.removePayloads(for: url, keeping: Set(data.conversations.flatMap { $0.messages.flatMap { $0.attachments ?? [] } }.map(\.id)))
+        if previous == nil || !removed.isEmpty || previous?.pendingRemoteSends.count != data.pendingRemoteSends.count ||
+            previous?.pendingRemoteDeletes.count != data.pendingRemoteDeletes.count {
+            let cached = data.conversations + data.pendingRemoteDeletes.values.map(\.cached)
+            let filed = cached.flatMap { $0.messages.flatMap { $0.attachments ?? [] } }
+            let pending = data.pendingRemoteSends.values.flatMap { $0.prepared.draft.attachments }
+            AttachmentJSON.removePayloads(for: url, keeping: Set((filed + pending).map(\.id)))
         }
     }
 

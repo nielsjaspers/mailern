@@ -4,6 +4,10 @@ import os
 
 @main struct WorkflowChecks {
     @MainActor static func main() async throws {
+        if CommandLine.arguments.contains("--remote") {
+            try await checkRemoteWorkflows()
+            return
+        }
         try await checkUndoExpiry()
         try await mailboxLoadFailurePreservesStoredMail()
         try await checkComposerData()
@@ -34,11 +38,7 @@ import os
         await checkDraftDiscardHaptics()
         checkAllMailSearch()
         checkNextConversation()
-        try await checkRemoteMerge()
-        try await checkRemoteCursor()
-        try await checkRemoteUndo()
-        try await checkRemoteDelete()
-        try await checkRemoteSending()
+        try await checkRemoteWorkflows()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -499,6 +499,14 @@ import os
         print("PASS: mailto parsing and drafts, web/email/phone links in plain text, no Markdown in plain text")
     }
 
+    @MainActor private static func checkRemoteWorkflows() async throws {
+        try await checkRemoteMerge()
+        try await checkRemoteCursor()
+        try await checkRemoteUndo()
+        try await checkRemoteDelete()
+        try await checkRemoteSending()
+    }
+
     @MainActor static func checkRemoteMerge() async throws {
         let directory = URL.temporaryDirectory.appending(path: "mailern-remote-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "server.sqlite"))
@@ -590,12 +598,14 @@ import os
 
     @MainActor private final class RemoteMailboxStub: RemoteMailboxClient {
         var fetch: (UInt64, Int) async throws -> RemoteSync = { _, _ in fatalError("Unexpected sync request") }
-        var update: (UUID, RemoteState) async throws -> RemoteConversation? = { _, _ in fatalError("Unexpected state request") }
-        var remove: (UUID) async throws -> Void = { _ in fatalError("Unexpected delete request") }
+        var update: (UUID, RemoteState, Set<RemoteStateField>) async throws -> RemoteConversation? = { _, _, _ in fatalError("Unexpected state request") }
+        var remove: (UUID, RemoteDelete) async throws -> Bool = { _, _ in fatalError("Unexpected delete request") }
 
         func sync(since revision: UInt64, wait: Int) async throws -> RemoteSync { try await fetch(revision, wait) }
-        func setState(_ id: UUID, _ state: RemoteState) async throws -> RemoteConversation? { try await update(id, state) }
-        func delete(_ id: UUID) async throws { try await remove(id) }
+        func setState(_ id: UUID, _ state: RemoteState, fields: Set<RemoteStateField>) async throws -> RemoteConversation? {
+            try await update(id, state, fields)
+        }
+        func delete(_ id: UUID, _ request: RemoteDelete) async throws -> Bool { try await remove(id, request) }
     }
 
     private static let remoteAccount = RemoteAccount(id: "fixture", name: "Fixture", address: "me@example.test")
@@ -677,8 +687,8 @@ import os
         let client = RemoteMailboxStub()
         let sync = ServerSync(client: client, store: store)
         var submitted: [Workflow] = []
-        client.update = { id, state in
-            assert(id == thread.id)
+        client.update = { id, state, fields in
+            assert(id == thread.id && fields == [.workflow, .unread])
             submitted.append(state.workflow)
             var confirmed = thread
             confirmed.workflow = state.workflow
@@ -710,39 +720,50 @@ import os
         assert(store.remoteRevision == 3)
 
         assert(store.move(thread.id, to: .settled))
-        client.update = { _, _ in
+        client.update = { _, _, fields in
+            assert(fields == [.workflow, .unread])
             store.undo()
             throw URLError(.networkConnectionLost)
         }
         await sync.push()
+        let recovered = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        let restarted = ServerSync(client: client, store: recovered)
+        assert(recovered.conversation(thread.id)?.remoteWriteFields == [.workflow, .unread])
+        assert(recovered.conversation(thread.id)?.hasUnsyncedChanges == false)
         client.fetch = { _, _ in
             var accepted = thread
             accepted.workflow = .settled
             accepted.unread = false
             return remoteBatch(4, [accepted])
         }
-        try await sync.pull(wait: 0)
-        assert(store.conversation(thread.id)?.workflow == .inbox && store.conversation(thread.id)?.hasUnsyncedChanges == true)
+        try await restarted.pull(wait: 0)
+        assert(recovered.conversation(thread.id)?.workflow == .inbox && recovered.conversation(thread.id)?.hasUnsyncedChanges == true)
 
-        let reply = ComposerDraft.make(mode: .reply(thread.id), conversation: store.conversation(thread.id), accounts: store.accounts)
-        store.sendRemote = { _ in }
+        let reply = ComposerDraft.make(mode: .reply(thread.id), conversation: recovered.conversation(thread.id), accounts: recovered.accounts)
+        recovered.sendRemote = { _ in }
         submitted = []
-        client.update = { _, state in
+        client.update = { _, state, fields in
+            assert(fields == [.workflow, .unread])
             submitted.append(state.workflow)
             var confirmed = thread
             confirmed.workflow = state.workflow
             confirmed.unread = state.unread
+            confirmed.pinned = true
             if state.workflow == .inbox {
-                let sent = await store.sendNow(reply)
+                let sent = await recovered.sendNow(reply)
                 assert(sent)
             }
             // This PUT response contains only the original message.
             return confirmed
         }
-        await sync.push()
-        assert(submitted == [.inbox, .settled] && store.conversation(thread.id)?.latest.id == reply.id)
-        assert(store.conversation(thread.id)?.hasUnsyncedChanges == false)
-        print("PASS: Undo during a PUT survives a stale pull or lost response, and an older acknowledgment preserves a newly sent reply")
+        await restarted.push()
+        assert(submitted == [.inbox, .settled] && recovered.conversation(thread.id)?.latest.id == reply.id)
+        assert(recovered.conversation(thread.id)?.hasUnsyncedChanges == false)
+        assert(recovered.conversation(thread.id)?.pendingRemoteWrite == nil && recovered.conversation(thread.id)?.pinned == true)
+        let body = try RemoteJSON.encoder.encode(RemoteStateWrite(state: thread.state, fields: [.workflow, .unread]))
+        let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+        assert(json["fields"] as? [String] == ["workflow", "unread"] && json["workflow"] as? String == "inbox")
+        print("PASS: Undo survives a stale pull, a lost PUT response, and restart. PUT acknowledgment adopts unrelated state and keeps a newly sent reply.")
     }
 
     @MainActor static func checkRemoteDelete() async throws {
@@ -750,38 +771,88 @@ import os
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appending(path: "mail.sqlite")
         let store = try remoteStore(at: url)
-        var thread = remoteThread()
+        let thread = remoteThread()
         assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
         let id = thread.id
         assert(store.apply(ids: [id], action: .remove(.trash)))
-        assert(store.deletePermanently([id], from: .trash))
+        let original = store.prepareDelete([id], from: .trash)!
+        var changed = thread
+        var reply = thread.messages[0]
+        reply.id = UUID()
+        changed.messages.append(reply)
+        assert(store.mergeRemote(remoteBatch(2, [changed])))
+        assert(!store.deletePermanently(original) && store.conversation(id)?.messages.count == 2)
+        store.loadRemoteHTML = { _ in "<p>Cached message</p>" }
+        await store.loadHTML(message: thread.messages[0].id, in: id)
+        let confirmed = store.prepareDelete([id], from: .trash)!
+        assert(store.deletePermanently(confirmed))
 
         let reopened = try remoteStore(at: url)
-        assert(reopened.conversation(id) == nil && reopened.pendingRemoteDeletes[id]?.removal == .trash)
+        let request = reopened.pendingRemoteDeletes[id]!.request
+        assert(reopened.conversation(id) == nil && request.removal == .trash && request.expectedRemoval == nil)
+        assert(request.expectedWorkflow == .inbox && request.messageIDs == Set(changed.messages.map(\.id)))
+        let body = try RemoteJSON.encoder.encode(request)
+        let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+        assert(Set(json["messageIDs"] as! [String]) == Set(changed.messages.map { $0.id.uuidString.lowercased() }))
         let client = RemoteMailboxStub()
         let sync = ServerSync(client: client, store: reopened)
-        client.fetch = { _, _ in remoteBatch(2, [thread], reset: true) }
+        client.fetch = { _, _ in remoteBatch(3, [changed], reset: true) }
         try await sync.pull(wait: 0)
         assert(reopened.conversation(id) == nil)
-        client.update = { target, state in
-            assert(target == id && state.removal == .trash)
-            thread.removal = state.removal
-            return thread
-        }
+
         var deletes = 0
-        client.remove = { target in
-            assert(target == id && thread.removal == .trash)
+        client.remove = { target, actual in
+            assert(target == id && actual == request)
             deletes += 1
             if deletes == 1 { throw URLError(.networkConnectionLost) }
+            return false
         }
         await sync.push()
         assert(deletes == 1 && reopened.pendingRemoteDeletes[id] != nil && sync.problem != nil)
+        client.fetch = { _, _ in throw URLError(.notConnectedToInternet) }
         let retry = try remoteStore(at: url)
         await ServerSync(client: client, store: retry).push()
-        assert(deletes == 2 && retry.pendingRemoteDeletes.isEmpty && retry.conversation(id) == nil)
-        let confirmed = try remoteStore(at: url)
-        assert(confirmed.pendingRemoteDeletes.isEmpty && confirmed.conversation(id) == nil)
-        print("PASS: permanent delete survives restart and a failed DELETE, suppresses stale sync rows, and submits Trash before retrying")
+        assert(deletes == 2 && retry.pendingRemoteDeletes[id]?.needsRefresh == true && retry.conversation(id) == nil)
+
+        // A rejected confirmation must not be sent again, even after a failed refresh and restart.
+        let refreshed = try remoteStore(at: url)
+        changed.removal = .junk
+        client.fetch = { since, wait in
+            assert(since == 0 && wait == 0)
+            return remoteBatch(4, [changed], reset: true)
+        }
+        await ServerSync(client: client, store: refreshed).push()
+        assert(deletes == 2 && refreshed.pendingRemoteDeletes.isEmpty && refreshed.conversation(id)?.removal == .junk)
+        assert(refreshed.conversation(id)?.messages.map(\.id) == changed.messages.map(\.id))
+        assert(refreshed.conversation(id)?.messages.first?.html == "<p>Cached message</p>")
+
+        assert(refreshed.deletePermanently([id], from: .junk))
+        client.remove = { target, request in
+            assert(target == id && request.expectedRemoval == .junk && request.removal == .junk)
+            return true
+        }
+        await ServerSync(client: client, store: refreshed).push()
+        let saved = try remoteStore(at: url)
+        assert(saved.pendingRemoteDeletes.isEmpty && saved.conversation(id) == nil)
+
+        assert(saved.mergeRemote(remoteBatch(5, [thread])))
+        assert(saved.apply(ids: [id], action: .remove(.trash)))
+        client.update = { target, state, fields in
+            assert(target == id && state.removal == .trash && fields == [.removal])
+            assert(saved.deletePermanently([id], from: .trash))
+            var acknowledged = thread
+            acknowledged.removal = .trash
+            return acknowledged
+        }
+        var deletedAfterPut = false
+        client.remove = { target, request in
+            assert(target == id && request.expectedRemoval == .trash && request.messageIDs == [thread.messages[0].id])
+            deletedAfterPut = true
+            return true
+        }
+        await ServerSync(client: client, store: saved).push()
+        assert(deletedAfterPut && saved.pendingRemoteDeletes.isEmpty)
+        print("PASS: delete keeps the confirmed IDs and placement across restart, avoids PUT, and refreshes a rejected delete without retrying it.")
     }
 
     @MainActor static func checkRemoteSending() async throws {
@@ -847,24 +918,78 @@ import os
         let tookBack = await drafts.unschedule(reply.id)
         assert(!tookBack)
         assert(sqlite3_exec(db, "DROP TRIGGER reject_filing", nil, nil, nil) == SQLITE_OK)
-        let retried = await drafts.sendNow(reply.id, through: store)
-        assert(retried && posts == 2 && drafts.outbox.isEmpty)
-        let saved = try remoteStore(at: url)
-        assert(saved.conversation(thread.id)?.messages.map(\.id) == [reply.id])
-        assert(saved.conversation(thread.id)?.latest.inReplyTo == "<source@example.test>")
+        let afterFilingFailure = try remoteStore(at: url)
+        let recoveredDrafts = DraftStore(url: directory.appending(path: "drafts.json"), mail: afterFilingFailure)
+        let retried = await recoveredDrafts.sendNow(reply.id, through: afterFilingFailure)
+        assert(retried && posts == 2 && recoveredDrafts.outbox.isEmpty)
+        assert(afterFilingFailure.conversation(thread.id)?.messages.map(\.id) == [reply.id])
+        assert(afterFilingFailure.conversation(thread.id)?.latest.inReplyTo == "<source@example.test>")
 
-        var newMail = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        var newMail = ComposerDraft.make(mode: .new, conversation: nil, accounts: afterFilingFailure.accounts)
         newMail.to = "sam@example.test"
+        newMail.bcc = "edited@example.test"
         var sent = remoteThread()
         sent.id = newMail.id
         sent.messages[0].id = newMail.id
         sent.messages[0].outgoing = true
-        assert(store.mergeRemote(remoteBatch(4, [sent])))
+        assert(afterFilingFailure.mergeRemote(remoteBatch(4, [sent])))
         // A synced copy also proves acceptance on retry when no local receipt was saved.
-        let recovered = await store.sendNow(newMail)
-        assert(recovered && posts == 2 && store.conversations.filter { $0.id == newMail.id }.count == 1)
-        assert(store.discardedDraftIDs.contains(newMail.id) && store.conversation(newMail.id)?.workflow == .settled)
-        print("PASS: reply preflight blocks missing sources, a synced sent copy files once, and an accepted reply survives source removal and retries a failed local save without another POST")
+        let recovered = await afterFilingFailure.sendNow(newMail)
+        assert(recovered && posts == 2 && afterFilingFailure.conversations.filter { $0.id == newMail.id }.count == 1)
+        assert(afterFilingFailure.discardedDraftIDs.contains(newMail.id))
+        assert(afterFilingFailure.conversation(newMail.id)?.latest.bcc == nil)
+
+        assert(afterFilingFailure.mergeRemote(remoteBatch(4, [thread])))
+        var ambiguous = draft
+        ambiguous.id = UUID()
+        ambiguous.text = "Original content"
+        ambiguous.richText = Data("Original formatting".utf8)
+        let editedAttachment = MailAttachment(name: "other.txt", data: Data("edited".utf8), contentType: "text/plain")
+        afterFilingFailure.sendRemote = { prepared in
+            posts += 1
+            assert(prepared.draft == ambiguous && prepared.replyTo?.id == thread.messages[0].id)
+            assert(afterFilingFailure.mergeRemote(remoteBatch(5, [], deleted: [thread.id])))
+            throw URLError(.networkConnectionLost)
+        }
+        let lost = await afterFilingFailure.sendNow(ambiguous)
+        assert(!lost && posts == 3)
+        let restarted = try remoteStore(at: url)
+        assert(restarted.conversation(thread.id) == nil)
+        var edited = ambiguous
+        edited.bcc = "edited@example.test"
+        edited.text = "Edited content"
+        edited.richText = nil
+        edited.attachments = [editedAttachment]
+        restarted.sendRemote = { prepared in
+            posts += 1
+            assert(prepared.draft == ambiguous && prepared.replyTo?.id == thread.messages[0].id)
+        }
+        let resumed = await restarted.sendNow(edited)
+        let exact = restarted.conversation(thread.id)?.latest
+        assert(resumed && posts == 4 && exact?.body == ambiguous.text && exact?.richText == ambiguous.richText)
+        assert(exact?.bcc == ["hidden@example.test"] && exact?.attachments == ambiguous.attachments)
+
+        var observed = ambiguous
+        observed.id = UUID()
+        observed.mode = .new
+        restarted.sendRemote = { prepared in
+            posts += 1
+            assert(prepared.draft == observed)
+            throw URLError(.networkConnectionLost)
+        }
+        let unconfirmed = await restarted.sendNow(observed)
+        assert(!unconfirmed && posts == 5)
+        let pulled = try remoteStore(at: url)
+        sent.id = observed.id
+        sent.messages[0].id = observed.id
+        sent.messages[0].body = observed.text
+        let client = RemoteMailboxStub()
+        client.fetch = { _, _ in remoteBatch(6, [sent]) }
+        try await ServerSync(client: client, store: pulled).pull(wait: 0)
+        assert(pulled.discardedDraftIDs.contains(observed.id) && posts == 5)
+        assert(pulled.conversation(observed.id)?.latest.attachments == observed.attachments)
+        assert(pulled.conversation(observed.id)?.latest.bcc == ["hidden@example.test"])
+        print("PASS: send preflight blocks missing sources. After restart, accepted mail files from the original snapshot and ambiguous retries reuse it.")
     }
 
     @MainActor static func checkMute() throws {
