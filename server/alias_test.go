@@ -33,6 +33,9 @@ func TestAccountSendsAndRecognizesAliases(t *testing.T) {
 	if len(h.lab.Submitted) != 1 || !bytes.Contains(h.lab.Submitted[0], []byte("<"+alias+">")) {
 		t.Fatal("the reply should go out from the alias")
 	}
+	if !bytes.Contains(h.lab.Submitted[0], []byte("Message-Id: <"+req.ID+"@alias.example.com>")) {
+		t.Fatalf("the Message-ID should use the alias's domain:\n%s", h.lab.Submitted[0])
+	}
 	h.sync()
 	if m := h.conversations()["Plans"].Messages[1]; !m.Outgoing || m.Address != alias {
 		t.Fatalf("the sent reply should be outgoing from the alias, got %+v", m)

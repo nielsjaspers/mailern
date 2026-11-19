@@ -60,7 +60,7 @@ func TestRestartAfterSMTPAcceptanceDoesNotResubmit(t *testing.T) {
 	h := newHarness(t)
 	h.sync()
 	req := SendRequest{ID: "a2a16159-c8b5-47b0-8df8-d09fa58cccb0", ConversationID: "773d0952-7399-4227-91c4-438e25311b1b", To: []string{"sam@example.com"}, Subject: "Delivery"}
-	raw, err := h.account.compose(req, h.account.messageID(req.ID))
+	raw, err := h.account.compose(req, h.account.messageID(req))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestSentCopyAfterInterruptedSendKeepsClientIDs(t *testing.T) {
 	h := newHarness(t)
 	h.sync()
 	req := SendRequest{ID: "d0f877cc-fd2d-4d45-b159-303799cf83e3", ConversationID: "8777e255-4038-4f3f-8f78-c4b2efcff783", To: []string{"sam@example.com"}, Subject: "Delivery"}
-	raw, err := h.account.compose(req, h.account.messageID(req.ID))
+	raw, err := h.account.compose(req, h.account.messageID(req))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestRecoveredSentReplacesDeletedConversationInIncrementalSync(t *testing.T)
 			h.request("GET", "/v1/sync?since=0", nil, &initial)
 			source := h.conversations()["Fictional itinerary"]
 			req := SendRequest{ID: uuid.NewString(), ConversationID: source.ID, InReplyTo: parent, To: []string{"sam@example.com"}, Subject: "Re: Fictional itinerary"}
-			raw, err := h.account.compose(req, h.account.messageID(req.ID))
+			raw, err := h.account.compose(req, h.account.messageID(req))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -184,7 +184,7 @@ func TestUncertainReplyWithDeletingSource(t *testing.T) {
 	h.sync()
 	thread := h.conversations()["Question"]
 	req := SendRequest{ID: "a2a16159-c8b5-47b0-8df8-d09fa58cccb0", ConversationID: thread.ID, AccountID: h.account.cfg.ID, InReplyTo: parent, To: []string{"sam@example.com"}, Text: "Reply"}
-	raw, err := h.account.compose(req, h.account.messageID(req.ID))
+	raw, err := h.account.compose(req, h.account.messageID(req))
 	if err != nil {
 		t.Fatal(err)
 	}

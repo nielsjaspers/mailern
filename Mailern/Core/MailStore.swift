@@ -835,7 +835,7 @@ final class MailStore {
                                       to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
                                       date: .now, body: draft.text, outgoing: true, bcc: bcc.isEmpty ? nil : bcc,
                                       richText: draft.richText, attachments: attachments, subject: subject,
-                                      messageID: MailMessage.newMessageID(from: accepted.from.address, id: draft.id))
+                                      messageID: MailMessage.newMessageID(from: draft.sender(in: accepted.from), id: draft.id))
             message.inReplyTo = accepted.replyTo?.threadingID
             message.references = accepted.replyTo?.references
             updated[index].messages.append(message)

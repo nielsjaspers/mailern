@@ -55,9 +55,11 @@ func (r SendRequest) validate() error {
 	return nil
 }
 
-func (a *Account) messageID(draftID string) string {
-	domain := a.cfg.Address[strings.LastIndex(a.cfg.Address, "@")+1:]
-	return "<" + strings.ToLower(draftID) + "@" + domain + ">"
+// messageID names a send by its draft ID in the domain of its From address. A retry sends as the same address,
+// so it finds the same Message-ID.
+func (a *Account) messageID(req SendRequest) string {
+	from := cmp.Or(req.From, a.cfg.Address)
+	return "<" + strings.ToLower(req.ID) + "@" + from[strings.LastIndex(from, "@")+1:] + ">"
 }
 
 // Send delivers a message and files it in its conversation. A message that already went out, according to this
@@ -74,7 +76,7 @@ func (a *Account) Send(req SendRequest) error {
 		return badRequest{fmt.Errorf("this account does not send as %s", req.From)}
 	}
 	req.From = from
-	key := a.messageID(req.ID)
+	key := a.messageID(req)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	known, uncertain := false, false
@@ -385,7 +387,7 @@ func (a *Account) submit(req SendRequest, raw []byte) error {
 		return err
 	}
 	// DATA close sends the terminator that allows the server to accept the mail.
-	key := a.messageID(req.ID)
+	key := a.messageID(req)
 	if err := a.markSubmitting(key, &submission{strings.ToLower(req.ID), req.ConversationID}); err != nil {
 		return errors.Join(err, a.markSubmitting(key, nil))
 	}
