@@ -361,6 +361,8 @@ final class MinimizedDraftUITests: MailernUITestCase {
         XCTAssertTrue(restored.hasPrefix("Earlier reply"))
         XCTAssertTrue(restored.contains("Are you free on Saturday?"))
         app.buttons["Cancel"].tap()
+        app.buttons["Save Draft"].tap()
+        waitForAbsence(body)
     }
     @MainActor
     func testFailedMinimizeKeepsReplyOpen() {
