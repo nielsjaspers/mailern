@@ -159,11 +159,7 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
 final class DraftStore {
     /// Drafts and scheduled mail, as stored.
     private(set) var all: [ComposerDraft] = [] {
-        didSet {
-            reminderRevision &+= 1
-            // A minimized draft that leaves Drafts, for example when it is sent or discarded, leaves the dock too.
-            if let docked, docked.minimized, !all.contains(where: { $0.id == docked.draft.id && $0.sendAt == nil }) { self.docked = nil }
-        }
+        didSet { reminderRevision &+= 1 }
     }
     private(set) var reminderRevision: UInt64 = 0
     /// Drafts being written. Scheduled mail waits in `outbox` instead.
@@ -174,13 +170,15 @@ final class DraftStore {
     var undoable: UUID?
     /// A draft to open in the composer, set when Undo Send or Edit takes scheduled mail back.
     var reopening: UUID?
-    /// The draft the composer has open or minimized. The dock shows it, and resuming restores the selection and
-    /// typing style the editor had.
+    /// The saved draft the dock shows while it is in Drafts. Minimizing records where the editor was, so the
+    /// composer can resume there.
     struct Docked {
-        var draft: ComposerDraft
-        var selections: [NSRange] = []
-        var typing: [NSAttributedString.Key: Any] = [:]
-        var minimized = false
+        struct Position {
+            var selections: [NSRange]
+            var typing: [NSAttributedString.Key: Any]
+        }
+        var id: UUID
+        var position: Position?
     }
     var docked: Docked?
     /// True while a composer sheet covers the dock. The dock hides then, so a rising sheet does not show a second

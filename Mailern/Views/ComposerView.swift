@@ -63,6 +63,7 @@ struct ComposerView: View {
         return Self.isDirty(input, saved: savedInput, initial: initial)
     }
     private var saved: Bool { drafts.drafts.contains { $0.id == draft.id } }
+    private var canPull: Bool { !(draggingContent || importing || finishing || dirty) }
     private var account: MailAccount { store.account(draft.accountID) }
     private let attachmentLimit = 25 * 1024 * 1024
     private var importing: Bool { importsInFlight > 0 }
@@ -153,8 +154,8 @@ struct ComposerView: View {
                 ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importing || finishing) }
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Minimize draft", systemImage: "chevron.down") {
-                        // An untouched message has nothing to keep, as when the sheet is pulled down.
-                        if !dirty && !saved { completed = true; dismiss() }
+                        // Like a pull, this keeps a saved draft without writing it again, and closes an untouched one.
+                        if !dirty { if !saved { completed = true }; dismiss() }
                         else { Task { await saveDraft(then: .minimize) } }
                     }
                         .labelStyle(.iconOnly).disabled(!loaded || importing || finishing || completed)
@@ -179,7 +180,8 @@ struct ComposerView: View {
             // A rotation moves the resting top edge. The height also changes during a pull, so only the width counts.
             if frame.width != sheetWidth { sheetWidth = frame.width; restingTop = frame.minY }
             restingTop = min(restingTop, frame.minY)
-            if frame.minY - restingTop > 24 {
+            // A pull that cannot dismiss the sheet leaves the keyboard alone.
+            if frame.minY - restingTop > 24, canPull {
                 editor.view?.window?.endEditing(true)
                 drafts.sheetOverDock = false
             }
@@ -188,7 +190,7 @@ struct ComposerView: View {
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
         // Pulling the sheet down minimizes the draft once its edits are saved.
-        .interactiveDismissDisabled(draggingContent || importing || finishing || dirty)
+        .interactiveDismissDisabled(!canPull)
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear {
             drafts.sheetOverDock = true
@@ -205,8 +207,7 @@ struct ComposerView: View {
                 await saveDraft(submitted: value)
             }
         }
-        .onChange(of: draft) { _, value in if drafts.docked?.draft.id == value.id { drafts.docked?.draft = value } }
-        .onChange(of: completed) { _, done in if done, drafts.docked?.draft.id == draft.id { drafts.docked = nil } }
+        .onChange(of: completed) { _, done in if done, drafts.docked?.id == draft.id { drafts.docked = nil } }
         .onDisappear {
             drafts.sheetOverDock = false
             autosave?.cancel()
@@ -374,7 +375,7 @@ struct ComposerView: View {
             RichText.markQuote(in: text, from: start, body: bodyRange.location)
         }
         editor.text = text
-        let resume = drafts.docked.flatMap { docked in docked.minimized && docked.draft.id == draft.id ? docked : nil }
+        let resume = drafts.docked.flatMap { $0.id == draft.id ? $0.position : nil }
         let selections: [NSRange] = resume?.selections.map { range in
             let start = min(range.location, text.length)
             return NSRange(location: start, length: min(range.length, text.length - start))
@@ -385,8 +386,6 @@ struct ComposerView: View {
         editor.typing = typing
         if missingAccount { replaceSignature(with: account.signature) }
         initial = draft
-        // An unsaved message leaves the dock to the minimized draft until it is saved.
-        if saved { drafts.docked = DraftStore.Docked(draft: draft) }
         loaded = true
         if draft.to.isEmpty && resume == nil { focus = .to }
         else {
@@ -424,14 +423,14 @@ struct ComposerView: View {
     private func minimize() {
         guard loaded, !finishing, saved else {
             // An untouched message leaves any other minimized draft in the dock.
-            if drafts.docked?.draft.id == draft.id { drafts.docked = nil }
+            if drafts.docked?.id == draft.id { drafts.docked = nil }
             return
         }
         let selections: [NSRange]
         if #available(iOS 26, *), let view = editor.view { selections = view.selectedRanges }
         else { selections = [editor.view?.selectedRange ?? editor.selection] }
-        drafts.docked = DraftStore.Docked(draft: draft, selections: selections,
-                                          typing: editor.view?.typingAttributes ?? editor.typing, minimized: true)
+        drafts.docked = DraftStore.Docked(id: draft.id, position: .init(selections: selections,
+                                                                         typing: editor.view?.typingAttributes ?? editor.typing))
     }
     enum AfterSave { case stay, close, minimize }
     private func saveDraft(then after: AfterSave = .stay, submitted: DraftInput? = nil) async {
@@ -451,8 +450,8 @@ struct ComposerView: View {
             let content = try snapshot(submitted)
             guard await drafts.save(content) else { return }
             if drafts.drafts.first(where: { $0.id == content.id })?.matchesContent(of: content) == true { savedInput = submitted }
-            // Once saved, this draft takes the dock from any minimized one.
-            if drafts.docked?.draft.id != draft.id { drafts.docked = DraftStore.Docked(draft: draft) }
+            // Once edited and saved, this draft takes the dock from any minimized one.
+            if drafts.docked?.id != draft.id { drafts.docked = DraftStore.Docked(id: draft.id) }
             if dismissAfter {
                 if after == .close { completed = true }
                 dismiss()
