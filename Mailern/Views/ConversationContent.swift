@@ -159,13 +159,6 @@ struct ConversationContent: View {
         }
     }
 
-    private static func highlighted(_ match: MessageMatch) -> AttributedString {
-        var hit = AttributedString(match.text)
-        hit.backgroundColor = .yellow
-        hit.foregroundColor = .black
-        return AttributedString(match.before) + hit + AttributedString(match.after)
-    }
-
     private enum Item: Identifiable {
         case message(MailMessage), middle(count: Int)
         var id: String {
@@ -197,10 +190,6 @@ struct ConversationContent: View {
                     case .message(let message):
                         let folded = !isExpanded(message)
                         VStack(alignment: .leading, spacing: 0) {
-                            if let match, match.messageID == message.id {
-                                Text(Self.highlighted(match)).font(.callout).padding(.horizontal, margin)
-                                    .accessibilityIdentifier("matching-passage")
-                            }
                             MessageRow(
                                 activeMatch: match?.messageID == message.id ? match : nil, message: message, conversationID: conversation.id, threadSubject: conversation.subject,
                                 // A folded row shows only its first line, so it needs no quote.
@@ -310,7 +299,18 @@ private struct MessageRow: View {
         }
     }
 
+    private static func highlighted(_ match: MessageMatch) -> AttributedString {
+        var hit = AttributedString(match.text)
+        hit.backgroundColor = .yellow
+        hit.foregroundColor = .black
+        return AttributedString(match.before) + hit + AttributedString(match.after)
+    }
+
     @ViewBuilder private var content: some View {
+            if let activeMatch {
+                Text(Self.highlighted(activeMatch)).font(.callout).padding(.horizontal, margin)
+                    .accessibilityIdentifier("matching-passage")
+            }
             if showsDetails { details.padding(.horizontal, margin) }
             if let subject = message.subject,
                subject != threadSubject, subject.caseInsensitiveCompare("Re: \(threadSubject)") != .orderedSame {
@@ -448,13 +448,13 @@ private struct MessageRow: View {
                 // message and acts as a button. Folded, the whole row is the button.
                 nameLine
                     .gesture(TapGesture().onEnded { toggle?() }, including: expanded && toggle != nil ? .all : .subviews)
-                    // VoiceOver reads the whole folded row here, and this element folds or opens the message.
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(expanded ? "\(message.sender), \(dateText)" : foldedSummary)
-                    .accessibilityAddTraits(toggle != nil ? .isButton : [])
-                    .accessibilityHint(toggle == nil ? "" : expanded ? "Collapses the message" : "Expands the message")
-                    // VoiceOver activates this directly: folded, the touch target is the hidden overlay, not this line.
-                    .modifier(ToggleAction(toggle: toggle))
+                    .accessibilityRepresentation {
+                        let label = expanded ? "\(message.sender), \(dateText)" : foldedSummary
+                        if let toggle {
+                            Button(label, action: toggle)
+                                .accessibilityHint(expanded ? "Collapses the message" : "Expands the message")
+                        } else { Text(label) }
+                    }
                 if expanded {
                     // At accessibility sizes the reply controls get their own line, so the recipients keep the full width.
                     let layout = textSize.isAccessibilitySize
@@ -527,13 +527,5 @@ private struct MessageRow: View {
         }
         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
         .padding(.leading, 48)
-    }
-}
-
-/// Exposes the same fold action to VoiceOver as the sender line.
-private struct ToggleAction: ViewModifier {
-    let toggle: (() -> Void)?
-    func body(content: Content) -> some View {
-        if let toggle { content.accessibilityAction { toggle() } } else { content }
     }
 }
