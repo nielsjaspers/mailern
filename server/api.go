@@ -96,15 +96,26 @@ func (s *Service) Handler() http.Handler {
 	})
 }
 
+// wireTime sends times in UTC with whole seconds, the form Foundation's ISO 8601 decoder reads.
+func wireTime(t time.Time) time.Time { return t.UTC().Truncate(time.Second) }
+
+func wireTimePtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	out := wireTime(*t)
+	return &out
+}
+
 func wire(st *State, c *Conversation) wireConversation {
 	out := wireConversation{
-		ID: c.ID, AccountID: c.AccountID, Subject: c.Subject, Workflow: c.Workflow, SnoozedUntil: c.SnoozedUntil,
-		ReturnedFromSnoozeAt: c.ReturnedFromSnoozeAt, Removal: c.Removal, TrashSince: c.TrashSince,
-		Unread: c.Unread, Pinned: c.Pinned, Muted: c.Muted, Revision: c.Revision,
+		ID: c.ID, AccountID: c.AccountID, Subject: c.Subject, Workflow: c.Workflow, SnoozedUntil: wireTimePtr(c.SnoozedUntil),
+		ReturnedFromSnoozeAt: wireTimePtr(c.ReturnedFromSnoozeAt), Removal: c.Removal, TrashSince: wireTimePtr(c.TrashSince),
+		Unread: c.Unread, Pinned: c.Pinned, Muted: c.Muted, Revision: c.Revision, Messages: []wireMessage{},
 	}
 	for _, m := range st.messages(c) {
 		out.Messages = append(out.Messages, wireMessage{
-			ID: m.ID, Sender: m.Sender, Address: m.Address, To: m.To, Cc: m.Cc, Date: m.Date, Body: m.Text,
+			ID: m.ID, Sender: m.Sender, Address: m.Address, To: m.To, Cc: m.Cc, Date: wireTime(m.Date), Body: m.Text,
 			Outgoing: m.Outgoing, Subject: m.Subject, HasHTML: m.HasHTML, MessageID: m.MessageID,
 			InReplyTo: m.InReplyTo, References: m.References,
 		})
