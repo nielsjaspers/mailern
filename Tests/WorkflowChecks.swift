@@ -978,6 +978,33 @@ import os
         }
         await drafts.sendDue(through: store, now: start.addingTimeInterval(210.03))
         assert(attempts == 2, "An edited send gets its new deadline")
+        let blocked = OSAllocatedUnfairLock(initialState: false)
+        let refusedURL = directory.appending(path: "refused.json")
+        let refusedDrafts = DraftStore(url: refusedURL, mail: store) { data, url in
+            if blocked.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+            try data.write(to: url, options: .atomic)
+        }
+        var refused = next
+        refused.id = UUID()
+        let scheduledRefusal = await refusedDrafts.schedule(refused, at: start)
+        assert(scheduledRefusal)
+        blocked.withLock { $0 = true }
+        var refusedPosts = 0
+        store.sendRemote = { _ in
+            refusedPosts += 1
+            throw RemoteSendRejection(message: "Unknown recipient")
+        }
+        await refusedDrafts.sendDue(through: store, now: start)
+        assert(store.error?.contains("remains in Scheduled") == true)
+        store.error = "Undismissed batch report"
+        for seconds in [1, 62] {
+            await refusedDrafts.sendDue(through: store, now: start.addingTimeInterval(Double(seconds)))
+            assert(refusedPosts == 1 && store.error == "Undismissed batch report")
+            assert(refusedDrafts.outbox.map(\.id) == [refused.id])
+        }
+        blocked.withLock { $0 = false }
+        await refusedDrafts.sendDue(through: store, now: start.addingTimeInterval(125))
+        assert(refusedPosts == 1 && DraftStore(url: refusedURL).drafts.map(\.id) == [refused.id])
         // Another client trashing a waiting thread ends its reminder.
         var waiting = store.conversation(thread.id)!
         waiting.move(to: .snoozed, until: .now.addingTimeInterval(3600))

@@ -408,6 +408,8 @@ final class DraftStore {
     }
     /// When each automatic send that failed may try again. Other due mail, such as a fresh Undo Send, does not wait.
     @ObservationIgnored private var automaticRetries: [UUID: (after: Date, message: String)] = [:]
+    // A refused send only needs a manifest write to return to Drafts.
+    @ObservationIgnored private var refusedAwaitingSave: Set<UUID> = []
     /// Sends outbox mail that is due.
     func sendDue(through store: MailStore, now: Date = .now, whileActive: @escaping @MainActor () -> Bool = { true }) async {
         let due = { (draft: ComposerDraft) in (draft.sendAt ?? .distantFuture) <= now && (self.automaticRetries[draft.id]?.after ?? .distantPast) <= now }
@@ -432,6 +434,7 @@ final class DraftStore {
             var failed = false
             var alerts: [String] = []
             var refused: [(title: String, reason: String)] = []
+            var returningToDrafts: Set<UUID> = []
             var updated: [ComposerDraft] = []
             for var draft in self.all {
                 guard queued.contains(draft.id) else {
@@ -439,13 +442,15 @@ final class DraftStore {
                     continue
                 }
                 var deliveryMessage: String?
-                let result = await store.deliver(draft) { deliveryMessage = $0 }
+                let retryingSave = automatic && self.refusedAwaitingSave.contains(draft.id)
+                let result: DraftDelivery = retryingSave ? .refused : await store.deliver(draft) { deliveryMessage = $0 }
                 switch result {
                 case .filed:
                     if let deliveryMessage { alerts.append(deliveryMessage) }
                     self.automaticRetries[draft.id] = nil
                     continue
                 case .waitingToFile:
+                    self.refusedAwaitingSave.remove(draft.id)
                     failed = true
                     let message = deliveryMessage ?? "Mailern is still finishing this send."
                     if !automatic || self.automaticRetries[draft.id]?.message != message {
@@ -460,12 +465,20 @@ final class DraftStore {
                     self.automaticRetries[draft.id] = nil
                     draft.sendAt = nil
                     draft.holdingForUndo = nil
-                    refused.append((draft.title, deliveryMessage ?? ""))
+                    returningToDrafts.insert(draft.id)
+                    if !retryingSave { refused.append((draft.title, deliveryMessage ?? "")) }
                 }
                 updated.append(draft)
             }
             let saved = if updated == self.all { true }
             else { await self.persist(updated, reportFailure: !automatic || !self.recoveryFailureReported) }
+            if !saved {
+                self.refusedAwaitingSave.formUnion(returningToDrafts)
+                let elapsed = ProcessInfo.processInfo.systemUptime - started
+                for id in returningToDrafts {
+                    self.automaticRetries[id] = (now.addingTimeInterval(elapsed + 60), "")
+                }
+            }
             if !saved, !store.discardedDraftIDs.isEmpty {
                 self.all.removeAll { store.discardedDraftIDs.contains($0.id) }
                 self.clearResolvedWakeFailures()
@@ -557,6 +570,7 @@ final class DraftStore {
                 try AttachmentJSON.save(updated, to: url, write: write)
             }.value
             all = updated
+            refusedAwaitingSave.formIntersection(updated.lazy.filter { $0.sendAt != nil }.map(\.id))
             clearResolvedWakeFailures()
             mail?.finishDraftDiscards(discarded, reportFailure: reportFailure)
             needsMailRecovery = mail?.discardedDraftIDs.isEmpty == false
