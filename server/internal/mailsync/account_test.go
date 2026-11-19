@@ -660,3 +660,59 @@ func TestReconfiguredMailboxDropsOldMailFromSync(t *testing.T) {
 		t.Fatal("reconfigured mailbox still exposes old mail")
 	}
 }
+
+// failSecondSentBodies refuses the second batch of Sent bodies, after the first batch arrived.
+type failSecondSentBodies struct {
+	imapserver.Session
+	selected string
+	batches  *atomic.Int32
+}
+
+func (s *failSecondSentBodies) Select(name string, options *imap.SelectOptions) (*imap.SelectData, error) {
+	s.selected = name
+	return s.Session.Select(name, options)
+}
+
+func (s *failSecondSentBodies) Fetch(w *imapserver.FetchWriter, set imap.NumSet, options *imap.FetchOptions) error {
+	if s.selected == "Sent" && len(options.BodySection) > 0 && s.batches.Add(1) == 2 {
+		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "test: Sent unavailable"}
+	}
+	return s.Session.Fetch(w, set, options)
+}
+
+func TestFailedSentScanKeepsBodiesForLaterMailboxes(t *testing.T) {
+	h := newHarness(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var batches atomic.Int32
+	server := imapserver.New(&imapserver.Options{
+		Caps: imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapUIDPlus: {}}, InsecureAuth: true, Logger: maillab.QuietLogger{},
+		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+			return &failSecondSentBodies{Session: h.lab.NewSession(), batches: &batches}, nil, nil
+		},
+	})
+	go server.Serve(listener)
+	t.Cleanup(func() { server.Close() })
+	h.imap = endpointFor(listener)
+	h.account.cfg.IMAP = &h.imap
+	// 26 sent messages need two batches of bodies. The first one also has a copy in Trash.
+	for i := range 26 {
+		raw := maillab.Message("Morgan <"+labAddress+">", "sam@example.com", fmt.Sprintf("Sent %02d", i), "Hi.", "", time.Now())
+		if err := h.lab.Deliver(labAddress, "Sent", raw, imap.FlagSeen); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			if err := h.lab.Deliver(labAddress, "Trash", raw, imap.FlagSeen); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := h.account.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.conversations()["Sent 00"]; !ok {
+		t.Fatal("the Trash copy should sync although the Sent scan failed after fetching its body")
+	}
+}

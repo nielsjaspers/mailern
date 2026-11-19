@@ -285,9 +285,10 @@ type mailboxSnapshot struct {
 	unavailable bool
 	flags       map[imap.UID][]imap.Flag
 	// Messages new to this mailbox, by UID: their key, and the parsed message when the account has never seen the key.
-	// Bodies are parsed as they arrive, so attachments are never held for a whole scan.
+	// Bodies are parsed as they arrive, so attachments are never held for a whole scan. The parsed messages, by key,
+	// are shared by the whole pass: a mailbox whose scan fails later still leaves them for the next mailbox.
 	keys   map[imap.UID]string
-	parsed map[imap.UID]*Message
+	parsed map[string]*Message
 }
 
 func (a *Account) read(c *imapclient.Client, recoverKeys ...string) error {
@@ -301,13 +302,13 @@ func (a *Account) read(c *imapclient.Client, recoverKeys ...string) error {
 	snapshots := make(map[Role]mailboxSnapshot)
 	since := time.Now().Add(-a.window)
 	// Gmail lists one message in several mailboxes. A body fetched for one is not fetched again for the next.
-	parsedKeys := map[string]bool{}
+	parsed := map[string]*Message{}
 	for _, role := range syncedRoles {
 		name := a.mailboxes[role]
 		if name == "" {
 			continue
 		}
-		snap, err := a.readMailbox(c, role, name, since, parsedKeys)
+		snap, err := a.readMailbox(c, role, name, since, parsed)
 		if err != nil {
 			if a.unreadableSent(role, err) {
 				snapshots[role] = mailboxSnapshot{unavailable: true}
@@ -340,8 +341,8 @@ func (a *Account) unreadableSent(role Role, err error) bool {
 	return role == RoleSent && errors.As(err, &status) && status.Type == imap.StatusResponseTypeNo
 }
 
-func (a *Account) readMailbox(c *imapclient.Client, role Role, name string, since time.Time, parsedKeys map[string]bool) (mailboxSnapshot, error) {
-	snap := mailboxSnapshot{mailboxIdentity: mailboxIdentity{name: name}, flags: map[imap.UID][]imap.Flag{}, keys: map[imap.UID]string{}, parsed: map[imap.UID]*Message{}}
+func (a *Account) readMailbox(c *imapclient.Client, role Role, name string, since time.Time, parsed map[string]*Message) (mailboxSnapshot, error) {
+	snap := mailboxSnapshot{mailboxIdentity: mailboxIdentity{name: name}, flags: map[imap.UID][]imap.Flag{}, keys: map[imap.UID]string{}, parsed: parsed}
 	sel, err := c.Select(name, &imap.SelectOptions{ReadOnly: true}).Wait()
 	if err != nil {
 		return snap, err
@@ -406,7 +407,7 @@ func (a *Account) readMailbox(c *imapclient.Client, role Role, name string, sinc
 		for _, m := range envelopes {
 			key := envelopeKey(m.Envelope)
 			snap.keys[m.UID] = key
-			if !keys[key] && !parsedKeys[key] {
+			if !keys[key] && parsed[key] == nil {
 				unseen = append(unseen, m.UID)
 			}
 		}
@@ -423,8 +424,7 @@ func (a *Account) readMailbox(c *imapclient.Client, role Role, name string, sinc
 					continue
 				}
 				message := p.Message
-				snap.parsed[m.UID] = &message
-				parsedKeys[snap.keys[m.UID]] = true
+				parsed[snap.keys[m.UID]] = &message
 			}
 		}
 	}
@@ -616,7 +616,7 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 				key := snap.keys[uid]
 				if m = account.Messages[key]; m == nil {
 					var ok bool
-					if m, ok = snap.parsed[uid]; !ok {
+					if m, ok = snap.parsed[key]; !ok {
 						continue
 					}
 					m.ID, m.Key = uuid.NewString(), key
