@@ -7,7 +7,6 @@ import UIKit
     private weak var textView: UITextView?
     private weak var composerView: UIView?
     private var previousInput: UIView?
-    private var previousAccessory: UIView?
     private var finished = false
     private static let styles: [(String, String, UIFont)] = [
         ("title", "Title", .systemFont(ofSize: 28, weight: .bold)),
@@ -42,10 +41,8 @@ import UIKit
         refreshDescriptor()
         self.textView = textView
         previousInput = textView.inputView
-        previousAccessory = textView.inputAccessoryView
         // Keep native text selection active while Format replaces the software keyboard.
         textView.inputView = UIView(frame: .zero)
-        textView.inputAccessoryView = nil
         textView.reloadInputViews()
         NotificationCenter.default.addObserver(self, selector: #selector(headerBeganEditing),
                                                name: UITextField.textDidBeginEditingNotification, object: nil)
@@ -116,7 +113,6 @@ import UIKit
         finished = true
         NotificationCenter.default.removeObserver(self)
         textView?.inputView = previousInput
-        textView?.inputAccessoryView = previousAccessory
         textView?.reloadInputViews()
         if focusBody { textView?.becomeFirstResponder() }
         finish()
