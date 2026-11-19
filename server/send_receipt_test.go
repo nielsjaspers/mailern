@@ -80,8 +80,10 @@ func TestRestartAfterSMTPAcceptanceDoesNotResubmit(t *testing.T) {
 
 func TestSentCopyAfterInterruptedSendKeepsClientIDs(t *testing.T) {
 	h := newHarness(t)
+	const alias = "morgan@old.example.com"
+	h.account.cfg.Aliases = []string{alias}
 	h.sync()
-	req := SendRequest{ID: "d0f877cc-fd2d-4d45-b159-303799cf83e3", ConversationID: "8777e255-4038-4f3f-8f78-c4b2efcff783", To: []string{"sam@example.com"}, Subject: "Delivery"}
+	req := SendRequest{From: alias, ID: "d0f877cc-fd2d-4d45-b159-303799cf83e3", ConversationID: "8777e255-4038-4f3f-8f78-c4b2efcff783", To: []string{"sam@example.com"}, Subject: "Delivery"}
 	raw, err := h.account.compose(req, h.account.messageID(req))
 	if err != nil {
 		t.Fatal(err)
@@ -96,6 +98,7 @@ func TestSentCopyAfterInterruptedSendKeepsClientIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.account.cfg.Aliases = nil
 	restarted := NewAccount(h.account.cfg, store, time.Hour)
 	if err := restarted.Sync(); err != nil {
 		t.Fatal(err)
@@ -105,7 +108,7 @@ func TestSentCopyAfterInterruptedSendKeepsClientIDs(t *testing.T) {
 	}
 	store.Read(func(st *State) {
 		c := st.Conversations[req.ConversationID]
-		if c == nil || len(st.Conversations) != 1 || len(c.Keys) != 1 || st.messages(c)[0].ID != req.ID || len(h.lab.Submitted) != 1 {
+		if c == nil || len(st.Conversations) != 1 || len(c.Keys) != 1 || st.messages(c)[0].ID != req.ID || !st.messages(c)[0].Outgoing || len(h.lab.Submitted) != 1 {
 			t.Error("the synced Sent copy must resolve the original submission with its original IDs")
 		}
 	})

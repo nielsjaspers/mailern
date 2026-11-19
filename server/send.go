@@ -412,7 +412,7 @@ func (a *Account) submit(req SendRequest, raw []byte) error {
 	}
 	// DATA close sends the terminator that allows the server to accept the mail.
 	key := a.messageID(req)
-	if err := a.markSubmitting(key, &submission{strings.ToLower(req.ID), req.ConversationID}); err != nil {
+	if err := a.markSubmitting(key, &submission{MessageID: strings.ToLower(req.ID), ConversationID: req.ConversationID, From: cmp.Or(req.From, a.cfg.Address)}); err != nil {
 		return errors.Join(err, a.markSubmitting(key, nil))
 	}
 	if err := data.Close(); err != nil {
@@ -438,6 +438,7 @@ func submissionError(err error) error {
 type notSubmitted struct{ error }
 
 type submission struct {
+	From           string `json:"from"`
 	MessageID      string `json:"messageID"`
 	ConversationID string `json:"conversationID"`
 }
