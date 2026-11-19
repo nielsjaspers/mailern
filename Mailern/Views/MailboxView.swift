@@ -74,7 +74,7 @@ struct MailboxView: View {
                     },
                     onCompose: { mode in
                         peeking = nil
-                        openComposer(mode)
+                        composer = mode
                     },
                     onSnooze: { snoozing = conversation }
                 )
@@ -167,7 +167,7 @@ struct MailboxView: View {
             TabView(selection: Binding<MailboxTab>(get: { .workflow(selection) }, set: { tab in
                 switch tab {
                 case .workflow(let status): selection = status
-                case .compose: openComposer(.new)
+                case .compose: composer = .new
                 }
             })) {
                 ForEach(Workflow.allCases) { status in
@@ -182,7 +182,7 @@ struct MailboxView: View {
                     Label("Compose", systemImage: "square.and.pencil")
                 }
             }
-            .background(ComposeTabAction { openComposer(.new) })
+            .background(ComposeTabAction { composer = .new })
         } else {
             TabView(selection: $selection) {
                 ForEach(Workflow.allCases) { status in
@@ -213,7 +213,7 @@ struct MailboxView: View {
                 .toolbar {
                     if legacyBottomCompose && !selecting {
                         ToolbarItem(placement: .bottomBar) {
-                            Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
+                            Button("Compose", systemImage: "square.and.pencil") { composer = .new }
                         }
                     }
                 }
@@ -592,7 +592,7 @@ struct MailboxView: View {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         if pullAction == .search { withTransaction(transaction) { searching = true } }
-        if pullAction == .compose { openComposer(.new) }
+        if pullAction == .compose { composer = .new }
     }
     private func captureList(_ status: Workflow, order: [UUID]) {
         let scope: Workflow? = allMail(status) ? nil : status
@@ -624,9 +624,6 @@ struct MailboxView: View {
         guard selection == .inbox, !allMail(.inbox), filter.enabled, let ids = filter.accountIDs else { return nil }
         let included = store.accounts.filter { ids.contains($0.id) }
         return included.count == 1 ? included[0].id : nil
-    }
-    private func openComposer(_ mode: ComposeMode) {
-        composer = mode
     }
     private func act(_ action: () -> Void) {
         withAnimation { action() }

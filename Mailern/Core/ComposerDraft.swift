@@ -170,7 +170,7 @@ final class DraftStore {
     var undoable: UUID?
     /// A draft to open in the composer, set when Undo Send or Edit takes scheduled mail back.
     var reopening: UUID?
-    /// The draft the dock shows, if it is still in Drafts and not snoozed. Minimizing records where the editor was,
+    /// The draft the dock shows, if it is still in Drafts. Snoozing it clears the dock. Minimizing records where the editor was,
     /// so the composer can resume there.
     struct Docked {
         struct Position {
@@ -412,6 +412,7 @@ final class DraftStore {
     func snooze(_ ids: Set<UUID>, until date: Date) async -> Bool {
         guard date > .now else { return false }
         guard await updateMailbox(ids: ids, change: { $0.snoozedUntil = date }) else { return false }
+        if let id = docked?.id, ids.contains(id) { docked = nil }
         actionCount += 1
         return true
     }

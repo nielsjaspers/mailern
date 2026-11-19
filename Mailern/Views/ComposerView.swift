@@ -28,8 +28,9 @@ struct ComposerView: View {
     /// The sheet's highest top edge at its current size, to tell when a pull moves it down.
     @State private var restingTop = CGFloat.infinity
     @State private var sheetWidth: CGFloat = 0
-    /// The body was editing when a pull began, so a canceled pull gives it the keyboard back.
-    @State private var pull: (resignedBody: Bool, active: Bool) = (false, false)
+    private enum Editing { case body, subject, address(Field) }
+    /// The field that was editing when a pull began, so a canceled pull gives it the keyboard back.
+    @State private var pull: (active: Bool, editing: Editing?) = (false, nil)
     /// The minimized draft this one took the dock from. It goes back to the dock if this one closes instead.
     @State private var displaced: DraftStore.Docked?
     @State private var filePicker = false
@@ -187,15 +188,20 @@ struct ComposerView: View {
             restingTop = min(restingTop, frame.minY)
             // A pull that cannot dismiss the sheet leaves the keyboard alone.
             if !pull.active, frame.minY - restingTop > 24, canPull {
-                pull = (editor.view?.isFirstResponder == true, true)
+                pull = (true, editor.view?.isFirstResponder == true ? .body : subjectFocused ? .subject : focus.map(Editing.address))
                 editor.view?.window?.endEditing(true)
                 // The pull reveals the dock, so it shows this draft from now on.
                 if saved { takeDock() }
                 drafts.sheetOverDock = false
             } else if pull.active, frame.minY - restingTop < 2 {
                 // The pull was canceled and the sheet is back at rest.
-                if pull.resignedBody { editor.view?.becomeFirstResponder() }
-                pull = (false, false)
+                switch pull.editing {
+                case .body: editor.view?.becomeFirstResponder()
+                case .subject: subjectFocused = true
+                case .address(let field): focus = field
+                case nil: break
+                }
+                pull = (false, nil)
                 drafts.sheetOverDock = true
             }
         }

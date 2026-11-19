@@ -152,8 +152,7 @@ struct DraftDock: View {
     var body: some View {
         // The container always exists, so the reset runs even while the keyboard has removed the dock.
         ZStack {
-            if let id = drafts.docked?.id, let draft = drafts.drafts.first(where: { $0.id == id && $0.snoozedUntil == nil }),
-               !SoftwareKeyboard.shared.visible {
+            if let id = drafts.docked?.id, let draft = drafts.drafts.first(where: { $0.id == id }), !SoftwareKeyboard.shared.visible {
                 Button { resume(id) } label: {
                     VStack(spacing: 0) {
                         Capsule().fill(.tertiary).frame(width: 36, height: 5).padding(.top, 6)
@@ -177,7 +176,7 @@ struct DraftDock: View {
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .offset(y: lift + (handoff ?? 0))
+                .offset(y: handoff ?? lift)
                 // The sheet follows an upward drag, then opens. A drag never counts as a tap.
                 .highPriorityGesture(DragGesture(minimumDistance: 10)
                     .updating($lift) { value, lift, _ in lift = Self.lift(value.translation.height) }
