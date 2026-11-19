@@ -246,7 +246,38 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 	if checkErr != nil {
 		return checkErr
 	}
+	// A reused copy keeps the flags it had. Carry over the source's read and pin state before the source goes.
+	if err := a.carryFlags(destination, m.to, to, uid, flags[0].Flags); err != nil {
+		return err
+	}
 	return a.expungeOwned(source, from, sourceUIDs, flags)
+}
+
+func (a *Account) carryFlags(c *imapclient.Client, role Role, mailbox mailboxIdentity, uid imap.UID, want []imap.Flag) error {
+	if _, err := a.selectMailbox(c, role, mailbox, false); err != nil {
+		return err
+	}
+	msgs, err := c.Fetch(imap.UIDSetNum(uid), &imap.FetchOptions{UID: true, Flags: true}).Collect()
+	if err != nil {
+		return err
+	}
+	if len(msgs) != 1 || msgs[0].UID != uid {
+		return errMoveChanged
+	}
+	for _, flag := range []imap.Flag{imap.FlagSeen, imap.FlagFlagged} {
+		has, wanted := slices.Contains(msgs[0].Flags, flag), slices.Contains(want, flag)
+		if has == wanted {
+			continue
+		}
+		op := imap.StoreFlagsDel
+		if wanted {
+			op = imap.StoreFlagsAdd
+		}
+		if err := c.Store(imap.UIDSetNum(uid), &imap.StoreFlags{Op: op, Silent: true, Flags: []imap.Flag{flag}}, nil).Close(); err != nil {
+			return fmt.Errorf("store %s: %w", flag, err)
+		}
+	}
+	return nil
 }
 
 func (a *Account) discardSupersededCopy(source, destination *imapclient.Client, pending *copyMove) error {

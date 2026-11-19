@@ -346,3 +346,27 @@ func TestSettleAfterUndoOfLostArchiveCopy(t *testing.T) {
 		t.Fatal("second Settle must remove the Inbox source and reuse the verified Archive copy")
 	}
 }
+
+func TestResettleAfterLostCopyKeepsNewPin(t *testing.T) {
+	h := newHarness(t)
+	serveCopyMoveProvider(t, h, loseCopyResponse)
+	const subject = "Pin before Settle"
+	h.deliver("INBOX", subject, "")
+	h.sync()
+	set := func(change func(*ConversationState)) { h.set(h.conversations()[subject], change) }
+	set(func(s *ConversationState) { s.Workflow = WorkflowSettled })
+	if err := h.account.Sync(); err == nil {
+		t.Fatal("expected lost Archive COPY response")
+	}
+	set(func(s *ConversationState) { s.Workflow = WorkflowInbox })
+	h.sync()
+	set(func(s *ConversationState) { s.Pinned = true })
+	h.sync()
+	set(func(s *ConversationState) { s.Workflow = WorkflowSettled })
+	h.sync()
+	restartCopyMoveAccount(t, h)
+	h.sync()
+	if !slices.Contains(h.mailbox("Archive")[subject], imap.FlagFlagged) || !h.conversations()[subject].Pinned {
+		t.Fatal("the reused Archive copy must take the pin set after Undo")
+	}
+}
