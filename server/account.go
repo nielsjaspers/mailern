@@ -138,6 +138,14 @@ func (a *Account) discover(c *imapclient.Client) (map[Role]string, bool, error) 
 	if err != nil {
 		return nil, false, err
 	}
+	gmail := a.cfg.Provider == "gmail" || c.Caps().Has(imap.Cap("X-GM-EXT-1"))
+	found, archiveIsAll := chooseMailboxes(list, gmail, a.cfg.Mailboxes)
+	return found, archiveIsAll, nil
+}
+
+// chooseMailboxes finds the mailbox for each role: configured names first, then special-use attributes, then
+// common names. It reports whether the archive is an all-mail mailbox, which mail must be copied out of.
+func chooseMailboxes(list []*imap.ListData, gmail bool, overrides map[Role]string) (map[Role]string, bool) {
 	found := map[Role]string{RoleInbox: "INBOX"}
 	var all string
 	attrs := map[imap.MailboxAttr]Role{
@@ -156,6 +164,10 @@ func (a *Account) discover(c *imapclient.Client) (map[Role]string, bool, error) 
 			}
 		}
 	}
+	// Gmail's archive is All Mail. A label someone named "Archive" must not take its place.
+	if gmail && found[RoleArchive] == "" && all != "" {
+		found[RoleArchive] = all
+	}
 	for role, candidates := range mailboxNames {
 		for _, name := range candidates {
 			if found[role] == "" && names[name] {
@@ -166,10 +178,10 @@ func (a *Account) discover(c *imapclient.Client) (map[Role]string, bool, error) 
 	if found[RoleArchive] == "" && all != "" {
 		found[RoleArchive] = all
 	}
-	for role, name := range a.cfg.Mailboxes {
+	for role, name := range overrides {
 		found[role] = name
 	}
-	return found, all != "" && found[RoleArchive] == all, nil
+	return found, all != "" && found[RoleArchive] == all
 }
 
 func (a *Account) ensureArchive(c *imapclient.Client) error {
