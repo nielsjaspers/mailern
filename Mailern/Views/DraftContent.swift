@@ -154,7 +154,9 @@ struct DraftDock: View {
         // The container always exists, so the reset runs even while the keyboard has removed the dock.
         ZStack {
             // The open composer's draft shows under its sheet. Otherwise the dock shows the minimized draft.
-            if !SoftwareKeyboard.shared.visible,
+            // While a composer is open, the dock ignores the keyboard, so keyboard changes never relayout the covered
+            // dock. Changing its bar while UIKit lays out the keyboard deadlocked the app once.
+            if drafts.composerOpen || !SoftwareKeyboard.shared.visible,
                let draft = [drafts.composerOpen ? drafts.preview : nil, drafts.docked?.id].compactMap({ $0 })
                    .filter({ !drafts.deleting.contains($0) })
                    .lazy.compactMap({ id in drafts.all.first { $0.id == id && $0.sendAt == nil } }).first {
@@ -205,7 +207,7 @@ struct DraftDock: View {
     private func resume(_ id: UUID, holding lift: CGFloat = 0) {
         handoff = lift
         // Present after the dock has drawn without its header, so the rising sheet's header is the only one.
-        DispatchQueue.main.async { open(id) }
+        DispatchQueue.main.async { if !drafts.deleting.contains(id) { open(id) } }
     }
     private func recipients(_ draft: ComposerDraft) -> String {
         let fields = [("To", draft.to), ("Cc", draft.cc), ("Bcc", draft.bcc)].compactMap { label, field in

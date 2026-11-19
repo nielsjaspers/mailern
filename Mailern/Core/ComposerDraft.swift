@@ -159,7 +159,11 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
 final class DraftStore {
     /// Drafts and scheduled mail, as stored.
     private(set) var all: [ComposerDraft] = [] {
-        didSet { reminderRevision &+= 1 }
+        didSet {
+            reminderRevision &+= 1
+            // A minimized draft that is sent or discarded leaves the dock.
+            if let id = docked?.id, !all.contains(where: { $0.id == id && $0.sendAt == nil }) { docked = nil }
+        }
     }
     private(set) var reminderRevision: UInt64 = 0
     /// Drafts being written. Scheduled mail waits in `outbox` instead.
@@ -180,7 +184,7 @@ final class DraftStore {
     /// The saved draft of the open composer. The dock shows it under the sheet, so a pull reveals it in place, and
     /// shows the minimized draft again once that composer closes.
     var preview: UUID?
-    /// Drafts with a delete in progress. The dock does not reopen them.
+    /// Drafts with a delete or discard in progress. The dock does not reopen them.
     private(set) var deleting: Set<UUID> = []
     /// True while a composer sheet covers the dock. The dock fades out under a rising sheet, and shows again as soon
     /// as a pull moves the sheet down.
@@ -286,13 +290,15 @@ final class DraftStore {
             }
             return await self.persist(self.all.filter { $0.id != id })
         }
-        if deleted, docked?.id == id { docked = nil }
         return deleted
     }
     /// Mail records the discarded IDs in the same transaction as the move. The draft file can catch up after a crash.
     func discardDrafts(for ids: Set<UUID>, scheduled: Bool = false,
                        committingMail: (@MainActor (Set<UUID>) -> Bool)? = nil) async -> Bool {
-        await enqueue {
+        let pending = Set(all.filter { ids.contains($0.id) || $0.mode.replyID.map(ids.contains) == true }.map(\.id))
+        deleting.formUnion(pending)
+        defer { deleting.subtract(pending) }
+        return await enqueue {
             guard self.loadFailure == nil else { self.error = self.loadFailure; return false }
             let removed = Set(self.all.filter { draft in
                 (scheduled || draft.sendAt == nil) && (ids.contains(draft.id) || draft.mode.replyID.map(ids.contains) == true)

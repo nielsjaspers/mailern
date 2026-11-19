@@ -24,7 +24,6 @@ struct ComposerView: View {
     @State private var autosave: Task<Void, Never>?
     @State private var subjectFocused = false
     @State private var expanded = false
-    @State private var subjectComposing = false
     @GestureState private var draggingContent = false
     /// The sheet's highest top edge at its current size, to tell when a pull moves it down.
     @State private var restingTop = CGFloat.infinity
@@ -32,6 +31,8 @@ struct ComposerView: View {
     private enum Editing { case body, subject, address(Field) }
     /// The field that was editing when a pull began, so a canceled pull gives it the keyboard back.
     @State private var pull: (active: Bool, editing: Editing?) = (false, nil)
+    /// Set once a pull has started the pending save, so a failing save is not retried on every frame of the drag.
+    @State private var pullSaved = false
     @State private var filePicker = false
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
@@ -67,11 +68,9 @@ struct ComposerView: View {
         return Self.isDirty(input, saved: savedInput, initial: initial)
     }
     private var saved: Bool { drafts.drafts.contains { $0.id == draft.id } }
-    /// A pull minimizes the draft, so it waits until every edit is saved, including text the keyboard is still
-    /// composing. A closed composer is on its way out and does not minimize.
-    private var canPull: Bool {
-        !(completed || draggingContent || importing || finishing || dirty || editor.composing || subjectComposing)
-    }
+    /// A pull minimizes the draft, so it waits until the edits are saved. A closed composer is on its way out and
+    /// does not minimize.
+    private var canPull: Bool { !(completed || draggingContent || importing || finishing || dirty) }
     private var account: MailAccount { store.account(draft.accountID) }
     private let attachmentLimit = 25 * 1024 * 1024
     private var importing: Bool { importsInFlight > 0 }
@@ -122,7 +121,7 @@ struct ComposerView: View {
                     }
                     HStack(spacing: 6) {
                         Text("Subject:").foregroundStyle(.secondary)
-                        ComposerSubjectField(text: $draft.subject, composing: $subjectComposing, isFocused: subjectFocused) { subjectFocused = $0 }
+                        ComposerSubjectField(text: $draft.subject, isFocused: subjectFocused) { subjectFocused = $0 }
                     }.frame(minHeight: 48)
                     Divider()
                     if let followUp = draft.followUp {
@@ -190,8 +189,10 @@ struct ComposerView: View {
             // A rotation moves the resting top edge. The height also changes during a pull, so only the width counts.
             if frame.width != sheetWidth { sheetWidth = frame.width; restingTop = frame.minY }
             restingTop = min(restingTop, frame.minY)
+            if frame.minY - restingTop < 2 { pullSaved = false }
             // A pull right after typing waits for the save, so start it now instead of after the pause.
-            if frame.minY - restingTop > 4, dirty, savesInFlight == 0, !completed, !finishing, !importing {
+            if !pullSaved, frame.minY - restingTop > 4, dirty, savesInFlight == 0, !completed, !finishing, !importing {
+                pullSaved = true
                 autosave?.cancel()
                 Task { await saveDraft() }
             }
@@ -218,7 +219,9 @@ struct ComposerView: View {
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
         // Pulling the sheet down minimizes the draft once its edits are saved.
-        .interactiveDismissDisabled(!canPull)
+        // A pull that started stays allowed, even if ending editing commits more text. The sheet saves that text
+        // when it goes away.
+        .interactiveDismissDisabled(!(pull.active || canPull))
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear {
             drafts.sheetOverDock = true
@@ -247,7 +250,11 @@ struct ComposerView: View {
             if dirty {
                 do {
                     let content = try snapshot(input)
-                    Task { await drafts.save(content) }
+                    let activity = DraftSaveActivity()
+                    Task {
+                        await drafts.save(content)
+                        activity.end()
+                    }
                 } catch { drafts.error = error.localizedDescription }
             }
             recordDockPosition()
@@ -586,7 +593,6 @@ struct ComposerView: View {
 
 private struct ComposerSubjectField: UIViewRepresentable {
     @Binding var text: String
-    @Binding var composing: Bool
     var isFocused: Bool
     var onFocus: (Bool) -> Void
 
@@ -622,14 +628,10 @@ private struct ComposerSubjectField: UIViewRepresentable {
     final class Coordinator: NSObject, UITextFieldDelegate {
         var parent: ComposerSubjectField
         init(_ parent: ComposerSubjectField) { self.parent = parent }
-        @objc func changed(_ view: UITextField) {
-            parent.text = view.text ?? ""
-            if parent.composing != (view.markedTextRange != nil) { parent.composing.toggle() }
-        }
+        @objc func changed(_ view: UITextField) { parent.text = view.text ?? "" }
         func textFieldDidBeginEditing(_ textField: UITextField) { if !parent.isFocused { parent.onFocus(true) } }
         func textFieldDidEndEditing(_ textField: UITextField) {
             if parent.text != textField.text { parent.text = textField.text ?? "" }
-            if parent.composing { parent.composing = false }
             if parent.isFocused { parent.onFocus(false) }
         }
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
