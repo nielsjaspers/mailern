@@ -69,7 +69,8 @@ final class MailStore {
     @ObservationIgnored var sendRemote: ((PreparedRemoteSend) async throws -> Void)?
     @ObservationIgnored private var remoteSendsInFlight: Set<UUID> = []
     @ObservationIgnored private var acceptedSends: Set<UUID> = []
-    @ObservationIgnored private var pendingRemoteSends: [UUID: PendingRemoteSend] = [:]
+    /// Observed, so a Scheduled card leaves its unconfirmed state as soon as the server confirms the send.
+    private var pendingRemoteSends: [UUID: PendingRemoteSend] = [:]
     private(set) var remoteSendGeneration: UInt64 = 0
     /// Loads a message's HTML part from the mail server.
     @ObservationIgnored var loadRemoteHTML: ((UUID) async throws -> String)?
