@@ -88,6 +88,7 @@ extension Conversation {
         guard !query.isEmpty else { return [] }
         let term = query.folding(options: .caseInsensitive, locale: nil).precomposedStringWithCanonicalMapping
         guard !term.isEmpty else { return [] }
+        let localized = term.unicodeScalars.count < 3
         var matches: [MessageMatch] = []
         for (index, message) in messages.enumerated() {
             if Task.isCancelled { return [] }
@@ -96,16 +97,18 @@ extension Conversation {
             if let changed = message.subject, changed != subject { fields.append(changed) }
             for (fieldIndex, field) in fields.enumerated() {
                 // FTS indexes folded text. A single character such as ß can span two indexed letters.
-                let ascii = field.utf8.allSatisfy { $0 < 128 }
-                let folded = ascii ? field : field.folding(options: .caseInsensitive, locale: nil).precomposedStringWithCanonicalMapping
+                if localized && !field.localizedCaseInsensitiveContains(query) { continue }
+                let searchOriginal = localized || field.utf8.allSatisfy { $0 < 128 }
+                let folded = searchOriginal ? field : field.folding(options: .caseInsensitive, locale: nil).precomposedStringWithCanonicalMapping
                 var positions: [String.Index] = []
                 var previousRange: Range<String.Index>?
                 var start = folded.startIndex
                 while start < folded.endIndex,
-                      let hit = folded.range(of: term, options: ascii ? [.caseInsensitive] : [.literal], range: start..<folded.endIndex) {
+                      let hit = folded.range(of: localized ? query : term, options: searchOriginal ? [.caseInsensitive] : [.literal],
+                                             range: start..<folded.endIndex, locale: localized ? .current : nil) {
                     if Task.isCancelled { return [] }
                     let range: Range<String.Index>
-                    if ascii { range = hit }
+                    if searchOriginal { range = hit }
                     else {
                         if positions.isEmpty {
                             for i in field.indices {

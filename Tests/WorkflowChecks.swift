@@ -177,6 +177,9 @@ import os
         assert(!hits[0].snippet.contains("\n") && hits[0].snippet.contains("Resume"))
         assert(thread.messageMatches("resume", firstOnly: true) == [hits[0]])
         assert(thread.messageMatches("unmatched account name").isEmpty)
+        thread.messages[0].body = "İstanbul"
+        let shortBody = thread.messageMatches("i").contains { $0.inBody && $0.messageID == thread.messages[0].id }
+        assert(shortBody == thread.messages[0].body.localizedCaseInsensitiveContains("i"))
         thread.messages[0].body = "Straße"
         assert(thread.messageMatches("ras").first?.text == "raß")
         thread.messages[1].subject = "Re: " + thread.subject
