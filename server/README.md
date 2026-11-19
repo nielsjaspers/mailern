@@ -25,7 +25,7 @@ The service keeps your inbox and the last 90 days of archived, sent, junk, and d
 1. Create an app password for each account:
    - Gmail: turn on 2-Step Verification, then create one at [App passwords](https://myaccount.google.com/apppasswords). Some work, school, and Advanced Protection accounts cannot create them.
    - iCloud: create one at [account.apple.com](https://account.apple.com) under Sign-In and Security, App-Specific Passwords.
-   - Proton: run Proton Mail Bridge on the same computer and copy the username and password it shows for your account. Bridge requires a paid plan.
+   - Proton: run Proton Mail Bridge on the same computer and copy the username and password it shows for your account. Bridge requires a paid plan. Match the IMAP and SMTP ports and connection security in Bridge’s Mailbox details. If SMTP uses SSL/TLS, set the account’s `smtp` endpoint to the displayed host and port with `"security": "tls"`.
 2. Save each password in its own file, readable only by you (`chmod 600`).
 3. Copy `config.example.json` to `config.json` and fill in your addresses, password files, and your Tailscale login name in `allowedUsers`. Relative paths are relative to the config file.
 4. Check the config: `go run . check -config config.json`. It signs in to each account and prints its mailboxes and message counts, without message content.
