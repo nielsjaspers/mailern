@@ -28,6 +28,8 @@ struct ComposerView: View {
     /// The sheet's highest top edge at its current size, to tell when a pull moves it down.
     @State private var restingTop = CGFloat.infinity
     @State private var sheetWidth: CGFloat = 0
+    /// The body was editing when a pull began, so a canceled pull gives it the keyboard back.
+    @State private var pull: (resignedBody: Bool, active: Bool) = (false, false)
     /// The minimized draft this one took the dock from. It goes back to the dock if this one closes instead.
     @State private var displaced: DraftStore.Docked?
     @State private var filePicker = false
@@ -184,11 +186,17 @@ struct ComposerView: View {
             if frame.width != sheetWidth { sheetWidth = frame.width; restingTop = frame.minY }
             restingTop = min(restingTop, frame.minY)
             // A pull that cannot dismiss the sheet leaves the keyboard alone.
-            if frame.minY - restingTop > 24, canPull {
+            if !pull.active, frame.minY - restingTop > 24, canPull {
+                pull = (editor.view?.isFirstResponder == true, true)
                 editor.view?.window?.endEditing(true)
                 // The pull reveals the dock, so it shows this draft from now on.
                 if saved { takeDock() }
                 drafts.sheetOverDock = false
+            } else if pull.active, frame.minY - restingTop < 2 {
+                // The pull was canceled and the sheet is back at rest.
+                if pull.resignedBody { editor.view?.becomeFirstResponder() }
+                pull = (false, false)
+                drafts.sheetOverDock = true
             }
         }
         .writingToolsBehavior(.disabled)
@@ -434,11 +442,7 @@ struct ComposerView: View {
     }
     /// Puts the saved draft in the dock after the sheet is pulled down or Minimize draft closes it.
     private func minimize() {
-        guard loaded, !finishing, saved else {
-            // Only a draft that left Drafts while open can own the dock here. It gives the dock back.
-            if drafts.docked?.id == draft.id { drafts.docked = displaced }
-            return
-        }
+        guard loaded, saved else { return }
         let selections: [NSRange]
         if #available(iOS 26, *), let view = editor.view { selections = view.selectedRanges }
         else { selections = [editor.view?.selectedRange ?? editor.selection] }

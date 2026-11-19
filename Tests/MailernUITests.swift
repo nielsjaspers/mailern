@@ -401,6 +401,10 @@ final class MinimizedDraftUITests: MailernUITestCase {
         app.buttons["Minimize draft"].tap()
         let dock = app.buttons["Resume draft, New Message"]
         XCTAssertTrue(dock.waitForExistence(timeout: 5))
+        // Swiping the dock down does nothing. Only a tap or an upward swipe opens it.
+        let top = dock.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
+        top.press(forDuration: 0.05, thenDragTo: top.withOffset(CGVector(dx: 0, dy: 40)))
+        XCTAssertFalse(app.buttons["Send"].waitForExistence(timeout: 2))
         // Pulling down an untouched message keeps the minimized draft in the dock.
         app.buttons["Compose"].tap()
         let handle = app.navigationBars["New Message"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
@@ -446,10 +450,12 @@ final class MinimizedDraftUITests: MailernUITestCase {
         resume.swipeUp()
         body.typeText(" second")
         XCTAssertTrue((body.value as? String ?? "").contains("First second!"))
-        // A second round trip, after a resume, restores the dock too. The pull waits for the autosave.
-        _ = XCTWaiter.wait(for: [XCTestExpectation(description: "Autosave")], timeout: 1)
-        handle.press(forDuration: 0.1, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 450)))
-        XCTAssertTrue(resume.wait(for: \.isHittable, toEqual: true, timeout: 6))
+        // A second round trip, after a resume, restores the dock too. The sheet holds until the autosave is done.
+        for _ in 0..<3 where !resume.isHittable {
+            handle.press(forDuration: 0.1, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 450)))
+            _ = resume.wait(for: \.isHittable, toEqual: true, timeout: 3)
+        }
+        XCTAssertTrue(resume.isHittable)
         resume.tap()
         app.buttons["Cancel"].tap()
         app.buttons["Save Draft"].tap()

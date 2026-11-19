@@ -152,7 +152,8 @@ struct DraftDock: View {
     var body: some View {
         // The container always exists, so the reset runs even while the keyboard has removed the dock.
         ZStack {
-            if let id = drafts.docked?.id, let draft = drafts.drafts.first(where: { $0.id == id }), !SoftwareKeyboard.shared.visible {
+            if let id = drafts.docked?.id, let draft = drafts.drafts.first(where: { $0.id == id && $0.snoozedUntil == nil }),
+               !SoftwareKeyboard.shared.visible {
                 Button { resume(id) } label: {
                     VStack(spacing: 0) {
                         Capsule().fill(.tertiary).frame(width: 36, height: 5).padding(.top, 6)
@@ -164,6 +165,8 @@ struct DraftDock: View {
                         .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 10)
                     }
                     .opacity(handoff == nil ? 1 : 0)
+                    // The drag's spring back must not fade the header out.
+                    .transaction { $0.animation = nil }
                     .background(alignment: .top) {
                         UnevenRoundedRectangle(topLeadingRadius: Self.radius, topTrailingRadius: Self.radius)
                             .fill(Color(uiColor: Self.sheet))
@@ -175,8 +178,8 @@ struct DraftDock: View {
                 }
                 .buttonStyle(.plain)
                 .offset(y: lift + (handoff ?? 0))
-                // The sheet follows an upward drag, then opens.
-                .simultaneousGesture(DragGesture(minimumDistance: 10)
+                // The sheet follows an upward drag, then opens. A drag never counts as a tap.
+                .highPriorityGesture(DragGesture(minimumDistance: 10)
                     .updating($lift) { value, lift, _ in lift = Self.lift(value.translation.height) }
                     .onEnded { value in
                         guard value.predictedEndTranslation.height < -40 else { return }
@@ -194,12 +197,13 @@ struct DraftDock: View {
     private static func lift(_ translation: CGFloat) -> CGFloat { max(-maxLift, min(0, translation) * 0.5) }
     private func resume(_ id: UUID, holding lift: CGFloat = 0) {
         handoff = lift
-        open(id)
+        // Present after the dock has drawn without its header, so the rising sheet's header is the only one.
+        DispatchQueue.main.async { open(id) }
     }
     private func recipients(_ draft: ComposerDraft) -> String {
-        let fields = [("To", draft.to), ("Cc", draft.cc), ("Bcc", draft.bcc)]
-        guard let (label, value) = fields.first(where: { !$0.1.trimmingCharacters(in: .whitespaces).isEmpty }) else { return "No recipients" }
-        return "\(label): \(value)"
+        let fields = [("To", draft.to), ("Cc", draft.cc), ("Bcc", draft.bcc)].map { ($0, ComposerDraft.addresses($1)) }
+        guard let (label, addresses) = fields.first(where: { !$0.1.isEmpty }) else { return "No recipients" }
+        return "\(label): \(addresses.joined(separator: ", "))"
     }
 }
 

@@ -170,8 +170,8 @@ final class DraftStore {
     var undoable: UUID?
     /// A draft to open in the composer, set when Undo Send or Edit takes scheduled mail back.
     var reopening: UUID?
-    /// The saved draft the dock shows while it is in Drafts. Minimizing records where the editor was, so the
-    /// composer can resume there.
+    /// The draft the dock shows, if it is still in Drafts and not snoozed. Minimizing records where the editor was,
+    /// so the composer can resume there.
     struct Docked {
         struct Position {
             var selections: [NSRange]
