@@ -228,7 +228,7 @@ struct MailboxView: View {
                     switch route {
                     case .conversation(let id):
                         if store.conversation(id) != nil {
-                            ThreadView(id: id, inboxAccountID: composeInboxAccount, next: {
+                            ThreadView(id: id, inboxAccountID: paths[status]?.count == 1 ? composeInboxAccount : nil, next: {
                                 if case .sender(let sender) = paths[status]?.dropLast().last {
                                     let order = store.conversations(with: sender.address).map(\.id)
                                     return MailboxItem.conversation(after: id, in: order, available: Set(order))
