@@ -322,7 +322,12 @@ extension MailStore {
             if c.removal?.mailbox == .trash { keeping.remove(.removal) }
         }
         c.adoptRemoteState(remote, keeping: keeping)
-        if replied { c.followUp = nil }
+        // A reply that answers a reminder on a muted thread settles it quietly, as in Mailern.
+        if replied && muted {
+            c.endReminder()
+        } else if replied {
+            c.followUp = nil
+        }
         return c
     }
 }
