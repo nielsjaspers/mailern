@@ -169,6 +169,34 @@ final class HTMLMailUITests: MailernUITestCase {
     }
 }
 
+final class ComposeAccountUITests: MailernUITestCase {
+    @MainActor
+    func testInboxAccountOverridesDefaultSender() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Default From'")).firstMatch.tap()
+        app.buttons["morgan@mail.example.com"].tap()
+        app.buttons["Done"].tap()
+        func checkSender(_ address: String) {
+            app.buttons["Compose"].tap()
+            app.buttons["Cc/Bcc, From"].tap()
+            XCTAssertTrue(app.buttons["From, \(address)"].existsOrWait(timeout: 5))
+            app.buttons["Cancel"].tap()
+            waitForComposerDismissal(in: app)
+        }
+        checkSender("morgan@mail.example.com")
+        openFilterOptions(in: app)
+        app.buttons["filter-account-icloud"].tap()
+        app.buttons["filter-account-proton"].tap()
+        app.buttons["filter-account-gmail"].tap()
+        app.buttons["Done"].tap()
+        checkSender("morgan@student.example.com")
+    }
+}
+
 final class RecipientSearchUITests: MailernUITestCase {
     @MainActor
     func testSearchRecipientsAndPreserveSelection() {
@@ -178,9 +206,22 @@ final class RecipientSearchUITests: MailernUITestCase {
         app.buttons["Compose"].tap()
         app.buttons["Add recipient"].tap()
         XCTAssertTrue(app.navigationBars["Recipients"].existsOrWait(timeout: 5))
+        app.buttons["Contacts"].tap()
+        XCTAssertTrue(app.navigationBars["Contacts"].waitForExistence(timeout: 8))
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "native-email-picker"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        let bar = app.navigationBars["Contacts"]
+        bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1, thenDragTo:
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        XCTAssertTrue(app.navigationBars["Contacts"].waitForNonExistence(timeout: 5))
+        app.buttons["Contacts"].tap()
+        app.navigationBars["Contacts"].buttons["Cancel"].tap()
+        XCTAssertTrue(app.navigationBars["Recipients"].waitForExistence(timeout: 5))
         let search = app.searchFields["Search recipients"]
         let recipients = app.collectionViews["recipient-list"]
-        XCTAssertTrue(search.isHittable)
+        XCTAssertTrue(search.wait(for: \.isHittable, toEqual: true, timeout: 5))
         search.tap()
         search.typeText("  jOrDaN  ")
         XCTAssertTrue(recipients.buttons.containing(.staticText, identifier: "Dr. Jordan Lee").firstMatch.exists)
@@ -205,6 +246,15 @@ final class RecipientSearchUITests: MailernUITestCase {
         search.typeText("avery")
         recipients.buttons.containing(.staticText, identifier: "Avery").firstMatch.tap()
         XCTAssertEqual(to.value as? String, "orders@bookshop.example, avery@example.com")
+        app.buttons["Add recipient"].tap()
+        app.buttons["Contacts"].tap()
+        app.cells.containing(.staticText, identifier: "Kate Bell").firstMatch.tap()
+        let address = "kate-bell@mac.com"
+        let email = app.buttons.matching(NSPredicate(format: "label ENDSWITH %@", address)).firstMatch
+        XCTAssertTrue(email.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        email.tap()
+        XCTAssertTrue(to.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        XCTAssertEqual(to.value as? String, "orders@bookshop.example, avery@example.com, \(address)")
     }
 }
 

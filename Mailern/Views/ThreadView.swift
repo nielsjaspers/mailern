@@ -5,6 +5,7 @@ struct ThreadView: View {
     @Environment(DraftStore.self) private var drafts
     @Environment(\.dismiss) private var dismiss
     let id: UUID
+    var inboxAccountID: String?
     /// The conversation below this one in the list it was opened from, read before Settle removes it.
     let next: () -> UUID?
     /// Replaces this thread with another conversation.
@@ -114,7 +115,7 @@ struct ThreadView: View {
         .onAppear { store.markRead(id) }
         .sheet(item: $mode) { mode in
             switch mode {
-            case .draft, .mailto: ComposerView(mode: mode)
+            case .draft, .mailto: ComposerView(mode: mode, inboxAccountID: inboxAccountID)
             // The zoom transition belongs to the toolbar's Reply button.
             default:
                 if target != nil { ComposerView(mode: mode, messageID: target) }

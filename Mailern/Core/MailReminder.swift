@@ -14,9 +14,6 @@ struct MailReminder: Equatable, Identifiable {
         // Mail storage also records which drafts were sent or discarded.
         guard !mail.needsReload else { return [] }
         let readableDrafts = drafts.hasReadableManifest ? drafts.all : []
-        let unsent = mail.unsentDraftIDs(Set(readableDrafts.lazy.filter {
-            ($0.sendAt ?? .distantPast) > now && $0.holdingForUndo != true
-        }.map(\.id)))
         var upcoming: [Self] = []
         func add(_ reminder: Self) {
             upcoming.append(reminder)
@@ -36,7 +33,7 @@ struct MailReminder: Equatable, Identifiable {
         }
         for draft in readableDrafts where !mail.discardedDraftIDs.contains(draft.id) {
             if let date = draft.sendAt {
-                guard unsent.contains(draft.id) else { continue }
+                guard date > now, draft.holdingForUndo != true else { continue }
                 add(Self(id: "scheduled.\(draft.id)", date: date, title: "Scheduled mail is due",
                          body: "Open Mailern to send “\(draft.title)”.", conversationID: nil, token: dateToken(date)))
             } else if let date = draft.snoozedUntil, date > now {

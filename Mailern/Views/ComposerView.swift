@@ -1,4 +1,5 @@
 import SwiftUI
+import ContactsUI
 import PhotosUI
 import UniformTypeIdentifiers
 
@@ -11,6 +12,8 @@ struct ComposerView: View {
     let mode: ComposeMode
     /// The message a new reply or forward quotes. Nil targets the latest message.
     var messageID: UUID?
+    var inboxAccountID: String?
+    @AppStorage("defaultComposeAccount") private var defaultAccount = ""
     @State private var draft = ComposerDraft()
     @State private var initial = ComposerDraft()
     @State private var editor = RichTextState()
@@ -26,6 +29,7 @@ struct ComposerView: View {
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
     @State private var contacts = false
+    @State private var systemContacts = false
     @State private var recipientSearch = ""
     @State private var importsInFlight = 0
     @State private var error: String?
@@ -273,8 +277,7 @@ struct ComposerView: View {
             List {
                 ForEach(matches, id: \.address) { person in
                     Button {
-                        draft.to += draft.to.trimmingCharacters(in: .whitespaces).isEmpty ? person.address : ", \(person.address)"
-                        contacts = false
+                        addRecipient(person.address)
                     } label: {
                         VStack(alignment: .leading) { Text(person.name); Text(person.address).font(.caption).foregroundStyle(.secondary) }
                     }.foregroundStyle(.primary)
@@ -290,8 +293,22 @@ struct ComposerView: View {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .navigationTitle("Recipients").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { contacts = false } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { contacts = false } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Contacts", systemImage: "person.crop.circle") { systemContacts = true }
+                }
+            }
+            .background {
+                SystemEmailPicker(isPresented: $systemContacts) { address in
+                    if let address { addRecipient(address) }
+                }
+            }
         }
+    }
+    private func addRecipient(_ address: String) {
+        draft.to += draft.to.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? address : ", \(address)"
+        contacts = false
     }
     private var recipients: [(name: String, address: String)] {
         var seen = Set(store.accounts.map(\.address))
@@ -309,10 +326,11 @@ struct ComposerView: View {
         } else if let replyID = mode.replyID, let existing = drafts.drafts.first(where: { $0.mode.replyID == replyID && $0.messageID == messageID }) {
             draft = existing
         } else {
-            draft = ComposerDraft.make(mode: mode, conversation: mode.sourceID.flatMap(store.conversation), message: messageID, accounts: store.accounts)
+            draft = ComposerDraft.make(mode: mode, conversation: mode.sourceID.flatMap(store.conversation), message: messageID, accounts: store.accounts, preferredAccountID: inboxAccountID ?? defaultAccount)
         }
         // A draft can outlive its account, for example after a demo reset. It sends from the default account instead.
-        if !store.accounts.contains(where: { $0.id == draft.accountID }) { draft.accountID = store.accounts[0].id }
+        let missingAccount = !store.accounts.contains { $0.id == draft.accountID }
+        if missingAccount { draft.accountID = store.accounts.first { $0.id == defaultAccount }?.id ?? store.accounts[0].id }
         let text = NSMutableAttributedString(attributedString: RichText.decode(draft.richText, fallback: draft.text))
         if !saved, draft.richText == nil, let sourceID = draft.mode.sourceID, let source = store.conversation(sourceID), text.length > 2 {
             // Retain the original formatting inside the editable reply or forward quote.
@@ -327,6 +345,7 @@ struct ComposerView: View {
         editor.text = text
         editor.selection = NSRange(location: 0, length: 0)
         editor.typing = [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
+        if missingAccount { replaceSignature(with: account.signature) }
         initial = draft
         loaded = true
         if draft.to.isEmpty { focus = .to }
@@ -399,7 +418,7 @@ struct ComposerView: View {
                 if scheduled == nil { drafts.undoable = content.id }
             } else {
                 // The draft's ID makes sending a leftover draft again a no-op if deleting it fails below.
-                guard store.send(content, id: content.id) else {
+                guard store.send(content) else {
                     error = store.error
                     store.error = nil
                     return
@@ -410,7 +429,7 @@ struct ComposerView: View {
             editor.view?.resignFirstResponder()
             if sendAt == nil, !(await drafts.delete(draft.id)) {
                 drafts.error = nil
-                error = "Message saved, but the draft could not be removed. You can discard it from its Inbox thread."
+                error = "Message sent. Mailern will retry draft cleanup."
                 return
             }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -496,6 +515,45 @@ private struct ComposerSubjectField: UIViewRepresentable {
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
             textField.resignFirstResponder()
             return true
+        }
+    }
+}
+
+private struct SystemEmailPicker: UIViewControllerRepresentable {
+    @Binding var isPresented: Bool
+    let finish: (String?) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIViewController(context: Context) -> UIViewController { UIViewController() }
+
+    func updateUIViewController(_ host: UIViewController, context: Context) {
+        guard isPresented, host.presentedViewController == nil, !context.coordinator.presenting else { return }
+        let picker = CNContactPickerViewController()
+        context.coordinator.presenting = true
+        context.coordinator.finish = { address in
+            isPresented = false
+            context.coordinator.presenting = false
+            finish(address)
+        }
+        picker.delegate = context.coordinator
+        picker.displayedPropertyKeys = [CNContactEmailAddressesKey]
+        picker.predicateForEnablingContact = NSPredicate(format: "emailAddresses.@count > 0")
+        picker.predicateForSelectionOfContact = NSPredicate(value: false)
+        picker.predicateForSelectionOfProperty = NSPredicate(format: "key == %@", CNContactEmailAddressesKey)
+        host.present(picker, animated: true)
+    }
+
+    final class Coordinator: NSObject, CNContactPickerDelegate {
+        var presenting = false
+        var finish: ((String?) -> Void)?
+        private func complete(_ address: String?) {
+            let callback = finish
+            finish = nil
+            callback?(address)
+        }
+        func contactPickerDidCancel(_ picker: CNContactPickerViewController) { complete(nil) }
+        func contactPicker(_ picker: CNContactPickerViewController, didSelect property: CNContactProperty) {
+            complete(property.value as? String)
         }
     }
 }
