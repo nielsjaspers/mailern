@@ -141,6 +141,16 @@ def selected(selectors):
     return expected
 
 
+def prune(pattern, directory, keep=10):
+    """Remove all but the newest `keep` matches; each run adds a result bundle, log, and test plan."""
+    old = sorted(directory.glob(pattern), key=lambda path: path.stat().st_mtime_ns, reverse=True)[keep:]
+    for path in old:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
 def interrupt(signum, frame):
     raise KeyboardInterrupt
 
@@ -174,6 +184,10 @@ def main():
     derived.mkdir(parents=True, exist_ok=True)
     products = derived / "Build/Products"
     with lock(derived / ".run.lock", "build products"), lock(simulator_lock, "Simulator"):
+        # Prune under the build lock so no other run is still writing these files.
+        for pattern in ("ui-*.xcresult", "ui-*.log"):
+            prune(pattern, Path("build"))
+        prune("Mailern-ui-*.xctestrun", products)
         succeeded = False
         try:
             initial = state(simulator)
