@@ -438,7 +438,10 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 					if at.role == request.Removal {
 						continue
 					}
-					if moved || (!c.PendingPlacement && request.ExpectedRemoval == request.Removal) {
+					// Another client can trash a thread's incoming mail but leave your reply in Sent. Deleting the thread
+					// takes that reply too, as Trash does; the pass after the move checks it arrived.
+					sentReply := m.Outgoing && at.role == RoleSent
+					if moved || (!c.PendingPlacement && request.ExpectedRemoval == request.Removal && !sentReply) {
 						return conflict
 					}
 					movement.moves = append(movement.moves, move{at, request.Removal})

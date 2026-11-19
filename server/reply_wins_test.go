@@ -9,6 +9,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/google/uuid"
 )
 
 func TestReplyRescuesWholeThreadFromTrash(t *testing.T) {
@@ -258,5 +259,40 @@ func TestDeletedFlagChangeReachesIncrementalSync(t *testing.T) {
 	h.request("GET", fmt.Sprintf("/v1/sync?since=%d", before.Revision), nil, &after)
 	if len(after.Conversations) != 1 {
 		t.Fatalf("a change to the deleted flag should reach incremental sync, got %d conversations", len(after.Conversations))
+	}
+}
+
+func TestDeleteTakesReplyLeftInSentByAnotherClient(t *testing.T) {
+	h := newHarness(t)
+	parent := h.deliver("INBOX", "Dinner", "")
+	h.sync()
+	c := h.conversations()["Dinner"]
+	req := SendRequest{ID: uuid.NewString(), ConversationID: c.ID, AccountID: "lab", To: []string{"sam@example.com"},
+		Subject: "Re: Dinner", Text: "Sounds good.", InReplyTo: parent, References: []string{parent}}
+	if code := h.request("POST", "/v1/send", req, nil); code != http.StatusNoContent {
+		t.Fatalf("send: %d", code)
+	}
+	h.sync()
+	// Another client trashes only the incoming message.
+	other, err := imapclient.DialInsecure(h.lab.IMAP.Address(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Login(labAddress, "lab").Wait()
+	other.Select("INBOX", nil).Wait()
+	other.Move(imap.SeqSetNum(1), "Trash").Wait()
+	other.Close()
+	h.sync()
+	trashed := h.conversations()["Dinner"]
+	if trashed.Removal != RoleTrash {
+		t.Fatalf("the thread should follow its incoming mail to Trash, got %q", trashed.Removal)
+	}
+	if code := h.delete(trashed, RoleTrash); code != http.StatusNoContent {
+		t.Fatalf("permanent delete should take the reply left in Sent, got %d", code)
+	}
+	h.sync()
+	h.sync()
+	if h.count("Trash") != 0 || h.count("Sent") != 0 {
+		t.Fatalf("delete should remove the whole thread: Trash %d, Sent %d", h.count("Trash"), h.count("Sent"))
 	}
 }
