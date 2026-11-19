@@ -333,6 +333,162 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
     }
 }
 
+final class MinimizedDraftUITests: MailernUITestCase {
+    @MainActor
+    func testSecondDraftReplacesBarAndPreservesEarlierReply() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        let subject = "Dinner on Saturday?"
+        row(subject, in: app).tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Hey! Are you free")).firstMatch.tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera")).firstMatch.tap()
+        let body = app.textViews["Message body"]
+        body.typeText("Earlier reply")
+        for _ in 0..<5 { body.typeKey(.leftArrow, modifierFlags: []) }
+        minimizeComposer(in: app)
+        let replyBar = app.buttons["Resume draft, Re: " + subject]
+        XCTAssertTrue(replyBar.waitForExistence(timeout: 5))
+        // Replying again opens the same draft, at the same place.
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera")).firstMatch.tap()
+        body.typeText("the ")
+        XCTAssertTrue((body.value as? String ?? "").hasPrefix("Earlier the reply"))
+        minimizeComposer(in: app)
+        XCTAssertTrue(replyBar.waitForExistence(timeout: 5))
+        app.navigationBars.buttons["Inbox"].tap()
+        app.buttons["Compose"].tap()
+        body.tap()
+        body.typeText("Independent draft")
+        minimizeComposer(in: app)
+        XCTAssertTrue(app.buttons["Resume draft, New Message"].waitForExistence(timeout: 5))
+        XCTAssertFalse(replyBar.exists)
+        row(subject, in: app).tap()
+        app.buttons["Edit draft"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let restored = body.value as? String ?? ""
+        XCTAssertTrue(restored.hasPrefix("Earlier the reply"))
+        XCTAssertTrue(restored.contains("Are you free on Saturday?"))
+        app.buttons["Cancel"].tap()
+        app.buttons["Save Draft"].tap()
+        waitForAbsence(body)
+    }
+    @MainActor
+    func testFailedMinimizeKeepsReplyOpen() {
+        let app = TestApplication()
+        defer { app.terminate() }
+        app.launchEnvironment["MAILERN_TEST_DRAFT_WRITE_FAILURE"] = "1"
+        app.launch()
+        row("Dinner on Saturday?", in: app).tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera")).firstMatch.tap()
+        let body = app.textViews["Message body"]
+        body.typeText("Kept after failure ")
+        // Autosave fails too. Dismiss its alert, then minimize.
+        XCTAssertTrue(app.alerts["Composer"].waitForExistence(timeout: 5))
+        app.alerts.buttons["OK"].tap()
+        minimizeComposer(in: app)
+        XCTAssertTrue(app.alerts["Composer"].waitForExistence(timeout: 5))
+        app.alerts.buttons["OK"].tap()
+        XCTAssertTrue((body.value as? String ?? "").contains("Kept after failure"))
+    }
+    @MainActor
+    func testDeleteFromDockLeavesTheDraftReader() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        let body = app.textViews["Message body"]
+        body.tap()
+        body.typeText("Reader check")
+        minimizeComposer(in: app)
+        let dock = app.buttons["Resume draft, New Message"]
+        XCTAssertTrue(dock.waitForExistence(timeout: 5))
+        // Swiping the dock down does nothing. Only a tap or an upward swipe opens it.
+        let top = dock.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
+        top.press(forDuration: 0.05, thenDragTo: top.withOffset(CGVector(dx: 0, dy: 40)))
+        XCTAssertFalse(app.buttons["Send"].waitForExistence(timeout: 2))
+        // Pulling down an untouched message keeps the minimized draft in the dock.
+        app.buttons["Compose"].tap()
+        let handle = app.navigationBars["New Message"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+        handle.press(forDuration: 0.1, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 450)))
+        waitForAbsence(app.buttons["Send"])
+        XCTAssertTrue(dock.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        // An edited message takes the dock while it is open, and gives it back when it is deleted.
+        app.buttons["Compose"].tap()
+        body.tap()
+        body.typeText("Throwaway")
+        XCTAssertTrue(row("Throwaway", in: app).waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        app.buttons["Delete Draft"].tap()
+        waitForAbsence(body)
+        XCTAssertTrue(dock.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        row("Reader check", in: app).tap()
+        XCTAssertTrue(app.buttons["Edit draft"].waitForExistence(timeout: 5))
+        dock.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        app.buttons["Delete Draft"].tap()
+        waitForAbsence(body)
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Draft unavailable"].exists)
+        XCTAssertFalse(dock.exists)
+    }
+    @MainActor
+    func testResumeReplacesTheSelectedWord() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        let body = app.textViews["Message body"]
+        body.tap()
+        body.typeText("Keep middle words")
+        // Select "middle" from its end.
+        for _ in 0..<6 { body.typeKey(.leftArrow, modifierFlags: []) }
+        for _ in 0..<6 { body.typeKey(.leftArrow, modifierFlags: .shift) }
+        minimizeComposer(in: app)
+        let resume = app.buttons["Resume draft, New Message"]
+        XCTAssertTrue(resume.wait(for: \.isHittable, toEqual: true, timeout: 6))
+        resume.tap()
+        body.typeText("other")
+        XCTAssertTrue((body.value as? String ?? "").hasPrefix("Keep other words"))
+        app.buttons["Cancel"].tap()
+        app.buttons["Delete Draft"].tap()
+        waitForAbsence(body)
+    }
+    @MainActor
+    func testPullDownAndResumeBodyCursor() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        let body = app.textViews["Message body"]
+        body.tap()
+        body.typeText("First!")
+        body.typeKey(.leftArrow, modifierFlags: [])
+        let bar = app.navigationBars.firstMatch
+        let handle = bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+        handle.press(forDuration: 0.1, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 450)))
+        let resume = app.buttons["Resume draft, New Message"]
+        XCTAssertTrue(resume.wait(for: \.isHittable, toEqual: true, timeout: 6))
+        app.tabBars.buttons["Settled"].tap()
+        XCTAssertTrue(app.navigationBars["Settled"].waitForExistence(timeout: 5))
+        resume.swipeUp()
+        body.typeText(" second")
+        XCTAssertTrue((body.value as? String ?? "").contains("First second!"))
+        // A second round trip, after a resume, restores the dock too. The sheet holds until the autosave is done.
+        for _ in 0..<3 where !resume.isHittable {
+            handle.press(forDuration: 0.1, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 450)))
+            _ = resume.wait(for: \.isHittable, toEqual: true, timeout: 3)
+        }
+        XCTAssertTrue(resume.isHittable)
+        resume.tap()
+        app.buttons["Cancel"].tap()
+        app.buttons["Save Draft"].tap()
+        waitForAbsence(body)
+        // Save Draft closes the draft, so it leaves the dock.
+        waitForAbsence(resume)
+    }
+}
+
 final class ComposerSelectionHandleDragKeepsEditingUITests: MailernUITestCase {
     @MainActor
     func testComposerSelectionHandleDragKeepsEditing() {
@@ -400,25 +556,26 @@ final class InboxDraftPreviewEditAndDiscardUITests: MailernUITestCase {
         let app = TestApplication()
         app.launch()
         let subject = "Inbox draft proof"
+        let draftRow = app.collectionViews.buttons.matching(NSPredicate(format: "label CONTAINS %@", subject)).firstMatch
         app.buttons["Compose"].tap()
         XCTAssertTrue(app.navigationBars["New Message"].existsOrWait(timeout: 5))
         app.textFields["Subject"].tap(); app.textFields["Subject"].typeText(subject)
         app.textViews["Message body"].tap(); app.textViews["Message body"].typeText("An unfinished new message")
         // Swiping the composer away saves a new message as a draft.
-        app.buttons["Sheet Grabber"].firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)), withVelocity: .slow, thenHoldForDuration: 0.1)
+        let handle = app.navigationBars.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+        handle.press(forDuration: 0.1, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 450)))
         waitForComposerDismissal(in: app)
-        XCTAssertTrue(row(subject, in: app).existsOrWait(timeout: 5))
-        XCTAssertTrue(row(subject, in: app).label.contains("Draft"))
+        XCTAssertTrue(draftRow.existsOrWait(timeout: 5))
+        XCTAssertTrue(draftRow.label.contains("Draft"))
         app.buttons["Select"].tap()
-        XCTAssertFalse(row(subject, in: app).isEnabled)
+        XCTAssertFalse(draftRow.isEnabled)
         row("Dinner on Saturday?", in: app).tap()
         XCTAssertTrue(app.staticTexts["1 selected"].exists)
         app.buttons["Select All"].tap()
         XCTAssertTrue(app.staticTexts["6 selected"].exists)
         app.buttons["Mark"].tap()
         app.buttons["Mark read"].tap()
-        row(subject, in: app).tap()
+        draftRow.tap()
         XCTAssertTrue(app.buttons["Edit draft"].existsOrWait(timeout: 5))
         XCTAssertFalse(app.textViews["Message body"].exists)
         app.buttons["Edit draft"].tap()
@@ -431,7 +588,7 @@ final class InboxDraftPreviewEditAndDiscardUITests: MailernUITestCase {
         XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "with an edit")).firstMatch.existsOrWait(timeout: 5))
         app.buttons["Discard draft"].tap()
         XCTAssertTrue(app.buttons["Compose"].existsOrWait(timeout: 5))
-        XCTAssertFalse(row(subject, in: app).exists)
+        XCTAssertFalse(draftRow.exists)
     }
 }
 
@@ -448,8 +605,8 @@ final class ComposerDraftSaveFailureKeepsEditorUITests: MailernUITestCase {
         app.textFields["Subject"].tap(); app.textFields["Subject"].typeText("Unsaved failure proof")
         XCTAssertTrue(app.alerts["Composer"].existsOrWait(timeout: 5))
         app.alerts["Composer"].buttons["OK"].tap()
-        app.buttons["Sheet Grabber"].firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)), withVelocity: .slow, thenHoldForDuration: 0.1)
+        let handle = app.navigationBars.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+        handle.press(forDuration: 0.1, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 450)))
         XCTAssertTrue(app.navigationBars["Unsaved failure proof"].exists, "A failed save keeps the editor open")
         XCTAssertEqual(app.textFields["Subject"].value as? String, "Unsaved failure proof")
         app.buttons["Cancel"].tap(); app.buttons["Delete Draft"].tap()
@@ -1443,10 +1600,16 @@ class MailernUITestCase: XCTestCase {
         app.tabBars.buttons[section].tap()
     }
 
+    /// Pulls the composer down by its title, which minimizes the draft.
+    @MainActor
+    func minimizeComposer(in app: XCUIApplication) {
+        let top = app.navigationBars.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+        top.press(forDuration: 0.1, thenDragTo: top.withOffset(CGVector(dx: 0, dy: 450)))
+    }
     @MainActor
     func waitForComposerDismissal(in app: XCUIApplication) {
         // Resolve dismissal before the next native action, which otherwise can stall
-        // on XCTest's animation-complete notification after a zoom transition.
+        // on XCTest's animation-complete notification.
         waitForAbsence(app.buttons["Send"])
     }
 

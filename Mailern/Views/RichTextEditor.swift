@@ -139,6 +139,8 @@ final class RichTextState {
     var selection = NSRange(location: 0, length: 0)
     var typing: [NSAttributedString.Key: Any] = [:]
     var edited = false
+    /// Set on resume, so the caret shows once the keyboard is up. Later keyboard changes leave the scroll alone.
+    @ObservationIgnored var revealOnKeyboard = false
     @ObservationIgnored weak var view: UITextView?
     @ObservationIgnored var presentFormatting: () -> Void = {}
     @ObservationIgnored var didSync: () -> Void = {}
@@ -296,6 +298,7 @@ struct RichTextEditor: UIViewRepresentable {
         coordinator.state.view = nil
         coordinator.state.presentFormatting = {}
         coordinator.state.didSync = {}
+        if let observer = coordinator.keyboardObserver { NotificationCenter.default.removeObserver(observer) }
         view.delegate = nil
     }
 
@@ -306,6 +309,7 @@ struct RichTextEditor: UIViewRepresentable {
         private var accessory: UIView?
         private var nativeFormat: NativeFormatting?
         fileprivate weak var attachmentButton: UIButton?
+        fileprivate var keyboardObserver: (any NSObjectProtocol)?
         var updating = false
         init(state: RichTextState, attach: @escaping () -> Void, photos: @escaping () -> Void) {
             self.state = state; self.attach = attach; self.photos = photos
@@ -313,6 +317,15 @@ struct RichTextEditor: UIViewRepresentable {
         func installKeyboard(on view: UITextView) {
             state.didSync = { [weak self] in
                 self?.nativeFormat?.refreshDescriptor()
+            }
+            // The keyboard shrinks the visible area after a resume focuses the body, so show the caret again once it
+            // is up.
+            keyboardObserver = NotificationCenter.default.addObserver(forName: UIResponder.keyboardDidShowNotification, object: nil, queue: .main) { [weak view, state] _ in
+                MainActor.assumeIsolated {
+                    guard state.revealOnKeyboard, view?.isFirstResponder == true else { return }
+                    state.revealOnKeyboard = false
+                    view?.revealCaret()
+                }
             }
             let accessory = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 62))
             accessory.autoresizingMask = [.flexibleWidth]
@@ -373,18 +386,23 @@ struct RichTextEditor: UIViewRepresentable {
             state.edited = true
             state.sync()
             // The body grows inside the composer's scroll view; keep the caret above the keyboard.
-            DispatchQueue.main.async { [weak textView] in
-                guard let textView, let range = textView.selectedTextRange else { return }
-                var ancestor = textView.superview
-                while let parent = ancestor {
-                    if let scroll = parent as? UIScrollView {
-                        let caret = textView.convert(textView.caretRect(for: range.end), to: scroll).insetBy(dx: 0, dy: -20)
-                        scroll.scrollRectToVisible(caret, animated: false)
-                        break
-                    }
-                    ancestor = parent.superview
-                }
+            DispatchQueue.main.async { [weak textView] in textView?.revealCaret() }
+        }
+    }
+}
+
+extension UITextView {
+    /// Scrolls the composer's scroll view, which holds the whole body, to show the caret.
+    func revealCaret() {
+        guard let range = selectedTextRange else { return }
+        var ancestor = superview
+        while let parent = ancestor {
+            if let scroll = parent as? UIScrollView {
+                let caret = convert(caretRect(for: range.end), to: scroll).insetBy(dx: 0, dy: -20)
+                scroll.scrollRectToVisible(caret, animated: false)
+                return
             }
+            ancestor = parent.superview
         }
     }
 }

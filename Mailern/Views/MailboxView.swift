@@ -4,14 +4,16 @@ struct MailboxView: View {
     var benchmark: BenchmarkMailbox?
     var selectBenchmark: ((BenchmarkMailbox?) async throws -> Void)?
     @Environment(MailStore.self) private var store
-    @State private var selection: Workflow = .inbox
+    private var selection: Workflow {
+        get { panel.selectedTab }
+        nonmutating set { panel.selectedTab = newValue }
+    }
     @State private var searchInput = MailboxSearchInput()
     private var search: String { searchInput.text }
     @AppStorage("mailboxFilters") private var filterData = Data()
     @State private var filtering: Workflow?
     @State private var settling: DraftDiscard?
     @State private var snoozingDraft: ComposerDraft?
-    @Namespace private var composeTransition
     @Environment(DraftStore.self) private var drafts
     @State private var selecting = false
     @State private var selectedIDs: Set<UUID> = []
@@ -29,8 +31,7 @@ struct MailboxView: View {
     @AppStorage("rightSwipeSecondary") private var rightSecondary: MailboxSwipeAction = .pin
     @AppStorage("leftSwipeTertiary") private var leftTertiary: MailboxSwipeAction = .none
     @AppStorage("rightSwipeTertiary") private var rightTertiary: MailboxSwipeAction = .none
-    @State private var composer: ComposeMode?
-    @State private var reopened: ComposeMode?
+    @State private var panel = ComposerPanel()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var demo = false
     @State private var snoozing: Conversation?
@@ -47,7 +48,7 @@ struct MailboxView: View {
             GeometryReader { geometry in
                 if let overlayTop, selection == .inbox, paths[.inbox, default: []].isEmpty,
                    !selecting, pullAction != .off, pullDistance > 40, toolbarBottom > 0,
-                   !searching, composer == nil, !settings, !demo {
+                   !searching, panel.request == nil, !settings, !demo {
                     PullActionIndicator(mode: pullAction, progress: min(1, max(0, (pullDistance - 40) / (DeliberatePull.threshold - 40))), armCount: armCount)
                         .position(x: geometry.size.width / 2, y: toolbarBottom - overlayTop + 32)
                         .opacity(min(1, (pullDistance - 40) / 16))
@@ -76,7 +77,7 @@ struct MailboxView: View {
                     },
                     onCompose: { mode in
                         peeking = nil
-                        openComposer(mode)
+                        compose(mode)
                     },
                     onSnooze: { snoozing = conversation }
                 )
@@ -84,7 +85,11 @@ struct MailboxView: View {
             }
         }
         .animation(.easeOut(duration: reduceMotion ? 0 : 0.18), value: peeking)
-        .onChange(of: selection) { _, _ in peeking = nil; searching = false; endSelection() }
+        .onChange(of: selection) { _, _ in
+            peeking = nil; searching = false; endSelection()
+            // The panel stays on its own tab, which is now off screen and may not run its spring to the end.
+            panel.finishMotion()
+        }
         .onChange(of: searching) { _, active in if !active { searchScope = .section } }
         // Bulk actions and filters belong to one section, so All mail leaves selection.
         .onChange(of: searchScope) { _, scope in
@@ -105,16 +110,17 @@ struct MailboxView: View {
             }
         }
         // Undo Send and Edit take scheduled mail back into the composer from wherever it was sent.
-        .onChange(of: drafts.reopening) { _, id in
-            guard let id else { return }
+        // An open composer finishes first, so the request waits until its panel is gone.
+        .onChange(of: ReopenState(id: drafts.reopening, open: panel.request != nil)) { _, state in
+            guard let id = state.id, !state.open else { return }
             drafts.reopening = nil
-            reopened = .draft(id)
+            compose(.draft(id))
         }
-        .sheet(item: $reopened) { ComposerView(mode: $0) }
-        .sheet(item: $composer) {
-            ComposerView(mode: $0, inboxAccountID: composeInboxAccount).modifier(ComposerTransition(source: composerSourceID, namespace: composeTransition))
+        // A queued request or failed save can bring an editor up on a different tab.
+        .onChange(of: panel.covering ? panel.request?.tab : nil) { _, tab in
+            if let tab, tab != selection { selection = tab }
         }
-        .modifier(DraftStorageAlert(active: composer == nil && paths[selection, default: []].isEmpty))
+        .modifier(DraftStorageAlert(active: paths[selection, default: []].isEmpty))
         .sheet(isPresented: $settings) {
             NavigationStack { SettingsView(pullAction: $pullAction) }
         }
@@ -128,6 +134,7 @@ struct MailboxView: View {
         }
         .sheet(item: $snoozing) { SnoozeView(ids: [$0.id], beforeSnooze: { peeking = nil }) }
         .sheet(item: $snoozingDraft) { SnoozeView(ids: [], draftIDs: [$0.id]) }
+        .environment(panel)
         .alert(
             "Mail storage",
             isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })
@@ -138,6 +145,8 @@ struct MailboxView: View {
             Text(store.error ?? "")
         }
     }
+    private struct ReopenState: Equatable { var id: UUID?; var open: Bool }
+    private func compose(_ mode: ComposeMode) { panel.present(mode, inboxAccountID: composeInboxAccount) }
     private enum SearchScope: CaseIterable, Identifiable {
         case section, allMail
         var id: Self { self }
@@ -165,7 +174,7 @@ struct MailboxView: View {
             TabView(selection: Binding<MailboxTab>(get: { .workflow(selection) }, set: { tab in
                 switch tab {
                 case .workflow(let status): selection = status
-                case .compose: openComposer(.new)
+                case .compose: compose(.new)
                 }
             })) {
                 ForEach(Workflow.allCases) { status in
@@ -178,12 +187,11 @@ struct MailboxView: View {
                     Color.clear
                 } label: {
                     Label("Compose", systemImage: "square.and.pencil")
-                        .modifier(ComposerSource(source: "compose-bottom", namespace: composeTransition))
                 }
             }
-            .background(ComposeTabAction { openComposer(.new) })
+            .background(ComposeTabAction { compose(.new) })
         } else {
-            TabView(selection: $selection) {
+            TabView(selection: Binding(get: { selection }, set: { selection = $0 })) {
                 ForEach(Workflow.allCases) { status in
                     section(status)
                         .tabItem { Label(status.title, systemImage: status.symbol) }
@@ -199,7 +207,9 @@ struct MailboxView: View {
             path: Binding(get: { paths[status, default: []] }, set: { paths[status] = $0 })
         ) {
             mailboxViewport(status)
+                // The Undo banner sits above the dock, so the dock stays put while it shows.
                 .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner() }
+                .draftDock()
                 .navigationTitle(status.title)
                 .searchable(text: $searchInput.text, isPresented: Binding(
                     get: { searching && selection == status },
@@ -210,8 +220,7 @@ struct MailboxView: View {
                 .toolbar {
                     if legacyBottomCompose && !selecting {
                         ToolbarItem(placement: .bottomBar) {
-                            Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
-                                .modifier(ComposerSource(source: "compose-\(status.rawValue)", namespace: composeTransition))
+                            Button("Compose", systemImage: "square.and.pencil") { compose(.new) }
                         }
                     }
                 }
@@ -224,33 +233,37 @@ struct MailboxView: View {
                                              apply: applySelection, snooze: { bulkSnooze = true })
                     }
                 }
-                .toolbar(selecting || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
+                .toolbar(selecting || panel.covering || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
                 .navigationDestination(for: MailboxRoute.self) { route in
-                    switch route {
-                    case .conversation(let id, let depth):
-                        if store.conversation(id) != nil {
-                            let list = readerLists[status]?[depth]
-                            let neighbors = list?.neighbors(of: id, available: readerAvailability(status, depth: depth, list: list))
-                            ThreadView(id: id, inboxAccountID: depth == 1 ? composeInboxAccount : nil,
-                                       initialQuery: list?.query ?? "", previousID: neighbors?.previous, nextID: neighbors?.next,
-                                       next: { neighbors?.next ?? neighbors?.previous }, open: { next in
-                                guard paths[status]?.last == .conversation(id, depth: depth) else { return }
-                                paths[status]?.removeLast()
-                                paths[status]?.append(.conversation(next, depth: depth))
-                            }, showSender: { sender in
-                                paths[status, default: []].append(.sender(sender))
-                            })
-                            // A replaced thread is a new view, so it marks the next conversation read and drops the old one's state.
-                            .id(id)
+                    Group {
+                        switch route {
+                        case .conversation(let id, let depth):
+                            if store.conversation(id) != nil {
+                                let list = readerLists[status]?[depth]
+                                let neighbors = list?.neighbors(of: id, available: readerAvailability(status, depth: depth, list: list))
+                                ThreadView(id: id, inboxAccountID: depth == 1 ? composeInboxAccount : nil,
+                                           initialQuery: list?.query ?? "", previousID: neighbors?.previous, nextID: neighbors?.next,
+                                           next: { neighbors?.next ?? neighbors?.previous }, open: { next in
+                                    guard paths[status]?.last == .conversation(id, depth: depth) else { return }
+                                    paths[status]?.removeLast()
+                                    paths[status]?.append(.conversation(next, depth: depth))
+                                }, showSender: { sender in
+                                    paths[status, default: []].append(.sender(sender))
+                                })
+                                // A replaced thread is a new view, so it marks the next conversation read and drops the old one's state.
+                                .id(id)
+                            }
+                            else { DraftThreadView(id: id) }
+                        case .sender(let sender): SenderHistoryView(sender: sender) { id, order in openSecondary(id, status: status, order: order, query: "") }
+                        case .removed(let mailbox): RemovedMailboxView(mailbox: mailbox) { id, order, query in openSecondary(id, status: status, order: order, query: query) }
+                        case .scheduled: ScheduledMailboxView()
+                        case .scheduledMessage(let id): ScheduledMessageView(id: id)
                         }
-                        else { DraftThreadView(id: id) }
-                    case .sender(let sender): SenderHistoryView(sender: sender) { id, order in openSecondary(id, status: status, order: order, query: "") }
-                    case .removed(let mailbox): RemovedMailboxView(mailbox: mailbox) { id, order, query in openSecondary(id, status: status, order: order, query: query) }
-                    case .scheduled: ScheduledMailboxView()
-                    case .scheduledMessage(let id): ScheduledMessageView(id: id)
-                    }
+                    }.draftDock()
                 }
         }
+        // Over the tab's screens and under its tab bar, so the tab bar floats over the docked panel.
+        .overlay { if status == (panel.request?.tab ?? selection) { ComposerPanelHost() } }
     }
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
@@ -310,10 +323,6 @@ struct MailboxView: View {
         withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
             filterBinding(status).wrappedValue.enabled.toggle()
         }
-    }
-    private var composerSourceID: String {
-        if #available(iOS 27, *) { return "compose-bottom" }
-        return "compose-\(selection.rawValue)"
     }
     private var legacyBottomCompose: Bool {
         if #available(iOS 27, *) { return false }
@@ -592,7 +601,7 @@ struct MailboxView: View {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         if pullAction == .search { withTransaction(transaction) { searching = true } }
-        if pullAction == .compose { openComposer(.new) }
+        if pullAction == .compose { compose(.new) }
     }
     private func captureList(_ status: Workflow, order: [UUID]) {
         let scope: Workflow? = allMail(status) ? nil : status
@@ -624,9 +633,6 @@ struct MailboxView: View {
         guard selection == .inbox, !allMail(.inbox), filter.enabled, let ids = filter.accountIDs else { return nil }
         let included = store.accounts.filter { ids.contains($0.id) }
         return included.count == 1 ? included[0].id : nil
-    }
-    private func openComposer(_ mode: ComposeMode) {
-        composer = mode
     }
     private func act(_ action: () -> Void) {
         withAnimation { action() }

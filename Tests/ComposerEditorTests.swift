@@ -4,6 +4,58 @@ import UserNotifications
 import SwiftUI
 @testable import Mailern
 
+@MainActor final class ComposerPanelTests: XCTestCase {
+    func testComposeRequestedDuringCloseOpensNext() async throws {
+        let animationsEnabled = UIView.areAnimationsEnabled
+        UIView.setAnimationsEnabled(false)
+        defer { UIView.setAnimationsEnabled(animationsEnabled) }
+
+        let panel = ComposerPanel()
+        panel.present(.new)
+        for _ in 0..<20 where !panel.settled { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(panel.settled)
+
+        let draftID = UUID()
+        panel.close()
+        panel.selectedTab = .settled
+        panel.present(.draft(draftID))
+        panel.selectedTab = .snoozed
+        for _ in 0..<20 where panel.request?.mode != .draft(draftID) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(panel.request?.mode, .draft(draftID))
+        XCTAssertEqual(panel.request?.tab, .settled)
+    }
+
+    func testFailedDockRetainsQueuedComposeUntilRetrySucceeds() async throws {
+        let animationsEnabled = UIView.areAnimationsEnabled
+        UIView.setAnimationsEnabled(false)
+        defer { UIView.setAnimationsEnabled(animationsEnabled) }
+
+        let panel = ComposerPanel()
+        panel.present(.new)
+        for _ in 0..<20 where !panel.settled { try await Task.sleep(for: .milliseconds(10)) }
+        let original = try XCTUnwrap(panel.request)
+        panel.dock()
+        let draftID = UUID()
+        panel.selectedTab = .settled
+        panel.present(.draft(draftID))
+
+        panel.open()
+        for _ in 0..<20 where !panel.settled { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(panel.request?.id, original.id)
+        XCTAssertEqual(panel.request?.tab, .inbox)
+
+        panel.dock()
+        panel.dockReady()
+        for _ in 0..<20 where panel.request?.mode != .draft(draftID) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(panel.request?.mode, .draft(draftID))
+        XCTAssertEqual(panel.request?.tab, .settled)
+    }
+}
+
 @MainActor final class ComposerEditorTests: XCTestCase {
     func testFormattedSignatureCountsAsEdited() throws {
         let text = NSMutableAttributedString(attributedString: RichText.plain("Hi\n\nMorgan"))
@@ -109,7 +161,7 @@ import SwiftUI
             let saved = await drafts.save(draft)
             XCTAssertTrue(saved)
             let window = UIWindow(windowScene: scene)
-            let host = UIHostingController(rootView: ComposerView(mode: mode).environment(store).environment(drafts))
+            let host = UIHostingController(rootView: ComposerView(mode: mode).environment(store).environment(drafts).environment(ComposerPanel()))
             window.rootViewController = host
             window.makeKeyAndVisible()
             defer { host.view.endEditing(true); window.isHidden = true }
@@ -254,7 +306,7 @@ import SwiftUI
         let window = UIWindow(windowScene: scene)
         let host = UIHostingController(rootView: ComposerView(mode: .draft(editingID))
             .environment(MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite"))))
-            .environment(drafts))
+            .environment(drafts).environment(ComposerPanel()))
         window.rootViewController = host
         window.makeKeyAndVisible()
         defer { host.view.endEditing(true); window.isHidden = true }
@@ -308,7 +360,7 @@ import SwiftUI
         let window = UIWindow(windowScene: scene)
         let directory = URL.temporaryDirectory.appending(path: "composer-field-check-\(UUID())")
         let store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite")))
-        let host = UIHostingController(rootView: ComposerView(mode: .new).environment(store).environment(DraftStore(url: directory.appending(path: "drafts.json"))))
+        let host = UIHostingController(rootView: ComposerView(mode: .new).environment(store).environment(DraftStore(url: directory.appending(path: "drafts.json"))).environment(ComposerPanel()))
         window.rootViewController = host
         window.makeKeyAndVisible()
         defer { host.view.endEditing(true); window.isHidden = true }

@@ -159,7 +159,11 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
 final class DraftStore {
     /// Drafts and scheduled mail, as stored.
     private(set) var all: [ComposerDraft] = [] {
-        didSet { reminderRevision &+= 1 }
+        didSet {
+            reminderRevision &+= 1
+            // A minimized draft that is sent or discarded leaves the dock.
+            if let id = docked?.id, !all.contains(where: { $0.id == id && $0.sendAt == nil }) { docked = nil }
+        }
     }
     private(set) var reminderRevision: UInt64 = 0
     /// Drafts being written. Scheduled mail waits in `outbox` instead.
@@ -170,6 +174,15 @@ final class DraftStore {
     var undoable: UUID?
     /// A draft to open in the composer, set when Undo Send or Edit takes scheduled mail back.
     var reopening: UUID?
+    /// The minimized draft and where its editor was, so the composer can resume there. Snoozing it clears the dock.
+    struct Docked {
+        var id: UUID
+        var selections: [NSRange]
+        var typing: [NSAttributedString.Key: Any]
+    }
+    var docked: Docked?
+    /// Drafts with a delete or discard in progress. The dock does not reopen them.
+    private(set) var deleting: Set<UUID> = []
     var error: String?
     /// Counts Pin, Snooze, Restore, Settle, and Discard on standalone drafts, like `MailStore.actionCount`.
     private(set) var actionCount = 0
@@ -257,7 +270,9 @@ final class DraftStore {
         }
     }
     @discardableResult func delete(_ id: UUID) async -> Bool {
-        await enqueue {
+        deleting.insert(id)
+        defer { deleting.remove(id) }
+        let deleted = await enqueue {
             guard self.all.contains(where: { $0.id == id }) || self.mail?.discardedDraftIDs.contains(id) == true else {
                 if self.loadFailure == nil {
                     let url = self.url
@@ -267,11 +282,15 @@ final class DraftStore {
             }
             return await self.persist(self.all.filter { $0.id != id })
         }
+        return deleted
     }
     /// Mail records the discarded IDs in the same transaction as the move. The draft file can catch up after a crash.
     func discardDrafts(for ids: Set<UUID>, scheduled: Bool = false,
                        committingMail: (@MainActor (Set<UUID>) -> Bool)? = nil) async -> Bool {
-        await enqueue {
+        let pending = Set(all.filter { ids.contains($0.id) || $0.mode.replyID.map(ids.contains) == true }.map(\.id))
+        deleting.formUnion(pending)
+        defer { deleting.subtract(pending) }
+        return await enqueue {
             guard self.loadFailure == nil else { self.error = self.loadFailure; return false }
             let removed = Set(self.all.filter { draft in
                 (scheduled || draft.sendAt == nil) && (ids.contains(draft.id) || draft.mode.replyID.map(ids.contains) == true)
@@ -398,6 +417,7 @@ final class DraftStore {
     func snooze(_ ids: Set<UUID>, until date: Date) async -> Bool {
         guard date > .now else { return false }
         guard await updateMailbox(ids: ids, change: { $0.snoozedUntil = date }) else { return false }
+        if let id = docked?.id, ids.contains(id) { docked = nil }
         actionCount += 1
         return true
     }
