@@ -948,6 +948,20 @@ import os
         assert(store.mergeRemote(remoteBatch(7, [woke])))
         let settledLate = store.conversation(thread.id)!
         assert(settledLate.workflow == .settled && settledLate.followUp == nil)
+        // The phone already turned the reminder into No Reply before the service found the reply sent in time.
+        var noReplyYet = settledLate
+        noReplyYet.move(to: .inbox)
+        noReplyYet.followUp = .noReply
+        noReplyYet.returnedFromSnoozeAt = deadline
+        noReplyYet.synced = noReplyYet.remoteState
+        store.replaceRemote(conversations: [noReplyYet], accounts: store.accounts, invalidatingUndo: [])
+        var found = woke
+        found.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                            date: deadline.addingTimeInterval(-30), body: "Sent in time", outgoing: false,
+                                            subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(8, [found])))
+        let settledOverdue = store.conversation(thread.id)!
+        assert(settledOverdue.workflow == .settled && settledOverdue.followUp == nil)
         // A send from an alias the server no longer lists is refused instead of going out from the main address.
         var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
         draft.to = "alex@example.test"

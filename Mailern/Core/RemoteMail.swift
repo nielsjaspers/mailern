@@ -316,7 +316,7 @@ extension MailStore {
         let replies = local == nil ? [] : remote.messages.filter { !$0.outgoing && $0.deleted != true && !known.contains($0.id) }
         let replied = !replies.isEmpty
         // The reminder this sync may end, judged before the server's wake can turn it into No Reply.
-        let deadline = c.followUp == .waiting ? c.snoozedUntil : nil
+        let deadline = c.followUp == .waiting ? c.snoozedUntil : c.followUp == .noReply ? c.returnedFromSnoozeAt : nil
         // A new reply wins over a move the server has not confirmed, as an arrival does in Mailern: it returns the
         // thread to Inbox, rescues it from Trash, and ends its reminder.
         var keeping = fields
