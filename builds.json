@@ -523,6 +523,16 @@
       "finished_at": "2026-11-19T18:05:40+00:00",
       "bundle_id": "com.example.mailern",
       "ipa_sha256": "16764c08f060f3497444964f918f0fcaf530ec9dadb88a1036a817e1d7c4c996"
+    },
+    {
+      "source_revision": "24540e44e8fc0a2b355149120f2c5d86e09e9c74",
+      "branch": "feat/mail-server",
+      "uncommitted_changes": false,
+      "source_digest": "1612eaa6677f55a2f21a17f86d9233d560b0cc31b79e00c117479c1c3998760f",
+      "build": 74,
+      "version": "0.7.5",
+      "status": "reserved",
+      "created_at": "2026-11-19T21:51:11+00:00"
     }
   ]
 }
