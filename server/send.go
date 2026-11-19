@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 	"time"
 
@@ -68,27 +67,46 @@ func (a *Account) Send(req SendRequest) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	known := false
-	a.store.Read(func(st *State) { known = st.account(a.cfg.ID).Messages[key] != nil })
+	var invalidThread bool
+	a.store.Read(func(st *State) {
+		account := st.account(a.cfg.ID)
+		_, known = account.Receipts[key]
+		thread := st.Conversations[req.ConversationID]
+		invalidThread = thread != nil && (thread.AccountID != a.cfg.ID || thread.Deleting)
+	})
 	if known {
-		return nil
+		// An earlier state write might still need to reach disk.
+		a.Trigger()
+		return a.store.Update(func(*State) error { return nil })
+	}
+	if invalidThread {
+		return badRequest{errors.New("the original conversation is unavailable")}
 	}
 	c, err := a.connect()
 	if err != nil {
 		return err
 	}
-	if sent := a.mailboxes[RoleSent]; sent != "" {
-		if _, err := c.Select(sent, nil).Wait(); err != nil {
-			a.disconnect()
-			return err
-		}
-		criteria := &imap.SearchCriteria{Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: key}}}
-		found, err := c.UIDSearch(criteria, nil).Wait()
+	sent := a.mailboxes[RoleSent]
+	if sent != "" {
+		found, err := sentContains(c, sent, key)
 		if err != nil {
 			a.disconnect()
 			return err
 		}
-		if len(found.AllUIDs()) > 0 {
-			return a.record(req, key)
+		if found {
+			return a.record(req, key, nil)
+		}
+	} else if *a.cfg.AppendSent {
+		return errors.New("configure a Sent mailbox before sending")
+	}
+	if req.InReplyTo != "" {
+		var present bool
+		a.store.Read(func(st *State) {
+			thread := st.Conversations[req.ConversationID]
+			present = thread != nil && thread.AccountID == a.cfg.ID && !thread.Deleting
+		})
+		if !present {
+			return badRequest{errors.New("the original message is unavailable")}
 		}
 	}
 	raw, err := a.compose(req, key)
@@ -98,18 +116,62 @@ func (a *Account) Send(req SendRequest) error {
 	if err := a.submit(req, raw); err != nil {
 		return err
 	}
-	if err := a.record(req, key); err != nil {
+	var toFile []byte
+	if *a.cfg.AppendSent {
+		toFile = raw
+	}
+	err = a.record(req, key, toFile)
+	a.Trigger()
+	if err != nil || toFile == nil {
 		return err
 	}
-	if *a.cfg.AppendSent && a.mailboxes[RoleSent] != "" {
-		if err := appendMessage(c, a.mailboxes[RoleSent], raw, []imap.Flag{imap.FlagSeen}); err != nil {
-			// The mail went out, so the send succeeds. Without a Sent copy, the message leaves its
-			// conversation when its wait for one ends.
-			a.disconnect()
-			log.Printf("%s: saving to Sent failed: %v", a.cfg.ID, err)
+	// SMTP accepted the message. A sync retries Sent filing if IMAP is unavailable.
+	if err := a.fileSent(c); err != nil {
+		a.disconnect()
+	}
+	return nil
+}
+
+func sentContains(c *imapclient.Client, sent, key string) (bool, error) {
+	if _, err := c.Select(sent, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		return false, err
+	}
+	criteria := &imap.SearchCriteria{Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: key}}}
+	found, err := c.UIDSearch(criteria, nil).Wait()
+	if err != nil {
+		return false, err
+	}
+	return len(found.AllUIDs()) != 0, nil
+}
+
+func (a *Account) fileSent(c *imapclient.Client) error {
+	pending := make(map[string][]byte)
+	a.store.Read(func(st *State) {
+		for key, raw := range st.account(a.cfg.ID).Receipts {
+			if len(raw) > 0 {
+				pending[key] = raw
+			}
+		}
+	})
+	for key, raw := range pending {
+		sent := a.mailboxes[RoleSent]
+		found, err := sentContains(c, sent, key)
+		if err != nil {
+			return err
+		}
+		if !found {
+			if err := appendMessage(c, sent, raw, []imap.Flag{imap.FlagSeen}); err != nil {
+				return err
+			}
+		}
+		if err := a.store.Update(func(st *State) error {
+			st.account(a.cfg.ID).Receipts[key] = nil
+			st.Revision++
+			return nil
+		}); err != nil {
+			return err
 		}
 	}
-	a.Trigger()
 	return nil
 }
 
@@ -127,11 +189,16 @@ func appendMessage(c *imapclient.Client, mailbox string, raw []byte, flags []ima
 }
 
 // record adds a sent message to the service state, so the phone sees it before the Sent copy syncs.
-func (a *Account) record(req SendRequest, key string) error {
+func (a *Account) record(req SendRequest, key string, toFile []byte) error {
 	now := time.Now()
 	return a.store.Update(func(st *State) error {
 		account := st.account(a.cfg.ID)
+		if account.Receipts == nil {
+			account.Receipts = make(map[string][]byte)
+		}
+		account.Receipts[key] = toFile
 		if account.Messages[key] != nil {
+			st.Revision++
 			return nil
 		}
 		sender := a.cfg.SenderName

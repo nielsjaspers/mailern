@@ -80,7 +80,9 @@ type Conversation struct {
 }
 
 type AccountState struct {
-	UIDValidity map[Role]uint32 `json:"uidValidity"`
+	// A receipt outlives the synced message. Its bytes are kept only until Sent filing succeeds.
+	Receipts    map[string][]byte `json:"receipts,omitempty"`
+	UIDValidity map[Role]uint32   `json:"uidValidity"`
 	// Messages by key: the Message-ID header, or a stand-in for mail without one.
 	Messages map[string]*Message `json:"messages"`
 }

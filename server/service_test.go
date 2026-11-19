@@ -425,3 +425,24 @@ func TestHTMLRejectsStaleMailboxIdentity(t *testing.T) {
 		t.Fatalf("stale mailbox identity returned %v", err)
 	}
 }
+
+func TestAcceptedMailFilesAfterReceiptWriteRecovers(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	store := h.account.store
+	path := store.path
+	store.path = t.TempDir() // rename cannot replace the directory
+	req := SendRequest{ID: uuid.NewString(), ConversationID: uuid.NewString(), AccountID: "lab",
+		To: []string{"alex@example.org"}, Subject: "One delivery", Text: "Hello"}
+	if err := h.account.Send(req); err == nil {
+		t.Fatal("expected receipt write to fail")
+	}
+	store.path = path
+	if err := h.account.Send(req); err != nil {
+		t.Fatal(err)
+	}
+	h.sync()
+	if _, ok := h.mailbox("Sent")[req.Subject]; !ok || len(h.lab.Submitted) != 1 {
+		t.Fatal("retry must file the accepted message without a second SMTP delivery")
+	}
+}
