@@ -107,7 +107,10 @@ extension Conversation {
             workflow = remote.workflow
             snoozedUntil = remote.snoozedUntil
             returnedFromSnoozeAt = remote.returnedFromSnoozeAt
-            if followUp == .waiting, workflow != .snoozed { followUp = .noReply }
+            // Only the reminder's own wake makes it overdue. Any other move ends it, as a manual move does.
+            if followUp == .waiting, workflow != .snoozed {
+                followUp = workflow == .inbox && remote.returnedFromSnoozeAt != nil ? .noReply : nil
+            }
         }
         if !fields.contains(.removal) {
             removal = switch remote.removal {
