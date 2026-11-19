@@ -169,3 +169,17 @@ func TestPhoneWakeKeepsTheReturnTime(t *testing.T) {
 		t.Fatalf("an early wake should keep its return time, got %v", c.ReturnedFromSnoozeAt)
 	}
 }
+
+func TestMutedInboxReplyStaysRead(t *testing.T) {
+	h := newHarness(t)
+	root := h.deliver("INBOX", "Dinner", "")
+	h.sync()
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Unread, s.Muted = false, true })
+	h.sync()
+	h.deliver("INBOX", "Re: Dinner", root)
+	h.sync()
+	h.sync()
+	if c := h.conversations()["Dinner"]; c.Unread || c.Workflow != WorkflowInbox {
+		t.Fatalf("a reply to a read, muted thread must not make it unread: %s unread=%v", c.Workflow, c.Unread)
+	}
+}

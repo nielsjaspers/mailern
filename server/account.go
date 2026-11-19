@@ -712,8 +712,9 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 					c.Pending, c.PendingPlacement = true, true
 				}
 			}
+			// A reply joins a muted thread without moving it or making it unread, so it is filed and marked read.
 			if arrived[key] && c.Muted {
-				c.Pending, c.PendingPlacement = true, true
+				c.Pending, c.PendingPlacement, c.PendingRead = true, true, true
 			}
 		}
 		st.Touch(c)
