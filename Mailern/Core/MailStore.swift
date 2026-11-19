@@ -61,6 +61,7 @@ final class MailStore {
     @ObservationIgnored private var noticeExpiryTask: Task<Void, Never>?
     private let persistence: any ConversationPersistence
     private var loadFailure: String?
+    private var outboxVerified = false
     /// False after a failed save, when the stored search index can miss mail that only exists in memory.
     private var indexCurrent = true {
         didSet { if oldValue != indexCurrent { mailboxRevision &+= 1 } }
@@ -73,6 +74,7 @@ final class MailStore {
     }
     @discardableResult
     func reload() -> Bool {
+        outboxVerified = false
         do {
             let stored = try persistence.load()
             let data = stored ?? MailData(conversations: DemoData.conversations())
@@ -172,9 +174,43 @@ final class MailStore {
             return false
         }
     }
-    func finishDraftDiscards() {
-        guard !discardedDraftIDs.isEmpty else { return }
-        save(replacingConversations: conversations, metadataAt: [], draftDiscards: [])
+    func finishDraftDiscards(_ completed: Set<UUID>, reportFailure: Bool = true) {
+        guard !discardedDraftIDs.isDisjoint(with: completed) else { return }
+        save(replacingConversations: conversations, metadataAt: [], draftDiscards: discardedDraftIDs.subtracting(completed), reportFailure: reportFailure)
+    }
+
+    /// Older outbox entries may have a sent message but no cleanup receipt.
+    func unsentDraftIDs(_ ids: Set<UUID>) -> Set<UUID> {
+        var unsent = ids.subtracting(discardedDraftIDs)
+        for thread in conversations {
+            if unsent.isEmpty { break }
+            for message in thread.messages where message.outgoing { unsent.remove(message.id) }
+        }
+        return unsent
+    }
+
+    func recordPreviouslySentDrafts(_ ids: Set<UUID>, reportFailure: Bool = true) -> Bool {
+        ids.isSubset(of: discardedDraftIDs) ||
+            save(replacingConversations: conversations, metadataAt: [], draftDiscards: discardedDraftIDs.union(ids), reportFailure: reportFailure)
+    }
+
+    func beginOutboxLoad() { outboxVerified = false }
+
+    func verifyOutbox(_ ids: Set<UUID>) -> Bool {
+        // DraftStore reports failures to load the outbox through its own storage alert.
+        outboxVerified = recordPreviouslySentDrafts(ids.subtracting(unsentDraftIDs(ids)), reportFailure: false)
+        return outboxVerified
+    }
+
+    /// Startup Trash expiry can delete the only copy of a legacy sent ID before the outbox opens.
+    private func draftDiscards(removing matches: (Conversation) -> Bool, including drafts: Set<UUID> = []) -> Set<UUID> {
+        var discards = discardedDraftIDs.union(drafts)
+        if !outboxVerified {
+            for thread in conversations where matches(thread) {
+                for message in thread.messages where message.outgoing { discards.insert(message.id) }
+            }
+        }
+        return discards
     }
 
     private func canWrite() -> Bool {
@@ -232,9 +268,11 @@ final class MailStore {
             case .pin(let pinned): updated[i].pinned = pinned
             case .remove(.trash):
                 updated[i].endReminder()
+                updated[i].returnedFromSnoozeAt = nil
                 updated[i].removal = .trash(since: .now)
             case .remove(.junk):
                 updated[i].endReminder()
+                updated[i].returnedFromSnoozeAt = nil
                 updated[i].removal = .junk
             case .restoreRemoved:
                 updated[i].removal = nil
@@ -290,6 +328,7 @@ final class MailStore {
                 updated[i].workflow = old.workflow
                 updated[i].snoozedUntil = old.snoozedUntil
                 updated[i].followUp = old.followUp
+                updated[i].returnedFromSnoozeAt = old.returnedFromSnoozeAt
             case .read: updated[i].unread = old.unread
             case .pin: updated[i].pinned = old.pinned
             case .remove:
@@ -298,6 +337,7 @@ final class MailStore {
                 updated[i].workflow = old.workflow
                 updated[i].snoozedUntil = old.snoozedUntil
                 updated[i].followUp = old.followUp
+                updated[i].returnedFromSnoozeAt = old.returnedFromSnoozeAt
                 updated[i].unread = old.unread
             case .restoreRemoved:
                 updated[i].removal = old.removal
@@ -338,8 +378,10 @@ final class MailStore {
         if !due.isEmpty, nextExpiryRetry.map({ $0 <= now }) ?? true {
             var updated = conversations
             for i in due {
+                let date = updated[i].snoozedUntil
                 let waiting = updated[i].followUp == .waiting
                 updated[i].move(to: .inbox)
+                updated[i].returnedFromSnoozeAt = date
                 if waiting { updated[i].followUp = .noReply }
             }
             if save(replacingConversations: updated, metadataAt: due, reportFailure: nextExpiryRetry == nil) {
@@ -366,7 +408,8 @@ final class MailStore {
         }
         let remaining = conversations.filter { !ids.contains($0.id) }
         guard remaining.count != conversations.count else { return false }
-        guard save(replacingConversations: remaining, draftDiscards: drafts.isEmpty ? nil : discardedDraftIDs.union(drafts)) else { return false }
+        let discards = draftDiscards(removing: { ids.contains($0.id) }, including: drafts)
+        guard save(replacingConversations: remaining, draftDiscards: discards) else { return false }
         if undoSnapshot.contains(where: { ids.contains($0.id) }) { clearNotice() }
         conversations = remaining
         return true
@@ -415,9 +458,10 @@ final class MailStore {
         guard canWrite(), accounts.count > 1, accounts.contains(where: { $0.id == id }) else { return false }
         let before = (accounts, conversations)
         let removed = Set(conversations.filter { $0.accountID == id }.map(\.id))
+        let discards = draftDiscards(removing: { removed.contains($0.id) })
         accounts.removeAll { $0.id == id }
         conversations.removeAll { removed.contains($0.id) }
-        guard save() else { (accounts, conversations) = before; return false }
+        guard save(draftDiscards: discards) else { (accounts, conversations) = before; return false }
         if undoSnapshot.contains(where: { removed.contains($0.id) }) { clearNotice() }
         error = nil
         return true
@@ -496,7 +540,7 @@ final class MailStore {
     /// Sends a message. With a `threadID`, it answers the message `replyingTo` in that conversation, or the latest one.
     /// The conversation settles, or waits in Snoozed until `followUp` when that is still ahead.
     func send(threadID: UUID?, replyingTo: UUID? = nil, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
-              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil, id: UUID = UUID()) -> Bool {
+              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil, id: UUID = UUID(), discardingDraft: UUID? = nil) -> Bool {
         guard canWrite() else { return false }
         guard accounts.contains(where: { $0.id == account.id }) else {
             error = "The sending account no longer exists. Choose another From address."
@@ -524,8 +568,11 @@ final class MailStore {
         } else {
             conversations[i].move(to: .settled)
         }
+        var sent = data
+        if let discardingDraft { sent.discardedDraftIDs.insert(discardingDraft) }
         do {
-            try persistence.save(data)
+            try persistence.save(sent)
+            if discardingDraft != nil { discardedDraftIDs = sent.discardedDraftIDs }
             indexCurrent = true
             clearNotice()
             error = nil
@@ -539,18 +586,28 @@ final class MailStore {
     }
     /// Sends a composed draft as message `id`. A message with that ID that already went out is not sent again.
     @discardableResult func send(_ draft: ComposerDraft, id: UUID = UUID()) -> Bool {
-        if conversations.contains(where: { $0.messages.contains { $0.id == id } }) { return true }
+        if unsentDraftIDs([id]).isEmpty { return true }
+        return sendDraft(draft, id: id)
+    }
+
+    /// Delivery checks the queued IDs together before calling this method.
+    func sendUnsentOutboxDraft(_ draft: ComposerDraft) -> Bool {
+        sendDraft(draft, id: draft.id, discardingDraft: draft.id)
+    }
+
+    private func sendDraft(_ draft: ComposerDraft, id: UUID, discardingDraft: UUID? = nil) -> Bool {
         return send(threadID: draft.mode.replyID, replyingTo: draft.answering ?? draft.messageID, account: account(draft.accountID),
                     to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
                     subject: draft.subject.isEmpty ? "(No Subject)" : draft.subject, body: draft.text,
                     bcc: ComposerDraft.addresses(draft.bcc), richText: draft.richText, attachments: draft.attachments,
-                    followUp: draft.followUp, id: id)
+                    followUp: draft.followUp, id: id, discardingDraft: discardingDraft)
     }
     func reset() {
-        let replacement = MailData(conversations: DemoData.conversations(), discardedDraftIDs: discardedDraftIDs)
+        let replacement = MailData(conversations: DemoData.conversations(), discardedDraftIDs: draftDiscards(removing: { _ in true }))
         do {
             try persistence.save(replacement)
             conversations = replacement.conversations
+            discardedDraftIDs = replacement.discardedDraftIDs
             accounts = replacement.accounts
             blockedSenders = []
             indexCurrent = true

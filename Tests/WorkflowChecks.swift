@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import os
 
 @main struct WorkflowChecks {
     @MainActor static func main() async throws {
@@ -27,6 +28,8 @@ import SQLite3
         try checkMute()
         try checkFollowUp()
         try await checkOutbox()
+        try await checkExistingOutbox()
+        try await checkLocalReminders()
         try checkActionHaptics()
         await checkDraftDiscardHaptics()
         checkAllMailSearch()
@@ -547,11 +550,100 @@ import SQLite3
         print("PASS: follow-up reminders wait in Snoozed, return marked without a reply, end on reply or a manual move, undo, persistence")
     }
 
-    @MainActor static func checkOutbox() async throws {
-        let directory = URL.temporaryDirectory.appending(path: "mailern-outbox-\(UUID())")
-        let store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "outbox.sqlite")))
+    @MainActor static func checkLocalReminders() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-reminders-\(UUID())")
+        let disk = SQLitePersistence(url: directory.appending(path: "mail.sqlite"))
+        let mail = MailStore(persistence: disk)
         let url = directory.appending(path: "drafts.json")
         let drafts = DraftStore(url: url)
+        let start = Date.now
+        let due = start.addingTimeInterval(600)
+        let thread = mail.list(.inbox).first { $0.messages.contains { !$0.outgoing } }!
+        func reminder() -> MailReminder? {
+            MailReminder.plan(mail: mail, drafts: drafts, now: start).first { $0.conversationID == thread.id }
+        }
+        assert(mail.move(thread.id, to: .snoozed, until: due))
+        let original = reminder()!
+        let delayed = due.addingTimeInterval(120)
+        assert(mail.move(thread.id, to: .snoozed, until: delayed))
+        let replacement = reminder()!
+        assert(original.id == replacement.id && original.token != replacement.token)
+        assert(!MailReminder.act(id: original.id, token: original.token, action: "settle", mail: mail, now: delayed))
+        assert(!MailReminder.act(id: replacement.id, token: replacement.token, action: "settle", mail: mail, now: start))
+        mail.wakeDue(now: delayed)
+        let reopened = MailStore(persistence: disk)
+        assert(MailReminder.isActionable(id: replacement.id, token: replacement.token, mail: reopened, now: delayed))
+        assert(MailReminder.act(id: replacement.id, token: replacement.token, action: "snooze", mail: mail, now: delayed))
+        assert(mail.conversation(thread.id)!.snoozedUntil == delayed.addingTimeInterval(3600))
+        assert(!MailReminder.act(id: replacement.id, token: replacement.token, action: "settle", mail: mail, now: delayed))
+        let repeated = reminder()!
+        mail.receiveReply(thread.id)
+        assert(reminder() == nil)
+        assert(!MailReminder.act(id: repeated.id, token: repeated.token, action: "settle", mail: mail, now: repeated.date))
+
+        assert(mail.send(threadID: thread.id, account: mail.account(thread.accountID), to: [thread.correspondent.address],
+                         cc: [], subject: thread.subject, body: "Following up", followUp: due))
+        let followUp = reminder()!
+        assert(followUp.title == "No reply yet" && followUp.conversationID == thread.id)
+        mail.wakeDue(now: due)
+        assert(MailReminder.act(id: followUp.id, token: followUp.token, action: "settle", mail: mail, now: due))
+        assert(mail.conversation(thread.id)!.workflow == .settled)
+        assert(!MailReminder.isActionable(id: followUp.id, token: followUp.token, mail: mail, now: due))
+
+        let scheduled = ComposerDraft(subject: "File report")
+        let undoSend = ComposerDraft(subject: "Already sending")
+        let snoozed = ComposerDraft(subject: "Edit later", snoozedUntil: due)
+        let savedScheduled = await drafts.schedule(scheduled, at: due)
+        let savedUndo = await drafts.schedule(undoSend, at: due, holdingForUndo: true)
+        let savedSnooze = await drafts.save(snoozed)
+        assert(savedScheduled && savedUndo && savedSnooze)
+        let draftPlan = MailReminder.plan(mail: mail, drafts: DraftStore(url: url), now: start)
+        assert(draftPlan.contains { $0.id == "scheduled.\(scheduled.id)" && $0.conversationID == nil })
+        assert(draftPlan.contains { $0.id == "draft.\(snoozed.id)" && $0.date == due })
+        assert(!draftPlan.contains { $0.id == "scheduled.\(undoSend.id)" })
+        // A failed reload can leave an old draft snapshot in memory. Mail reminders must still update.
+        let badDraftURL = directory.appending(path: "unreadable-drafts.json")
+        try FileManager.default.copyItem(at: url, to: badDraftURL)
+        let unreadableDrafts = DraftStore(url: badDraftURL)
+        try Data("unreadable".utf8).write(to: badDraftURL)
+        await unreadableDrafts.reload()
+        assert(unreadableDrafts.needsReload && !unreadableDrafts.all.isEmpty)
+        await unreadableDrafts.sendDue(through: mail, now: delayed)
+        assert(!mail.conversations.contains { $0.messages.contains { $0.id == scheduled.id || $0.id == undoSend.id } })
+        assert(mail.move(thread.id, to: .snoozed, until: due))
+        let mailOnly = MailReminder.plan(mail: mail, drafts: unreadableDrafts, now: start)
+        assert(mailOnly.contains { $0.conversationID == thread.id } && mailOnly.allSatisfy { $0.conversationID != nil })
+        let missingMail = SQLitePersistence(url: directory.appending(path: "missing.sqlite"), requiresSeed: true)
+        assert(MailReminder.plan(mail: MailStore(persistence: missingMail), drafts: drafts, now: start).isEmpty)
+        let rescheduled = await drafts.schedule(scheduled, at: delayed)
+        assert(rescheduled)
+        assert(MailReminder.plan(mail: mail, drafts: drafts, now: start).first { $0.id == "scheduled.\(scheduled.id)" }?.date == delayed)
+        let canceled = await drafts.unschedule(scheduled.id)
+        assert(canceled)
+        assert(!MailReminder.plan(mail: mail, drafts: drafts, now: start).contains { $0.id == "scheduled.\(scheduled.id)" })
+        let many = (0..<150).map { n in
+            Conversation(accountID: thread.accountID, subject: "Reminder \(n)", workflow: .snoozed,
+                         snoozedUntil: due.addingTimeInterval(Double((149 - n) / 3)), messages: [thread.latest])
+        }
+        try disk.save(MailData(conversations: many))
+        let largeMailbox = MailStore(persistence: disk)
+        let limited = MailReminder.plan(mail: largeMailbox, drafts: DraftStore(url: directory.appending(path: "empty.json")), now: start)
+        let expected = many.sorted { left, right in
+            left.snoozedUntil == right.snoozedUntil ? left.id.uuidString < right.id.uuidString : left.snoozedUntil! < right.snoozedUntil!
+        }
+        assert(limited.compactMap(\.conversationID) == Array(expected.prefix(64)).map(\.id))
+        let badges = MailReminder.badges(for: limited, mail: largeMailbox)
+        assert(badges[limited[0].id] == 3 && badges[limited[2].id] == 3)
+        assert(badges[limited[63].id] == 66)
+        print("PASS: local reminders replace or cancel on mail changes, survive expiry and reload, reject stale actions, and exclude Undo Send")
+    }
+
+    @MainActor static func checkOutbox() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-outbox-\(UUID())")
+        let mailURL = directory.appending(path: "outbox.sqlite")
+        var store = MailStore(persistence: SQLitePersistence(url: mailURL))
+        let url = directory.appending(path: "drafts.json")
+        var drafts = DraftStore(url: url, mail: store)
         let thread = store.list(.inbox).first { $0.messages.contains { !$0.outgoing } }!
         let start = Date.now
         var later = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
@@ -571,16 +663,40 @@ import SQLite3
         assert(discarded && drafts.outbox.count == 2)
         await drafts.sendDue(through: store, now: start.addingTimeInterval(99))
         assert(drafts.outbox.count == 2 && !store.conversations.contains { $0.subject == "Later" })
-        // A failed draft write after sending keeps the mail scheduled, and the retry does not send it twice.
-        let failing = DraftStore(url: url, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
-        await failing.sendDue(through: store, now: start.addingTimeInterval(101))
-        await failing.sendDue(through: store, now: start.addingTimeInterval(102))
-        assert(failing.outbox.count == 2 && store.conversations.filter { $0.subject == "Later" }.count == 1)
-        await drafts.sendDue(through: store, now: start.addingTimeInterval(103))
-        let sent = store.conversations.first { $0.subject == "Later" }!
-        assert(drafts.outbox.map(\.id) == [reply.id] && sent.messages.map(\.id) == [later.id])
-        // The reminder starts when the mail goes out.
-        assert(sent.workflow == .snoozed && sent.followUp == .waiting)
+        // Reject the receipt write after SQLite has staged the sent message.
+        var db: OpaquePointer?
+        assert(sqlite3_open(mailURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let abortReceipt = "CREATE TRIGGER reject_receipt BEFORE INSERT ON settings WHEN NEW.key = 'discardedDraftIDs' BEGIN SELECT RAISE(ABORT, 'receipt unavailable'); END"
+        assert(sqlite3_exec(db, abortReceipt, nil, nil, nil) == SQLITE_OK)
+        let failing = DraftStore(url: url, mail: store, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let rejected = await failing.sendNow(later.id, through: store)
+        assert(!rejected && store.discardedDraftIDs.isEmpty && failing.outbox.count == 2)
+        let rolledBack = MailStore(persistence: SQLitePersistence(url: mailURL))
+        assert(rolledBack.discardedDraftIDs.isEmpty && !rolledBack.conversations.contains { $0.subject == later.subject })
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_receipt", nil, nil, nil) == SQLITE_OK)
+
+        // Send Now commits, but the draft manifest still contains the scheduled copy.
+        let cleanupFailed = await failing.sendNow(later.id, through: store)
+        assert(!cleanupFailed && failing.outbox.map(\.id) == [reply.id])
+        assert(store.discardedDraftIDs == [later.id] && DraftStore(url: url).outbox.count == 2)
+        let sent = store.conversations.first { $0.subject == later.subject }!
+        assert(sent.messages.map(\.id) == [later.id] && sent.workflow == .snoozed && sent.followUp == .waiting)
+        let remindersAfterSend = MailReminder.plan(mail: store, drafts: failing, now: start)
+        assert(!remindersAfterSend.contains { $0.id == "scheduled.\(later.id)" })
+        assert(remindersAfterSend.contains { $0.id == "scheduled.\(reply.id)" })
+        assert(store.apply(ids: [sent.id], action: .remove(.trash)))
+        assert(store.deletePermanently([sent.id], from: .trash))
+        store = MailStore(persistence: SQLitePersistence(url: mailURL))
+        assert(store.discardedDraftIDs == [later.id])
+        drafts = DraftStore(url: url, mail: store)
+        assert(drafts.outbox.map(\.id) == [reply.id])
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(101))
+        await drafts.recoverAfterMailLoad()
+        assert(store.discardedDraftIDs.isEmpty && DraftStore(url: url).outbox.map(\.id) == [reply.id])
+        assert(!store.conversations.contains { $0.messages.contains { $0.id == later.id } })
+        let recovered = MailStore(persistence: SQLitePersistence(url: mailURL))
+        assert(recovered.discardedDraftIDs.isEmpty && recovered.conversations == store.conversations)
         // Send Now skips the wait. Taking back mail that already went out fails.
         let sentNow = await drafts.sendNow(reply.id, through: store)
         assert(sentNow)
@@ -612,6 +728,158 @@ import SQLite3
         let discardedWithThread = await drafts.discardDrafts(for: [thread.id], scheduled: true)
         assert(discardedWithThread && drafts.outbox.isEmpty)
         print("PASS: outbox scheduling, persistence, due delivery, no duplicate after a failed draft write, reminders on send, send now, edit/unschedule, refused mail back in Drafts, discard with deleted conversation")
+    }
+
+    @MainActor static func checkExistingOutbox() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-existing-outbox-\(UUID())")
+        let mailURL = directory.appending(path: "mail.sqlite")
+        let draftURL = directory.appending(path: "drafts.json")
+        let deadline = Date.now.addingTimeInterval(600)
+        let expired = ComposerDraft(subject: "Sent copy expired", sendAt: deadline)
+        let kept = ComposerDraft(subject: "Sent copy still present", sendAt: deadline)
+        let pending = ComposerDraft(subject: "Waiting for its first send", sendAt: deadline)
+        func sentCopy(_ draft: ComposerDraft, removal: Removal? = nil) -> Conversation {
+            let message = MailMessage(id: draft.id, sender: "Morgan", address: MailAccount.demo[0].address,
+                                      to: ["casey@example.com"], date: .now, body: draft.subject, outgoing: true)
+            return Conversation(accountID: draft.accountID, subject: draft.subject, workflow: .settled,
+                                unread: false, removal: removal, messages: [message])
+        }
+        let expiredCopy = sentCopy(expired, removal: .trash(since: deadline.addingTimeInterval(-2 * MailStore.trashRetention)))
+        let keptCopy = sentCopy(kept)
+        let unrelated = sentCopy(ComposerDraft(subject: "Ordinary old sent mail"))
+        // The old version could leave the JSON outbox and the sent messages on disk with no receipts.
+        try SQLitePersistence(url: mailURL).save(MailData(conversations: [expiredCopy, keptCopy, unrelated]))
+        try AttachmentJSON.save([expired, kept, pending], to: draftURL)
+        let first = MailStore(persistence: SQLitePersistence(url: mailURL))
+        assert(first.conversation(expiredCopy.id) == nil && first.discardedDraftIDs == [expired.id])
+        let drafts = DraftStore(url: draftURL, mail: first)
+        assert(drafts.outbox.map(\.id) == [pending.id])
+        assert(first.discardedDraftIDs == [expired.id, kept.id])
+        assert(first.deletePermanently([keptCopy.id, unrelated.id]))
+        assert(first.discardedDraftIDs == [expired.id, kept.id])
+
+        let reopened = MailStore(persistence: SQLitePersistence(url: mailURL))
+        let outbox = DraftStore(url: draftURL, mail: reopened)
+        await outbox.sendDue(through: reopened, now: deadline)
+        assert(reopened.conversations.flatMap(\.messages).map(\.id) == [pending.id])
+        assert(reopened.discardedDraftIDs.isEmpty && DraftStore(url: draftURL).outbox.isEmpty)
+
+        try AttachmentJSON.save([pending], to: draftURL)
+        await outbox.reload()
+        assert(outbox.outbox.isEmpty && DraftStore(url: draftURL).outbox.isEmpty)
+        let retryURL = directory.appending(path: "retry.sqlite")
+        try SQLitePersistence(url: retryURL).save(MailData(conversations: [keptCopy]))
+        try AttachmentJSON.save([kept, pending], to: draftURL)
+        let retryMail = MailStore(persistence: SQLitePersistence(url: retryURL))
+        var db: OpaquePointer?
+        assert(sqlite3_open(retryURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let reject = "CREATE TRIGGER reject_receipt BEFORE INSERT ON settings WHEN NEW.key = 'discardedDraftIDs' BEGIN SELECT RAISE(ABORT, 'busy'); END"
+        assert(sqlite3_exec(db, reject, nil, nil, nil) == SQLITE_OK)
+        let retryDrafts = DraftStore(url: draftURL, mail: retryMail)
+        assert(!retryDrafts.hasReadableManifest)
+        await retryDrafts.recoverAfterMailLoad(now: deadline)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_receipt", nil, nil, nil) == SQLITE_OK)
+        await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(1))
+        assert(!retryDrafts.hasReadableManifest)
+        assert(retryDrafts.error != nil)
+        retryDrafts.error = nil
+        let manifest = try Data(contentsOf: draftURL)
+        try Data("unreadable manifest".utf8).write(to: draftURL)
+        await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(30))
+        assert(!retryDrafts.hasReadableManifest && retryDrafts.error == nil && retryMail.error == nil)
+        try manifest.write(to: draftURL)
+        await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(31))
+        assert(!retryDrafts.hasReadableManifest)
+        await retryDrafts.recoverAfterMailLoad(now: deadline.addingTimeInterval(60))
+        assert(retryDrafts.outbox.map(\.id) == [pending.id])
+        await retryDrafts.sendDue(through: retryMail, now: deadline.addingTimeInterval(60))
+        assert(retryMail.conversations.flatMap(\.messages).map(\.id).sorted { $0.uuidString < $1.uuidString } == [kept.id, pending.id].sorted { $0.uuidString < $1.uuidString })
+        assert(retryDrafts.outbox.isEmpty)
+        try Data("unreadable at startup".utf8).write(to: draftURL)
+        let cold = DraftStore(url: draftURL, mail: retryMail)
+        assert(!cold.hasReadableManifest && cold.error != nil)
+        cold.error = nil
+        await cold.recoverAfterMailLoad(now: deadline)
+        var another = pending
+        another.id = UUID()
+        try AttachmentJSON.save([another], to: draftURL)
+        await cold.recoverAfterMailLoad(now: deadline.addingTimeInterval(1))
+        assert(!cold.hasReadableManifest && cold.error == nil)
+        await cold.recoverAfterMailLoad(now: deadline.addingTimeInterval(30))
+        await cold.sendDue(through: retryMail, now: deadline.addingTimeInterval(30))
+        assert(cold.hasReadableManifest && cold.outbox.isEmpty)
+        assert(retryMail.conversations.flatMap(\.messages).filter { $0.id == another.id }.count == 1)
+        try AttachmentJSON.save([another], to: draftURL)
+        let blockedCleanup = DraftStore(url: draftURL, mail: retryMail) { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        await blockedCleanup.recoverAfterMailLoad(now: deadline)
+        assert(blockedCleanup.error != nil)
+        blockedCleanup.error = nil
+        await blockedCleanup.recoverAfterMailLoad(now: deadline.addingTimeInterval(30))
+        assert(blockedCleanup.error == nil && blockedCleanup.outbox.isEmpty && retryMail.discardedDraftIDs == [another.id])
+        let cleanupURL = directory.appending(path: "pending-cleanup.json")
+        let blockWrites = directory.appending(path: "block-draft-writes")
+        var automatic = pending
+        automatic.id = UUID()
+        let sleeper = ComposerDraft(subject: "Draft waking during cleanup", snoozedUntil: deadline)
+        try AttachmentJSON.save([automatic, sleeper], to: cleanupURL)
+        let cleanupMail = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "cleanup.sqlite")))
+        let attemptedWrites = OSAllocatedUnfairLock(initialState: [Data]())
+        let cleanup = DraftStore(url: cleanupURL, mail: cleanupMail) { data, url in
+            if FileManager.default.fileExists(atPath: blockWrites.path) {
+                attemptedWrites.withLock { $0.append(data) }
+                throw CocoaError(.fileWriteOutOfSpace)
+            }
+            try data.write(to: url, options: .atomic)
+        }
+        try Data().write(to: blockWrites)
+        await cleanup.sendDue(through: cleanupMail, now: deadline)
+        assert(cleanup.error != nil && cleanupMail.discardedDraftIDs == [automatic.id])
+        cleanup.error = nil
+        for seconds in [0, 30, 60] {
+            attemptedWrites.withLock { $0.removeAll() }
+            let tick = deadline.addingTimeInterval(Double(seconds))
+            async let retry: Void = cleanup.recoverAfterMailLoad(now: tick)
+            async let wake: Void = cleanup.wakeDue(now: tick)
+            _ = await (retry, wake)
+            let payloads = attemptedWrites.withLock { $0 }
+            let attempts = try payloads.map { try JSONDecoder().decode([ComposerDraft].self, from: $0) }
+            assert(attempts.count == 2)
+            assert(attempts.allSatisfy { $0.map(\.id) == [sleeper.id] })
+            assert(attempts.filter { $0.first?.snoozedUntil != nil }.count == 1)
+            assert(cleanup.error == nil && cleanupMail.error == nil)
+            assert(cleanupMail.discardedDraftIDs == [automatic.id])
+        }
+        await cleanup.reload() // A user can still retry and see the current error.
+        assert(cleanup.error != nil)
+        cleanup.error = nil
+        try FileManager.default.removeItem(at: blockWrites)
+        await cleanup.recoverAfterMailLoad(now: deadline.addingTimeInterval(90))
+        assert(cleanupMail.discardedDraftIDs.isEmpty)
+        assert(DraftStore(url: cleanupURL).all.map(\.id) == [sleeper.id])
+        await cleanup.wakeDue(now: deadline.addingTimeInterval(90))
+        assert(cleanupMail.discardedDraftIDs.isEmpty && cleanup.drafts.first?.snoozedUntil == nil)
+        assert(cleanupMail.conversations.flatMap(\.messages).filter { $0.id == automatic.id }.count == 1)
+        let nextSleeper = ComposerDraft(subject: "Separate wake failure", snoozedUntil: deadline.addingTimeInterval(130))
+        let restored = await cleanup.snooze([sleeper.id], until: deadline)
+        let nextSaved = await cleanup.save(nextSleeper)
+        assert(restored && nextSaved)
+        try Data().write(to: blockWrites)
+        await cleanup.wakeDue(now: deadline.addingTimeInterval(120))
+        assert(cleanup.error != nil)
+        cleanup.error = nil
+        try FileManager.default.moveItem(at: blockWrites, to: directory.appending(path: "first-failure"))
+        let restoredManually = await cleanup.restore(sleeper.id)
+        assert(restoredManually)
+        try Data().write(to: blockWrites)
+        await cleanup.wakeDue(now: deadline.addingTimeInterval(130))
+        assert(cleanup.error != nil && cleanup.drafts.contains { $0.id == nextSleeper.id && $0.snoozedUntil != nil })
+        let duplicateURL = directory.appending(path: "duplicate-drafts.json")
+        try AttachmentJSON.save([sleeper, sleeper], to: duplicateURL)
+        let duplicates = DraftStore(url: duplicateURL) { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        await duplicates.wakeDue(now: deadline)
+        assert(duplicates.error != nil && duplicates.all == [sleeper, sleeper])
+        print("PASS: existing outbox reconciles before sent mail deletion and survives startup Trash expiry without redelivery")
     }
 
     @MainActor static func checkTrashAndJunk() throws {
@@ -1131,6 +1399,12 @@ import SQLite3
             }
         }
         let url = URL.temporaryDirectory.appending(path: "mailern-ordered-drafts-\(UUID())/drafts.json")
+        let mail = MailStore(persistence: SQLitePersistence(url: url.deletingLastPathComponent().appending(path: "mail.sqlite")))
+        var due = ComposerDraft(subject: "Queued foreground send")
+        due.to = "sam@example.com"
+        let deadline = Date.now.addingTimeInterval(60)
+        let scheduled = await DraftStore(url: url).schedule(due, at: deadline)
+        assert(scheduled)
         let gate = Gate()
         let store = DraftStore(url: url, write: { try gate.write($0, to: $1) })
         let first = ComposerDraft(subject: "First")
@@ -1142,6 +1416,14 @@ import SQLite3
             try await Task.sleep(for: .milliseconds(10))
         }
         assert(entered) // Main-actor work continues while the writer is blocked.
+        var active = true
+        var startedSending = false
+        let automatic = Task {
+            startedSending = true
+            await store.sendDue(through: mail, now: deadline, whileActive: { active })
+        }
+        while !startedSending { await Task.yield() }
+        active = false
         let savingSecond = Task { await store.save(second) }
         savingFirst.cancel()
         var deleteStarted = false
@@ -1168,6 +1450,11 @@ import SQLite3
         assert(firstSaved && secondSaved && deleted)
         assert(store.drafts.map(\.id) == [second.id])
         assert(reopened == [second.id] && DraftStore(url: url).drafts.map(\.id) == [second.id])
+        await automatic.value
+        assert(store.outbox.map(\.id) == [due.id] && !mail.conversations.contains { $0.subject == due.subject })
+        active = true
+        await store.sendDue(through: mail, now: deadline, whileActive: { active })
+        assert(store.outbox.isEmpty && mail.conversations.filter { $0.subject == due.subject }.count == 1)
         print("PASS: background writes, cancelled-save completion, cross-draft ordering, deletion, and reopening after a drain")
     }
 

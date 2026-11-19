@@ -105,6 +105,8 @@ struct Conversation: Codable, Identifiable, Equatable {
     var unread = true
     var pinned = false
     var snoozedUntil: Date?
+    /// Retains the identity of a delivered reminder until a new message or manual move supersedes it.
+    var returnedFromSnoozeAt: Date?
     var removal: Removal?
     /// Replies to a muted conversation join it without moving it or marking it unread.
     var muted: Bool?
@@ -137,6 +139,7 @@ struct Conversation: Codable, Identifiable, Equatable {
     /// Moving a conversation by hand ends its reminder. Callers that start one set it after the move.
     mutating func move(to status: Workflow, until: Date? = nil) {
         followUp = nil
+        returnedFromSnoozeAt = nil
         if status == .settled { unread = false }
         workflow = status
         snoozedUntil = status == .snoozed ? until : nil

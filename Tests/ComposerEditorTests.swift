@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import UserNotifications
 import SwiftUI
 @testable import Mailern
 
@@ -496,5 +497,84 @@ import SwiftUI
         let font = try XCTUnwrap(decoded.attribute(.font, at: 6, effectiveRange: nil) as? UIFont)
         XCTAssertEqual(font.pointSize, 22)
         XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(.traitBold))
+    }
+}
+
+@MainActor final class MailNotificationTests: XCTestCase {
+    private final class ReminderFixture: ConversationPersistence {
+        var data: MailData
+        init(_ conversation: Conversation) { data = MailData(conversations: [conversation]) }
+        func load() throws -> MailData? { data }
+        func save(_ data: MailData) throws { self.data = data }
+    }
+
+    func testNativeReminderReplacementAndCancellation() async throws {
+        let center = UNUserNotificationCenter.current()
+        let categories = await center.notificationCategories()
+        let category = try XCTUnwrap(categories.first { $0.identifier == "mailern.conversation" })
+        XCTAssertEqual(category.actions.map(\.identifier), ["settle", "snooze"])
+        let settings = await center.notificationSettings()
+        let authorized = [.authorized, .provisional, .ephemeral].contains(settings.authorizationStatus)
+        let prefix = "mailern-test/\(UUID())/"
+        let thread = try XCTUnwrap(DemoData.conversations().first)
+        let mail = MailStore(persistence: ReminderFixture(thread))
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let drafts = DraftStore(url: directory.appending(path: "drafts.json"))
+        let schedule = ComposerDraft(subject: "Native scheduled reminder")
+        let boxes = [ReminderMailbox(scope: "sample", mail: mail, drafts: drafts)]
+        let notifications = MailNotifications()
+        let conversation = prefix + "sample/conversation.\(thread.id)"
+        let scheduled = prefix + "sample/scheduled.\(schedule.id)"
+        defer { center.removePendingNotificationRequests(withIdentifiers: [conversation, scheduled]) }
+        let due = Date.now.addingTimeInterval(600)
+        XCTAssertTrue(mail.move(thread.id, to: .snoozed, until: due))
+        let saved = await drafts.schedule(schedule, at: due)
+        XCTAssertTrue(saved)
+        func pending() async -> [UNNotificationRequest] {
+            await center.pendingNotificationRequests().filter { $0.identifier.hasPrefix(prefix) }
+        }
+        func observe(_ condition: ([UNNotificationRequest]) -> Bool) async throws -> [UNNotificationRequest] {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+            repeat {
+                let requests = await pending()
+                if condition(requests) { return requests }
+                try await Task.sleep(for: .milliseconds(100))
+            } while ContinuousClock.now < deadline
+            XCTFail("The notification center did not reach the expected state")
+            return await pending()
+        }
+        notifications.refresh(namespace: prefix, mailboxes: boxes)
+        guard authorized else {
+            // The native permission belongs to the person running the tests. Do not prompt here.
+            print("Checking notification behavior without permission (status \(settings.authorizationStatus.rawValue))")
+            let requests = await pending()
+            XCTAssertTrue(requests.isEmpty)
+            return
+        }
+        let initial = try await observe { Set($0.map(\.identifier)) == [conversation, scheduled] }
+        let original = try XCTUnwrap(initial.first { $0.identifier == conversation })
+        XCTAssertEqual(original.content.categoryIdentifier, category.identifier)
+        XCTAssertEqual(original.content.badge?.intValue, thread.unread ? 1 : 0)
+        let originalToken = try XCTUnwrap(original.content.userInfo["token"] as? String)
+        let send = try XCTUnwrap(initial.first { $0.identifier == scheduled })
+        XCTAssertTrue(send.content.categoryIdentifier.isEmpty)
+        let originalSchedule = try XCTUnwrap((send.trigger as? UNTimeIntervalNotificationTrigger)?.nextTriggerDate())
+        XCTAssertEqual(originalSchedule.timeIntervalSince(due), 0, accuracy: 5)
+
+        let later = due.addingTimeInterval(300)
+        XCTAssertTrue(mail.move(thread.id, to: .snoozed, until: later))
+        let canceled = await drafts.unschedule(schedule.id)
+        XCTAssertTrue(canceled)
+        notifications.refresh(namespace: prefix, mailboxes: boxes)
+        let replacement = try await observe { requests in
+            requests.count == 1 && requests[0].identifier == conversation &&
+                requests[0].content.userInfo["token"] as? String != originalToken
+        }
+        let changed = try XCTUnwrap((replacement.first?.trigger as? UNTimeIntervalNotificationTrigger)?.nextTriggerDate())
+        XCTAssertEqual(changed.timeIntervalSince(later), 0, accuracy: 5)
+        mail.receiveReply(thread.id)
+        notifications.refresh(namespace: prefix, mailboxes: boxes)
+        _ = try await observe { $0.isEmpty }
+        print("Verified native snooze replacement, Send Later cancellation, and incoming-reply cancellation")
     }
 }

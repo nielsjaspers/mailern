@@ -5,6 +5,7 @@ import CoreFoundation
 
 @main
 struct MailernApp: App {
+    @UIApplicationDelegateAdaptor(MailNotifications.self) private var notifications
     @State private var mailboxes = MailboxSessions()
 
     #if DEBUG
@@ -68,6 +69,12 @@ struct MailernApp: App {
         @ObservationIgnored private var switching = false
         var active: MailboxSession { fixture ?? demo }
 
+        var reminderBoxes: [ReminderMailbox] {
+            ([demo] + (fixture.map { [$0] } ?? [])).map {
+                ReminderMailbox(scope: $0.benchmark.map { String($0.id) } ?? "demo", mail: $0.store, drafts: $0.drafts)
+            }
+        }
+
         func select(_ benchmark: BenchmarkMailbox?) async throws {
             guard !selecting, benchmark != active.benchmark else { return }
             selecting = true
@@ -96,11 +103,13 @@ struct MailernApp: App {
             guard !switching, dueWork == nil else { return }
             let sessions = [demo] + (fixture.map { [$0] } ?? [])
             let work = Task {
+                let active: @MainActor () -> Bool = { UIApplication.shared.applicationState == .active }
                 for session in sessions {
                     await session.drafts.recoverAfterMailLoad()
+                    guard active() else { return }
                     session.store.wakeDue()
-                    await session.drafts.wakeDue()
-                    await session.drafts.sendDue(through: session.store)
+                    await session.drafts.wakeDue(whileActive: active)
+                    await session.drafts.sendDue(through: session.store, whileActive: active)
                 }
             }
             dueWork = work
@@ -114,14 +123,28 @@ struct MailernApp: App {
         WindowGroup {
             let sessions = mailboxes
             let session = sessions.active
-            MailboxView(benchmark: session.benchmark, selectBenchmark: sessions.select)
+            MailboxView(benchmark: session.benchmark, selectBenchmark: { benchmark in
+                try await sessions.select(benchmark)
+                refreshReminders(sessions)
+                await notifications.finishPendingChanges()
+            })
                 .environment(session.store).environment(session.drafts).environment(session.snoozePreferences).tint(.teal)
                 .defaultAppStorage(session.defaults)
                 .id(session.id)
-                .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { Task { await sessions.processDue() } }
+                .onChange(of: sessions.reminderBoxes.map {
+                    ReminderRevision(session: sessions.id, scope: $0.scope, mail: $0.mail.mailboxRevision,
+                                     drafts: $0.drafts.reminderRevision, mailReady: !$0.mail.needsReload,
+                                     draftsReady: $0.drafts.hasReadableManifest)
+                }, initial: true) { _, _ in refreshReminders(sessions) }
+                .onReceive(NotificationCenter.default.publisher(for: Notification.Name("MailernReminderAuthorizationChanged"))) { _ in
+                    refreshReminders(sessions, checkPermission: true)
                 }
-                .task(id: sessions.id) {
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { refreshReminders(sessions, checkPermission: true) }
+                    else { notifications.protectPendingChanges() }
+                }
+                .task(id: scenePhase == .active ? sessions.id : nil) {
+                    guard scenePhase == .active else { return }
                     while !Task.isCancelled {
                         await sessions.processDue()
                         try? await Task.sleep(for: .seconds(1))
@@ -139,6 +162,18 @@ struct MailernApp: App {
                 #endif
         }
     }
+    private struct ReminderRevision: Equatable {
+        let session: UUID
+        let scope: String
+        let mail: UInt64
+        let drafts: UInt64
+        let mailReady: Bool
+        let draftsReady: Bool
+    }
+
+    private func refreshReminders(_ sessions: MailboxSessions, checkPermission: Bool = false) {
+        notifications.refresh(namespace: TestStorage.reminderNamespace, mailboxes: sessions.reminderBoxes, checkPermission: checkPermission)
+    }
 }
 
 // Each UI test uses its own persisted files and preferences, including across relaunches.
@@ -150,6 +185,13 @@ private enum TestStorage {
         if let session { return "Mailern.UITests.\(session)" }
         #endif
         return nil
+    }
+    // iOS shares one queue for every fixture of this test app. A reset replaces its old requests.
+    static var reminderNamespace: String {
+        #if DEBUG
+        if isTestSession { return "mailern/Mailern.UITests." }
+        #endif
+        return "mailern/local/"
     }
     private static var defaultPreferences: UserDefaults {
         suite.map { UserDefaults(suiteName: $0)! } ?? .standard

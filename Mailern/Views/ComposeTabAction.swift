@@ -32,8 +32,14 @@ struct ComposeTabAction: UIViewControllerRepresentable {
             var ancestor = parent
             while let current = ancestor {
                 if let owner = find(in: current) {
+                    if owner.delegate === self { return }
+                    let installed = owner.delegate as? Controller
+                    // SwiftUI can lay out the old controller after installing its replacement.
+                    // Let the replacement keep the tab, and forward only to UIKit's original delegate.
+                    if tabs === owner, installed != nil { return }
                     if tabs !== owner { detach(); tabs = owner }
-                    if owner.delegate !== self { previous = owner.delegate; owner.delegate = self }
+                    previous = installed == nil ? owner.delegate : installed?.previous
+                    owner.delegate = self
                     return
                 }
                 ancestor = current.parent
