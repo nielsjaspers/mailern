@@ -431,6 +431,7 @@ final class DraftStore {
             guard !queued.isEmpty else { return true }
             var failed = false
             var alerts: [String] = []
+            var refused: [(title: String, reason: String)] = []
             var updated: [ComposerDraft] = []
             for var draft in self.all {
                 guard queued.contains(draft.id) else {
@@ -459,7 +460,7 @@ final class DraftStore {
                     self.automaticRetries[draft.id] = nil
                     draft.sendAt = nil
                     draft.holdingForUndo = nil
-                    alerts.append("“\(draft.title)” could not be sent and is back in Drafts. \(deliveryMessage ?? "")")
+                    refused.append((draft.title, deliveryMessage ?? ""))
                 }
                 updated.append(draft)
             }
@@ -473,6 +474,10 @@ final class DraftStore {
             if let undoable = self.undoable,
                store.hasSentOrDiscarded(undoable) || !self.all.contains(where: { $0.id == undoable && $0.sendAt != nil }) {
                 self.undoable = nil
+            }
+            for item in refused {
+                let placement = saved ? "is back in Drafts" : "remains in Scheduled because the draft list could not be saved"
+                alerts.append("“\(item.title)” could not be sent and \(placement). \(item.reason)")
             }
             if !alerts.isEmpty { store.error = alerts.joined(separator: "\n") }
             return saved && !failed
