@@ -509,6 +509,16 @@
       "finished_at": "2026-11-19T17:42:22+00:00",
       "bundle_id": "com.example.mailern",
       "ipa_sha256": "fe13a1ed0a436b41bda3721ac2504fab8c3111c25382edbc5f6aec82cefb955a"
+    },
+    {
+      "source_revision": "7163a07d9f124af94f025e3e7635ec63a9ccde60",
+      "branch": "fix/composer-keyboard-corners",
+      "uncommitted_changes": false,
+      "source_digest": "b5b28f611d8f5ab37b170f8a0648da024c1b5169ebb83a8558a7e3e5cd749bd7",
+      "build": 73,
+      "version": "0.7.5",
+      "status": "reserved",
+      "created_at": "2026-11-19T18:05:24+00:00"
     }
   ]
 }
