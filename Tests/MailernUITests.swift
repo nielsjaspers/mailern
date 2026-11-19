@@ -877,7 +877,11 @@ final class ReaderSearchUITests: MailernUITestCase {
         proof.name = "find-in-conversation"
         proof.lifetime = .keepAlways
         add(proof)
+        let selectedReply = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "matched-reply-")).firstMatch
+        XCTAssertTrue(selectedReply.exists)
+        let selectedID = String(selectedReply.identifier.dropFirst("matched-".count))
         app.buttons["Close find"].tap()
+        XCTAssertTrue(app.buttons[selectedID].wait(for: \.isHittable, toEqual: true, timeout: 5))
         waitForAbsence(passage)
         XCTAssertFalse(app.buttons["15 earlier messages"].exists)
     }

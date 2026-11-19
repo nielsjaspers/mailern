@@ -142,10 +142,12 @@ struct ConversationRow: View {
     var hasDraft = false
     var body: some View {
         let request = SnippetRequest(query: query, thread: conversation.id, latest: conversation.latest.id)
+        let cachedSnippet = !query.isEmpty && result?.request.thread == request.thread && result?.request.latest == request.latest
+            ? result?.snippet : nil
         let content = MailboxRow(
             avatar: SenderAvatar(name: conversation.avatarName),
             title: conversation.participants, count: conversation.messages.count, date: conversation.latest.date,
-            subject: conversation.subject, snippet: (result?.request == request ? result?.snippet : nil) ?? conversation.latest.body.snippet, account: store.account(conversation.accountID),
+            subject: conversation.subject, snippet: cachedSnippet ?? String(conversation.latest.body.prefix(180)).snippet, account: store.account(conversation.accountID),
             unread: conversation.unread, draft: hasDraft, pinned: conversation.pinned, muted: conversation.muted == true,
             followUp: conversation.followUp, snoozedUntil: conversation.snoozedUntil
         )

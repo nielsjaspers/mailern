@@ -10,6 +10,7 @@ struct ConversationContent: View {
     @State private var query = ""
     @State private var matches: [MessageMatch] = []
     @State private var matchIndex = 0
+    @State private var matchedQuery = ""
     @State private var openingResult = false
     @FocusState private var findFocused: Bool
     var drafts: [ComposerDraft] = []
@@ -84,21 +85,22 @@ struct ConversationContent: View {
                         if !query.isEmpty {
                             Button("Clear find", systemImage: "xmark.circle.fill") { query = ""; findFocused = true }
                         }
-                        if !query.isEmpty { Text(matches.isEmpty ? "No matches" : "\(matchIndex + 1) of \(matches.count)").font(.caption) }
-                        Button("Previous match", systemImage: "chevron.up") { matchIndex -= 1 }.disabled(matchIndex == 0)
-                        Button("Next match", systemImage: "chevron.down") { matchIndex += 1 }.disabled(matchIndex + 1 >= matches.count)
-                        Button("Done") { finishFind(proxy) }.accessibilityLabel("Close find")
+                        if !query.isEmpty && matchedQuery == query { Text(matches.isEmpty ? "No matches" : "\(matchIndex + 1) of \(matches.count)").font(.caption) }
+                        Button("Previous match", systemImage: "chevron.up") { matchIndex -= 1 }.disabled(matchedQuery != query || matchIndex == 0)
+                        Button("Next match", systemImage: "chevron.down") { matchIndex += 1 }.disabled(matchedQuery != query || matchIndex + 1 >= matches.count)
+                        Button("Done") { finishFind(proxy) }.accessibilityIdentifier("Close find")
                     }.labelStyle(.iconOnly).padding(10).background(.bar)
                 }
             }
             .onChange(of: finding.wrappedValue) { _, active in findFocused = active }
             .task(id: FindRequest(query: query, latest: latest.id)) {
                 let previous = match
-                guard !query.isEmpty else { matches = []; matchIndex = 0; return }
+                guard !query.isEmpty else { matches = []; matchedQuery = ""; matchIndex = 0; return }
                 let thread = conversation, term = query
                 let worker = Task.detached(priority: .userInitiated) { thread.messageMatches(term) }
                 let found = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
                 guard !Task.isCancelled, query == term else { return }
+                matchedQuery = term
                 matches = found
                 matchIndex = previous.flatMap { found.firstIndex(of: $0) } ?? 0
                 if openingResult && found.isEmpty { openNormally(proxy) }
@@ -380,6 +382,7 @@ private struct MessageRow: View {
             HStack(spacing: 8) {
                 if let compose {
                     Button { compose(.reply(id)) } label: { Image(systemName: "arrowshape.turn.up.left") }
+                        .accessibilityIdentifier((activeMatch == nil ? "reply-" : "matched-reply-") + message.id.uuidString)
                         .accessibilityLabel("Reply to \(message.sender), \(time)")
                 }
                 Menu {
@@ -519,8 +522,7 @@ private struct MessageRow: View {
     }
 }
 
-/// The sender line's VoiceOver action. A peek or a single-message thread cannot fold, so it gets none. Whether a row
-/// can fold does not change while it toggles, so this never swaps the view during the animation.
+/// Exposes the same fold action to VoiceOver as the sender line.
 private struct ToggleAction: ViewModifier {
     let toggle: (() -> Void)?
     func body(content: Content) -> some View {

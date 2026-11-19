@@ -96,6 +96,7 @@ extension Conversation {
             if index == 0 { fields.append(subject) }
             if let changed = message.subject, changed != subject { fields.append(changed) }
             for (fieldIndex, field) in fields.enumerated() {
+                if Task.isCancelled { return [] }
                 // FTS indexes folded text. A single character such as ß can span two indexed letters.
                 if localized && !field.localizedCaseInsensitiveContains(query) { continue }
                 let searchOriginal = localized || field.utf8.allSatisfy { $0 < 128 }
