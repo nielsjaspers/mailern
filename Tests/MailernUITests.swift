@@ -333,6 +333,28 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
     }
 }
 
+final class MinimizedDraftUITests: MailernUITestCase {
+    @MainActor
+    func testPullDownAndResumeBodyCursor() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        let body = app.textViews["Message body"]
+        body.tap()
+        body.typeText("First")
+        let bar = app.navigationBars.firstMatch
+        let handle = bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+        handle.press(forDuration: 0.1, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 450)))
+        let resume = app.buttons["Resume draft, New Message"]
+        XCTAssertTrue(resume.wait(for: \.isHittable, toEqual: true, timeout: 6))
+        app.tabBars.buttons["Settled"].tap()
+        resume.tap()
+        body.typeText(" second")
+        XCTAssertTrue((body.value as? String ?? "").contains("First second"))
+    }
+}
+
 final class ComposerSelectionHandleDragKeepsEditingUITests: MailernUITestCase {
     @MainActor
     func testComposerSelectionHandleDragKeepsEditing() {
