@@ -245,7 +245,8 @@ func planMoves(c *Conversation, msgs, in []*Message, archiveIsAll bool) []move {
 	var moves []move
 	var primary *Message
 	for _, m := range in {
-		if _, ok := placeOf(m); ok {
+		// The Inbox copy must be one placement can still move: not one another client marked deleted.
+		if _, ok := placeOf(m); ok && !m.Deleted {
 			primary = m
 		}
 	}

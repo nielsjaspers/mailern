@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 )
 
 func TestReplyRescuesWholeThreadFromTrash(t *testing.T) {
@@ -97,5 +98,30 @@ func TestUnseenReplyStopsAStaleTrash(t *testing.T) {
 	h.sync()
 	if c := h.conversations()["Dinner"]; c.Removal != "" || h.count("Trash") != 0 {
 		t.Fatalf("an unseen reply must not go to Trash: removal %q, Trash %d", c.Removal, h.count("Trash"))
+	}
+}
+
+func TestRestorePutsNewestLiveMessageInInbox(t *testing.T) {
+	h := newHarness(t)
+	root := h.deliver("INBOX", "Dinner", "")
+	h.deliver("INBOX", "Re: Dinner", root)
+	h.sync()
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Removal = RoleTrash })
+	h.sync()
+	// Another client marks the newest message deleted without expunging it.
+	c, err := imapclient.DialInsecure(h.lab.IMAP.Address(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Login(labAddress, "lab").Wait()
+	c.Select("Trash", nil).Wait()
+	found, _ := c.UIDSearch(&imap.SearchCriteria{Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: "Re: Dinner"}}}, nil).Wait()
+	c.Store(imap.UIDSetNum(found.AllUIDs()...), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close()
+	h.sync()
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Removal = "" })
+	h.sync()
+	if _, ok := h.mailbox("INBOX")["Dinner"]; !ok {
+		t.Fatalf("Restore should put the newest live message in Inbox, Inbox: %v", h.mailbox("INBOX"))
 	}
 }
