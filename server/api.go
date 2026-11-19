@@ -43,6 +43,7 @@ type wireMessage struct {
 	Address    string    `json:"address"`
 	To         []string  `json:"to"`
 	Cc         []string  `json:"cc"`
+	ReplyTo    []string  `json:"replyTo,omitempty"`
 	Date       time.Time `json:"date"`
 	Body       string    `json:"body"`
 	Outgoing   bool      `json:"outgoing"`
@@ -132,7 +133,7 @@ func wire(st *State, c *Conversation) wireConversation {
 	}
 	for _, m := range st.messages(c) {
 		out.Messages = append(out.Messages, wireMessage{
-			ID: m.ID, Sender: m.Sender, Address: m.Address, To: m.To, Cc: m.Cc, Date: wireTime(m.Date), Body: m.Text,
+			ID: m.ID, Sender: m.Sender, Address: m.Address, To: m.To, Cc: m.Cc, ReplyTo: m.ReplyTo, Date: wireTime(m.Date), Body: m.Text,
 			Outgoing: m.Outgoing, Subject: m.Subject, HasHTML: m.HasHTML, MessageID: m.MessageID,
 			InReplyTo: m.InReplyTo, References: m.References, Deleted: m.Deleted,
 		})

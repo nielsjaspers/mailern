@@ -296,3 +296,18 @@ func TestDeleteTakesReplyLeftInSentByAnotherClient(t *testing.T) {
 		t.Fatalf("delete should remove the whole thread: Trash %d, Sent %d", h.count("Trash"), h.count("Sent"))
 	}
 }
+
+func TestReplyToReachesThePhone(t *testing.T) {
+	h := newHarness(t)
+	raw := "From: Form <form@example.com>\r\nReply-To: visitor@example.org\r\nTo: " + labAddress + "\r\nSubject: Contact\r\n" +
+		"Message-ID: <contact@example.com>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHello\r\n"
+	if err := h.lab.Deliver(labAddress, "INBOX", []byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	h.sync()
+	var resp syncResponse
+	h.request("GET", "/v1/sync?since=0", nil, &resp)
+	if m := resp.Conversations[0].Messages[0]; len(m.ReplyTo) != 1 || m.ReplyTo[0] != "visitor@example.org" {
+		t.Fatalf("the phone should learn Reply-To, got %v", m.ReplyTo)
+	}
+}

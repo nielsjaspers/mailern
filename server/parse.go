@@ -37,6 +37,7 @@ func parseMessage(raw []byte) (parsed, error) {
 	}
 	p.To = addresses(h, "To")
 	p.Cc = addresses(h, "Cc")
+	p.ReplyTo = addresses(h, "Reply-To")
 	p.Date, _ = h.Date()
 	p.Subject, _ = h.Subject()
 	if id, _ := h.MessageID(); id != "" {

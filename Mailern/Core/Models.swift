@@ -90,6 +90,8 @@ struct MailMessage: Codable, Identifiable, Equatable {
     var remoteID: String?
     /// The mail server holds an HTML part the phone has not loaded yet. The reader loads it on open.
     var remoteHTML: Bool?
+    /// Where the sender wants replies, such as a contact form's visitor or a mailing list.
+    var replyTo: [String]?
 
     /// The ID other messages use to refer to this one. Messages without a Message-ID get a stable local stand-in.
     var threadingID: String { messageID ?? "<\(id.uuidString)@mailern.local>" }

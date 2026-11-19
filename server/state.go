@@ -42,16 +42,18 @@ type Message struct {
 	Address        string    `json:"address"`
 	To             []string  `json:"to"`
 	Cc             []string  `json:"cc"`
-	Date           time.Time `json:"date"`
-	Subject        string    `json:"subject"`
-	Text           string    `json:"text"`
-	HasHTML        bool      `json:"hasHTML"`
-	MessageID      string    `json:"messageID,omitempty"`
-	InReplyTo      string    `json:"inReplyTo,omitempty"`
-	References     []string  `json:"references,omitempty"`
-	Outgoing       bool      `json:"outgoing"`
-	Seen           bool      `json:"seen"`
-	Flagged        bool      `json:"flagged"`
+	// Where the sender wants replies, such as a contact form's visitor or a mailing list.
+	ReplyTo    []string  `json:"replyTo,omitempty"`
+	Date       time.Time `json:"date"`
+	Subject    string    `json:"subject"`
+	Text       string    `json:"text"`
+	HasHTML    bool      `json:"hasHTML"`
+	MessageID  string    `json:"messageID,omitempty"`
+	InReplyTo  string    `json:"inReplyTo,omitempty"`
+	References []string  `json:"references,omitempty"`
+	Outgoing   bool      `json:"outgoing"`
+	Seen       bool      `json:"seen"`
+	Flagged    bool      `json:"flagged"`
 	// Another client marked the observed copy deleted. Placement leaves it alone; the provider may expunge it.
 	Deleted   bool            `json:"deleted,omitempty"`
 	Locations map[Role]uint32 `json:"locations"`
