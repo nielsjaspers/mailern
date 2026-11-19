@@ -315,6 +315,16 @@
       "finished_at": "2026-11-19T01:51:37+00:00",
       "bundle_id": "com.example.mailern",
       "ipa_sha256": "a964077bf0d4e1d3c989127df4062641867e388c530be7dd9514c601d14903a3"
+    },
+    {
+      "source_revision": "81cfc9f9873118bd181b408b08149431f1ade3f4",
+      "branch": "HEAD",
+      "uncommitted_changes": true,
+      "source_digest": "956f2b28d82969fdc6d2407a02de0927ec25caa2d302f4a27004fda5d744b3a2",
+      "build": 59,
+      "version": "0.7.0",
+      "status": "reserved",
+      "created_at": "2026-11-19T01:55:21+00:00"
     }
   ]
 }
