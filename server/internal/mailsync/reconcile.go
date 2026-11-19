@@ -181,7 +181,7 @@ func adopt(c *Conversation, msgs []*Message, archiveIsAll bool) bool {
 	}
 	// Mailern shows settled conversations as read, whatever their messages say.
 	c.Unread = c.Workflow != WorkflowSettled && slices.ContainsFunc(in, func(m *Message) bool { return !m.Seen && !m.Deleted })
-	c.Pinned = slices.ContainsFunc(msgs, func(m *Message) bool { return m.Flagged })
+	c.Pinned = slices.ContainsFunc(msgs, func(m *Message) bool { return m.Flagged && !m.Deleted })
 	return c.Workflow != before.Workflow || c.Removal != before.Removal || c.Unread != before.Unread ||
 		c.Pinned != before.Pinned || !sameTime(c.SnoozedUntil, before.SnoozedUntil)
 }
@@ -229,7 +229,8 @@ func planForMailboxes(c *Conversation, msgs []*Message, archiveIsAll bool) plan 
 		}
 	}
 	if c.PendingPin {
-		placed := slices.DeleteFunc(slices.Clone(msgs), func(m *Message) bool { return len(m.Locations) == 0 })
+		// A copy another client marked deleted would take the star with it when it is expunged.
+		placed := slices.DeleteFunc(slices.Clone(msgs), func(m *Message) bool { return len(m.Locations) == 0 || m.Deleted })
 		if c.Pinned {
 			if len(placed) > 0 && !slices.ContainsFunc(placed, func(m *Message) bool { return m.Flagged }) {
 				p.flags = appendFlag(p.flags, archiveIsAll, c, placed[len(placed)-1], imap.FlagFlagged, true)

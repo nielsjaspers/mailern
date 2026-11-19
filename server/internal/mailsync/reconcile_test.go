@@ -400,3 +400,18 @@ func TestMutedReplyStaysSettled(t *testing.T) {
 		t.Fatal("the muted reply should leave the inbox")
 	}
 }
+
+func TestPinSkipsAReplyAnotherClientDeleted(t *testing.T) {
+	h := newHarness(t)
+	root := h.deliver("INBOX", "Dinner", "")
+	h.deliver("INBOX", "Re: Dinner", root)
+	h.sync()
+	markSeen(t, h, "INBOX", "Re: Dinner", imap.FlagDeleted)
+	h.sync()
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Pinned = true })
+	h.sync()
+	inbox := h.mailbox("INBOX")
+	if !slices.Contains(inbox["Dinner"], imap.FlagFlagged) || !h.conversations()["Dinner"].Pinned {
+		t.Fatalf("the star should go on a message that is not on its way out: %v", inbox)
+	}
+}
