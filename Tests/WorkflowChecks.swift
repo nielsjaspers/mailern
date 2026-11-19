@@ -1196,7 +1196,14 @@ import os
         let c = store.conversation(thread.id)!
         let own = c.messages.first { $0.id == draft.id }!
         assert(own.richText != nil && own.remoteHTML == nil && own.html == nil)
-        assert(c.workflow == .inbox && c.followUp == .noReply)
+        assert(c.workflow == .inbox && c.followUp == .noReply && c.returnedFromSnoozeAt != nil)
+        // The server never woke this reminder, so it confirms Inbox without a return time. The local one stays.
+        var confirmed = thread
+        confirmed.messages.append(RemoteMessage(id: draft.id, sender: "Me", address: remoteAccount.address, date: .now,
+                                                body: draft.text, outgoing: true, subject: "Re: Plans", hasHTML: true))
+        assert(store.mergeRemote(remoteBatch(3, [confirmed])))
+        let synced = store.conversation(thread.id)!
+        assert(synced.followUp == .noReply && synced.returnedFromSnoozeAt == c.returnedFromSnoozeAt)
         print("PASS: a late confirmation keeps the reminder due and the composer's rich text")
     }
 

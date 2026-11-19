@@ -106,7 +106,9 @@ extension Conversation {
         if !fields.contains(.workflow) {
             workflow = remote.workflow
             snoozedUntil = remote.snoozedUntil
-            returnedFromSnoozeAt = remote.returnedFromSnoozeAt
+            // The server knows only its own snooze wakes. A reminder that came due here, such as one for a send
+            // confirmed after its date, keeps the local return time while it is overdue.
+            returnedFromSnoozeAt = remote.returnedFromSnoozeAt ?? (followUp == .noReply ? returnedFromSnoozeAt : nil)
             // Only the reminder's own wake makes it overdue. Any other move ends it, as a manual move does.
             if followUp == .waiting, workflow != .snoozed {
                 followUp = workflow == .inbox && remote.returnedFromSnoozeAt != nil ? .noReply : nil
