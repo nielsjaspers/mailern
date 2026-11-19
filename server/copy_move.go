@@ -71,6 +71,10 @@ func (a *Account) copyMoveSources(plans []plan) map[location]copyMoveSource {
 var errMoveChanged = errors.New("move placement changed")
 var errCopyUnconfirmed = errors.New("could not confirm the destination copy")
 
+// errCopyMissing means no copy arrived after the attempt. A committed COPY always lands at or above the recorded
+// UIDNEXT, so the attempt never committed, or the copy was removed since. Either way the move can start over.
+var errCopyMissing = fmt.Errorf("%w: no copy arrived", errCopyUnconfirmed)
+
 func (a *Account) applyCopyMoves(c *imapclient.Client, moves []move, sources map[location]copyMoveSource, identities map[Role]mailboxIdentity, validate func(*State) error) error {
 	if len(moves) == 0 {
 		return nil
@@ -162,8 +166,7 @@ func (a *Account) applyCopyMove(source, destination *imapclient.Client, key stri
 		if err != nil {
 			return err
 		}
-		// Any copy that reached the destination advanced UIDNEXT. Unchanged, the COPY never committed: start again.
-		if data.UIDNext == pending.UIDNext {
+		if _, err := pending.confirmCopy(destination, data.UIDNext); errors.Is(err, errCopyMissing) {
 			if err := save(nil); err != nil {
 				return err
 			}
@@ -335,7 +338,7 @@ func (p *copyMove) confirmCopy(c *imapclient.Client, uidNext imap.UID) (imap.UID
 	if p.To.UID == 0 {
 		// Without COPYUID, only a unique byte-for-byte match created after the attempt is usable.
 		if uidNext <= p.UIDNext {
-			return 0, errCopyUnconfirmed
+			return 0, errCopyMissing
 		}
 		set := imap.UIDSet{{Start: p.UIDNext, Stop: uidNext - 1}}
 		found, err := c.UIDSearch(&imap.SearchCriteria{UID: []imap.UIDSet{set}}, nil).Wait()
@@ -360,6 +363,9 @@ func (p *copyMove) confirmCopy(c *imapclient.Client, uidNext imap.UID) (imap.UID
 			}
 			match = msg.UID
 		}
+	}
+	if match == 0 && p.To.UID == 0 {
+		return 0, errCopyMissing
 	}
 	if match == 0 {
 		return 0, errCopyUnconfirmed
