@@ -401,28 +401,38 @@ func restoreMarkedDeleted(c *imapclient.Client, mark *deletedFlags) error {
 	// copies with independent flags. IMAP cannot locate a moved flag if MOVE drops its keyword.
 	criteria := &imap.SearchCriteria{Flag: []imap.Flag{mark.Keyword}}
 	flags := []imap.Flag{imap.FlagDeleted, mark.Keyword}
-	var recoveryErr error
+	names := []string{mark.Mailbox}
 	for _, box := range boxes {
-		if slices.Contains(box.Attrs, imap.MailboxAttrNoSelect) || slices.Contains(box.Attrs, imap.MailboxAttrNonExistent) {
+		if box.Mailbox == mark.Mailbox || slices.Contains(box.Attrs, imap.MailboxAttrNoSelect) || slices.Contains(box.Attrs, imap.MailboxAttrNonExistent) {
 			continue
 		}
-		name := box.Mailbox
+		names = append(names, box.Mailbox)
+	}
+	for _, name := range names {
+		// The original write targets one mailbox. Searching elsewhere can recover
+		// flags moved by another client when those mailboxes are accessible.
+		ignore := func(err error) bool {
+			var status *imap.Error
+			return mailboxMissing(err) || name != mark.Mailbox && errors.As(err, &status) && status.Type == imap.StatusResponseTypeNo
+		}
 		if _, err := c.Select(name, nil).Wait(); err != nil {
-			if mailboxMissing(err) {
+			if ignore(err) {
 				continue
 			}
-			recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover delete flags in %s: %w", name, err))
-			continue
+			return fmt.Errorf("recover delete flags in %s: %w", name, err)
 		}
 		found, err := c.UIDSearch(criteria, nil).Wait()
-		if err == nil {
-			err = clearOwnedDeleted(c, imap.UIDSetNum(found.AllUIDs()...), flags)
-		}
 		if err != nil {
-			return errors.Join(recoveryErr, fmt.Errorf("recover delete flags in %s: %w", name, err))
+			if ignore(err) {
+				continue
+			}
+			return fmt.Errorf("recover delete flags in %s: %w", name, err)
+		}
+		if err := clearOwnedDeleted(c, imap.UIDSetNum(found.AllUIDs()...), flags); err != nil {
+			return fmt.Errorf("recover delete flags in %s: %w", name, err)
 		}
 	}
-	return recoveryErr
+	return nil
 }
 
 func mailboxMissing(err error) bool {

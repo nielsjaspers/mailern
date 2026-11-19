@@ -326,7 +326,7 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 				active = true
 				previousIdentities = mailboxIdentities(st.account(c.AccountID))
 				for _, m := range st.messages(c) {
-					at, _ := placeOf(m)
+					at, _ := observedPlace(c, m)
 					previousLocations[m.ID] = at
 				}
 			}
@@ -396,7 +396,10 @@ func (s *Service) delete(w http.ResponseWriter, r *http.Request) {
 					return conflict
 				}
 				for _, m := range messages {
-					at, ok := placeOf(m)
+					at, ok := observedPlace(c, m)
+					if moved {
+						at, ok = firstLocation(m, request.Removal)
+					}
 					previous := previousLocations[m.ID]
 					if !ok || ((!moved || previous.role == request.Removal) &&
 						(at != previous || identities[at.role] != previousIdentities[at.role])) {
@@ -476,7 +479,7 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 			for _, m := range state.Messages {
 				if m.ID == id {
 					account = s.account(accountID)
-					at, found = placeOf(m)
+					at, found = observedPlace(st.Conversations[m.ConversationID], m)
 					validity = state.UIDValidity[at.role]
 					mailbox = state.Mailboxes[at.role]
 				}

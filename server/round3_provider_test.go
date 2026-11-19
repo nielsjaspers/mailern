@@ -299,9 +299,21 @@ func TestProviderDeleteConfirmsOldAllMailCopyWithoutPendingPlacement(t *testing.
 	}
 }
 
-func TestProviderUnreadableConfiguredSentPreservesCacheAndSyncsInbox(t *testing.T) {
+func TestProviderUnreadableSentPreservesCacheAndSyncsInbox(t *testing.T) {
+	for _, configured := range []bool{true, false} {
+		name := "autodiscovered"
+		if configured {
+			name = "configured"
+		}
+		t.Run(name, func(t *testing.T) { checkUnreadableSent(t, configured) })
+	}
+}
+
+func checkUnreadableSent(t *testing.T, configured bool) {
 	h := newHarness(t)
-	h.account.cfg.Mailboxes = map[Role]string{RoleSent: "Sent"}
+	if configured {
+		h.account.cfg.Mailboxes = map[Role]string{RoleSent: "Sent"}
+	}
 	var unavailable atomic.Bool
 	serveProvider(t, h, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}}, func(s imapserver.Session) imapserver.Session {
 		return beforeSelectSession{s.(imapserver.SessionIMAP4rev2), func(name string, _ bool) error {

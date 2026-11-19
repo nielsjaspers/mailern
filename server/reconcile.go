@@ -35,19 +35,43 @@ type plan struct {
 
 func (p plan) empty() bool { return len(p.moves)+len(p.flags)+len(p.expunges) == 0 }
 
-// placeOf is where a message counts as being. Gmail lists inbox and sent mail in All Mail too; Inbox and Sent win,
-// so a move starts from the mailbox Gmail documents for it.
+// placeOf picks the default source for an IMAP operation. Gmail lists Inbox and Sent
+// messages in All Mail too, so prefer Inbox and Sent to All Mail.
 func placeOf(m *Message) (location, bool) {
 	// A partial copy to Trash must not hide the source before its cleanup finishes.
 	if pending := m.PendingMove; pending != nil && pending.From.UID != 0 && imap.UID(m.Locations[pending.From.Role]) == pending.From.UID {
 		return pending.From.location(), true
 	}
-	for _, role := range []Role{RoleTrash, RoleJunk, RoleInbox, RoleSent, RoleArchive} {
-		if uid, ok := m.Locations[role]; ok {
-			return location{role, imap.UID(uid)}, true
+	return firstLocation(m, RoleTrash, RoleJunk, RoleInbox, RoleSent, RoleArchive)
+}
+
+func firstLocation(m *Message, roles ...Role) (location, bool) {
+	for _, role := range roles {
+		if uid := imap.UID(m.Locations[role]); uid != 0 {
+			return location{role, uid}, true
 		}
 	}
 	return location{}, false
+}
+
+// When several mailboxes still hold a copy, keep the conversation's current
+// removal state as long as a copy supports it.
+func observedPlace(c *Conversation, m *Message) (location, bool) {
+	at, ok := placeOf(m)
+	if !ok || c == nil || m.PendingMove != nil && m.PendingMove.From.location() == at {
+		return at, ok
+	}
+	var preferred location
+	var found bool
+	if c.Removal == "" {
+		preferred, found = firstLocation(m, RoleInbox, RoleSent, RoleArchive)
+	} else {
+		preferred, found = firstLocation(m, c.Removal)
+	}
+	if found {
+		return preferred, true
+	}
+	return at, true
 }
 
 // reconcile runs after each read. A conversation without pending changes adopts what the server shows.
@@ -62,7 +86,7 @@ func (a *Account) reconcile(st *State) []plan {
 		if c.Deleting && (c.Removal != RoleTrash && c.Removal != RoleJunk ||
 			!slices.Equal(c.Keys, c.DeleteKeys) || len(msgs) != len(c.DeleteKeys) ||
 			slices.ContainsFunc(msgs, func(m *Message) bool {
-				at, ok := placeOf(m)
+				at, ok := observedPlace(c, m)
 				return !ok || at.uid == 0 || at.role != c.Removal
 			})) {
 			cancelDelete(c)
@@ -111,7 +135,7 @@ func adopt(c *Conversation, msgs []*Message) bool {
 	}
 	var places []Role
 	for _, m := range placed {
-		if at, ok := placeOf(m); ok {
+		if at, ok := observedPlace(c, m); ok {
 			places = append(places, at.role)
 		}
 	}
@@ -174,12 +198,12 @@ func planForMailboxes(c *Conversation, msgs []*Message, archiveIsAll bool) plan 
 		placed := slices.DeleteFunc(in, func(m *Message) bool { return len(m.Locations) == 0 })
 		if c.Unread {
 			if len(placed) > 0 && !slices.ContainsFunc(placed, func(m *Message) bool { return !m.Seen }) {
-				p.flags = appendFlag(p.flags, placed[len(placed)-1], imap.FlagSeen, false)
+				p.flags = appendFlag(p.flags, c, placed[len(placed)-1], imap.FlagSeen, false)
 			}
 		} else {
 			for _, m := range placed {
 				if !m.Seen {
-					p.flags = appendFlag(p.flags, m, imap.FlagSeen, true)
+					p.flags = appendFlag(p.flags, c, m, imap.FlagSeen, true)
 				}
 			}
 		}
@@ -188,12 +212,12 @@ func planForMailboxes(c *Conversation, msgs []*Message, archiveIsAll bool) plan 
 		placed := slices.DeleteFunc(slices.Clone(msgs), func(m *Message) bool { return len(m.Locations) == 0 })
 		if c.Pinned {
 			if len(placed) > 0 && !slices.ContainsFunc(placed, func(m *Message) bool { return m.Flagged }) {
-				p.flags = appendFlag(p.flags, placed[len(placed)-1], imap.FlagFlagged, true)
+				p.flags = appendFlag(p.flags, c, placed[len(placed)-1], imap.FlagFlagged, true)
 			}
 		} else {
 			for _, m := range placed {
 				if m.Flagged {
-					p.flags = appendFlag(p.flags, m, imap.FlagFlagged, false)
+					p.flags = appendFlag(p.flags, c, m, imap.FlagFlagged, false)
 				}
 			}
 		}
@@ -227,21 +251,26 @@ func planMoves(c *Conversation, msgs, in []*Message, archiveIsAll bool) []move {
 		case at.role != RoleArchive && (at.role != RoleInbox || c.Workflow == WorkflowSettled):
 			target = RoleArchive
 		}
-		if m.PendingMove != nil && m.PendingMove.From.location() == at {
+		targetExists := m.Locations[target] != 0 && !(archiveIsAll && (target == RoleArchive || at.role == RoleArchive))
+		if pending := m.PendingMove; pending != nil && pending.From.location() == at {
+			if pending.To.Role != target && targetExists {
+				// The requested placement already exists. Only retire the superseded COPY.
+				target = at.role
+			}
 			moves = append(moves, move{at, target})
 			continue
 		}
 		// Once the target has a copy, another mailbox can still hold an independent copy.
 		// Gmail's All Mail overlaps with other mailboxes.
-		if target != at.role && (m.Locations[target] == 0 || archiveIsAll && (target == RoleArchive || at.role == RoleArchive)) {
+		if target != at.role && !targetExists {
 			moves = append(moves, move{at, target})
 		}
 	}
 	return moves
 }
 
-func appendFlag(changes []flagChange, m *Message, flag imap.Flag, add bool) []flagChange {
-	if at, ok := placeOf(m); ok {
+func appendFlag(changes []flagChange, c *Conversation, m *Message, flag imap.Flag, add bool) []flagChange {
+	if at, ok := observedPlace(c, m); ok {
 		return append(changes, flagChange{at, flag, add})
 	}
 	return changes

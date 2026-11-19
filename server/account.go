@@ -627,7 +627,7 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 				}
 			}
 		}
-		at, ok := placeOf(m)
+		at, ok := observedPlace(st.Conversations[m.ConversationID], m)
 		if !ok {
 			continue
 		}
