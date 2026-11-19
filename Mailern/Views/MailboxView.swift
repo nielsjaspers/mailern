@@ -28,7 +28,7 @@ struct MailboxView: View {
     @AppStorage("rightSwipeSecondary") private var rightSecondary: MailboxSwipeAction = .pin
     @AppStorage("leftSwipeTertiary") private var leftTertiary: MailboxSwipeAction = .none
     @AppStorage("rightSwipeTertiary") private var rightTertiary: MailboxSwipeAction = .none
-    @State private var composer: ComposeMode?
+    @State private var panel = ComposerPanel()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var demo = false
     @State private var snoozing: Conversation?
@@ -45,7 +45,7 @@ struct MailboxView: View {
             GeometryReader { geometry in
                 if let overlayTop, selection == .inbox, paths[.inbox, default: []].isEmpty,
                    !selecting, pullAction != .off, pullDistance > 40, toolbarBottom > 0,
-                   !searching, composer == nil, !settings, !demo {
+                   !searching, panel.request == nil, !settings, !demo {
                     PullActionIndicator(mode: pullAction, progress: min(1, max(0, (pullDistance - 40) / (DeliberatePull.threshold - 40))), armCount: armCount)
                         .position(x: geometry.size.width / 2, y: toolbarBottom - overlayTop + 32)
                         .opacity(min(1, (pullDistance - 40) / 16))
@@ -74,7 +74,7 @@ struct MailboxView: View {
                     },
                     onCompose: { mode in
                         peeking = nil
-                        composer = mode
+                        compose(mode)
                     },
                     onSnooze: { snoozing = conversation }
                 )
@@ -103,20 +103,13 @@ struct MailboxView: View {
             }
         }
         // Undo Send and Edit take scheduled mail back into the composer from wherever it was sent.
-        // An open composer finishes first, so the request waits until its sheet closes.
-        .onChange(of: drafts.reopening) { _, id in
-            guard let id, composer == nil else { return }
+        // An open composer finishes first, so the request waits until its panel is gone.
+        .onChange(of: ReopenState(id: drafts.reopening, open: panel.request != nil)) { _, state in
+            guard let id = state.id, !state.open else { return }
             drafts.reopening = nil
-            composer = .draft(id)
+            compose(.draft(id))
         }
-        .sheet(item: $composer, onDismiss: {
-            guard let id = drafts.reopening else { return }
-            drafts.reopening = nil
-            composer = .draft(id)
-        }) {
-            ComposerView(mode: $0, inboxAccountID: composeInboxAccount)
-        }
-        .modifier(DraftStorageAlert(active: composer == nil && paths[selection, default: []].isEmpty))
+        .modifier(DraftStorageAlert(active: paths[selection, default: []].isEmpty))
         .sheet(isPresented: $settings) {
             NavigationStack { SettingsView(pullAction: $pullAction) }
         }
@@ -130,6 +123,7 @@ struct MailboxView: View {
         }
         .sheet(item: $snoozing) { SnoozeView(ids: [$0.id], beforeSnooze: { peeking = nil }) }
         .sheet(item: $snoozingDraft) { SnoozeView(ids: [], draftIDs: [$0.id]) }
+        .environment(panel)
         .alert(
             "Mail storage",
             isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })
@@ -140,6 +134,8 @@ struct MailboxView: View {
             Text(store.error ?? "")
         }
     }
+    private struct ReopenState: Equatable { var id: UUID?; var open: Bool }
+    private func compose(_ mode: ComposeMode) { panel.present(mode, inboxAccountID: composeInboxAccount) }
     private enum SearchScope: CaseIterable, Identifiable {
         case section, allMail
         var id: Self { self }
@@ -167,7 +163,7 @@ struct MailboxView: View {
             TabView(selection: Binding<MailboxTab>(get: { .workflow(selection) }, set: { tab in
                 switch tab {
                 case .workflow(let status): selection = status
-                case .compose: composer = .new
+                case .compose: compose(.new)
                 }
             })) {
                 ForEach(Workflow.allCases) { status in
@@ -182,7 +178,7 @@ struct MailboxView: View {
                     Label("Compose", systemImage: "square.and.pencil")
                 }
             }
-            .background(ComposeTabAction { composer = .new })
+            .background(ComposeTabAction { compose(.new) })
         } else {
             TabView(selection: $selection) {
                 ForEach(Workflow.allCases) { status in
@@ -202,7 +198,7 @@ struct MailboxView: View {
             mailboxViewport(status)
                 // The Undo banner sits above the dock, so the dock stays put while it shows.
                 .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner() }
-                .draftDock { composer = .draft($0) }
+                .draftDock()
                 .navigationTitle(status.title)
                 .searchable(text: $searchInput.text, isPresented: Binding(
                     get: { searching && selection == status },
@@ -213,7 +209,7 @@ struct MailboxView: View {
                 .toolbar {
                     if legacyBottomCompose && !selecting {
                         ToolbarItem(placement: .bottomBar) {
-                            Button("Compose", systemImage: "square.and.pencil") { composer = .new }
+                            Button("Compose", systemImage: "square.and.pencil") { compose(.new) }
                         }
                     }
                 }
@@ -226,7 +222,7 @@ struct MailboxView: View {
                                              apply: applySelection, snooze: { bulkSnooze = true })
                     }
                 }
-                .toolbar(selecting || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
+                .toolbar(selecting || panel.covering || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
                 .navigationDestination(for: MailboxRoute.self) { route in
                     Group {
                         switch route {
@@ -252,9 +248,11 @@ struct MailboxView: View {
                         case .scheduled: ScheduledMailboxView()
                         case .scheduledMessage(let id): ScheduledMessageView(id: id)
                         }
-                    }.draftDock { composer = .draft($0) }
+                    }.draftDock()
                 }
         }
+        // Over the tab's screens and under its tab bar, so the tab bar floats over the docked panel.
+        .overlay { if status == selection { ComposerPanelHost() } }
     }
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
@@ -592,7 +590,7 @@ struct MailboxView: View {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         if pullAction == .search { withTransaction(transaction) { searching = true } }
-        if pullAction == .compose { composer = .new }
+        if pullAction == .compose { compose(.new) }
     }
     private func captureList(_ status: Workflow, order: [UUID]) {
         let scope: Workflow? = allMail(status) ? nil : status

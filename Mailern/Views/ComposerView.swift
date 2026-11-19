@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 struct ComposerView: View {
     @Environment(MailStore.self) private var store
     @Environment(DraftStore.self) private var drafts
-    @Environment(\.dismiss) private var dismiss
+    @Environment(ComposerPanel.self) private var panel
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let mode: ComposeMode
@@ -24,15 +24,9 @@ struct ComposerView: View {
     @State private var autosave: Task<Void, Never>?
     @State private var subjectFocused = false
     @State private var expanded = false
-    @GestureState private var draggingContent = false
-    /// The sheet's highest top edge at its current size, to tell when a pull moves it down.
-    @State private var restingTop = CGFloat.infinity
-    @State private var sheetWidth: CGFloat = 0
-    private enum Editing { case body, subject, address(Field) }
-    /// The field that was editing when a pull began, so a canceled pull gives it the keyboard back.
-    @State private var pull: (active: Bool, editing: Editing?) = (false, nil)
-    /// Set once a pull has started the pending save, so a failing save is not retried on every frame of the drag.
-    @State private var pullSaved = false
+    /// Gives the keyboard to a field once the panel is open and still: the field a resume or a new draft starts in,
+    /// or the one that was editing when a canceled pull began.
+    @State private var refocus: (() -> Void)?
     @State private var filePicker = false
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
@@ -68,9 +62,8 @@ struct ComposerView: View {
         return Self.isDirty(input, saved: savedInput, initial: initial)
     }
     private var saved: Bool { drafts.drafts.contains { $0.id == draft.id } }
-    /// A pull minimizes the draft, so it waits until the edits are saved. A closed composer is on its way out and
-    /// does not minimize.
-    private var canPull: Bool { !(completed || draggingContent || importing || finishing || dirty) }
+    /// A closed composer is on its way out and does not minimize.
+    private var canPull: Bool { loaded && !(completed || importing || finishing) }
     private var account: MailAccount { store.account(draft.accountID) }
     private let attachmentLimit = 25 * 1024 * 1024
     private var importing: Bool { importsInFlight > 0 }
@@ -146,29 +139,16 @@ struct ComposerView: View {
             .disabled(completed || finishing)
             .scrollDismissesKeyboard(.immediately)
             .scrollBounceBehavior(.always)
-            // A body drag must dismiss editing without also dismissing the sheet.
-            .simultaneousGesture(DragGesture(minimumDistance: 10).updating($draggingContent) { value, state, _ in
-                state = abs(value.translation.height) > abs(value.translation.width)
-            }.onChanged { value in
+            .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { value in
                 guard abs(value.translation.height) > abs(value.translation.width) else { return }
                 focus = nil
                 subjectFocused = false
                 editor.view?.window?.endEditing(true)
             })
-            .background(Color(uiColor: .systemBackground))
+            .background(ComposerPanel.background)
             .navigationTitle(draft.title).navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importing || finishing) }
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Minimize draft", systemImage: "chevron.down") {
-                        // Ending editing first commits text the keyboard is still composing. Like a pull, this keeps a
-                        // saved draft without writing it again, and closes an untouched one.
-                        editor.view?.window?.endEditing(true)
-                        if !dirty { minimizeNow() }
-                        else { Task { await saveDraft(then: .minimize) } }
-                    }
-                        .labelStyle(.iconOnly).disabled(!loaded || importing || finishing || completed)
-                }
                 ToolbarItem(placement: .confirmationAction) {
                     // Hold Send for Send Later and a follow-up reminder, as in Mail.
                     Menu {
@@ -183,51 +163,29 @@ struct ComposerView: View {
             }
         }
         .tint(.blue)
-        // Watches the sheet's top edge. A pull starts any pending save, puts the keyboard away so it does not stay up
-        // over the mailbox, and reveals this draft in the dock. A canceled pull gives the keyboard back.
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
-            // A rotation moves the resting top edge. The height also changes during a pull, so only the width counts.
-            if frame.width != sheetWidth { sheetWidth = frame.width; restingTop = frame.minY }
-            restingTop = min(restingTop, frame.minY)
-            if frame.minY - restingTop < 2 { pullSaved = false }
-            // A pull right after typing waits for the save, so start it now instead of after the pause.
-            if !pullSaved, frame.minY - restingTop > 4, dirty, savesInFlight == 0, !completed, !finishing, !importing {
-                pullSaved = true
-                autosave?.cancel()
-                Task { await saveDraft() }
-            }
-            // A pull that cannot close the sheet leaves the keyboard alone.
-            if !pull.active, frame.minY - restingTop > 24, canPull {
-                pull = (true, editor.view?.isFirstResponder == true ? .body : subjectFocused ? .subject : focus.map(Editing.address))
-                editor.view?.window?.endEditing(true)
-                // The pull reveals the dock, so it shows this draft from now on.
-                if saved { showInDock() }
-                drafts.sheetOverDock = false
-            } else if pull.active, frame.minY - restingTop < 2 {
-                // The pull was canceled and the sheet is back at rest.
-                switch pull.editing {
-                case .body: editor.view?.becomeFirstResponder()
-                case .subject: subjectFocused = true
-                case .address(let field): focus = field
-                case nil: break
-                }
-                pull = (false, nil)
-                drafts.sheetOverDock = true
-            }
+        // A pull minimizes the draft. VoiceOver gets the same as an action, since it has no pull.
+        .accessibilityAction(named: "Minimize draft") {
+            guard canPull, panel.settled else { return }
+            panel.dock()
+            minimize()
         }
         .writingToolsBehavior(.disabled)
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
-        // Pulling the sheet down minimizes the draft once its edits are saved.
-        // A pull that started stays allowed, even if ending editing commits more text. The sheet saves that text
-        // when it goes away.
-        .interactiveDismissDisabled(!(pull.active || canPull))
-        .presentationBackground(Color(uiColor: .systemBackground))
-        .onAppear {
-            drafts.sheetOverDock = true
-            drafts.composerOpen = true
-            load()
+        .onAppear { load() }
+        .onChange(of: canPull, initial: true) { _, value in panel.canPull = value }
+        .onChange(of: DockSummary(draft), initial: true) { _, value in panel.summary = value }
+        .onChange(of: panel.settled) { _, settled in
+            guard settled, let refocus else { return }
+            self.refocus = nil
+            // A field tapped while the panel moved keeps the keyboard.
+            if editor.view?.isFirstResponder != true, !subjectFocused, focus == nil { refocus() }
         }
+        // A pull puts the keyboard away, so it does not ride over the mailbox. A canceled pull gives it back.
+        .onChange(of: panel.pulling) { _, pulling in
+            guard pulling else { return }
+            refocus = editingFocus()
+            editor.view?.window?.endEditing(true)
+        }
+        .onChange(of: panel.minimizeRequests) { _, _ in minimize() }
         .onChange(of: draft.accountID) { _, id in if loaded { replaceSignature(with: store.account(id).signature) } }
         .onChange(of: input) { _, value in
             autosave?.cancel()
@@ -240,13 +198,9 @@ struct ComposerView: View {
             }
         }
         .onDisappear {
-            drafts.sheetOverDock = false
-            drafts.composerOpen = false
-            if drafts.preview == draft.id { drafts.preview = nil }
             autosave?.cancel()
             guard !completed else { return }
-            // Ending editing during a pull can still commit text, such as an input method's composition, after the
-            // pull was allowed. Save what the editor holds now.
+            // A composer that leaves without closing, such as when the mailbox session changes, keeps its edits.
             if dirty {
                 do {
                     let content = try snapshot(input)
@@ -257,7 +211,6 @@ struct ComposerView: View {
                     }
                 } catch { drafts.error = error.localizedDescription }
             }
-            recordDockPosition()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background && !completed && dirty { Task { await saveDraft() } }
@@ -300,13 +253,13 @@ struct ComposerView: View {
             }
         }
         .alert("Composer", isPresented: Binding(get: { error != nil || drafts.error != nil }, set: { if !$0 { error = nil; drafts.error = nil } })) {
-            Button("OK") { error = nil; drafts.error = nil; if completed { dismiss() } }
+            Button("OK") { error = nil; drafts.error = nil; if completed { panel.close() } }
         } message: { Text(error ?? drafts.error ?? "") }
     }
 
     @ViewBuilder private var closeControl: some View {
         if completed {
-            Button("Cancel", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly).tint(.primary)
+            Button("Cancel", systemImage: "xmark") { panel.close() }.labelStyle(.iconOnly).tint(.primary)
         } else if dirty || saved {
             Menu {
                 Button("Delete Draft", role: .destructive) {
@@ -318,14 +271,14 @@ struct ComposerView: View {
                         defer { finishing = false }
                         guard await drafts.delete(draft.id) else { return }
                         complete()
-                        dismiss()
+                        panel.close()
                     }
                 }
                 Button("Save Draft") { Task { await saveDraft(then: .close) } }
             } label: { Image(systemName: "xmark") }
             .accessibilityLabel("Cancel").tint(.primary).disabled(importing)
         } else {
-            Button("Cancel", systemImage: "xmark") { complete(); dismiss() }
+            Button("Cancel", systemImage: "xmark") { complete(); panel.close() }
                 .labelStyle(.iconOnly).tint(.primary)
         }
     }
@@ -434,9 +387,9 @@ struct ComposerView: View {
         if missingAccount { replaceSignature(with: account.signature) }
         initial = draft
         loaded = true
-        if draft.to.isEmpty && resume == nil { focus = .to }
+        if draft.to.isEmpty && resume == nil { refocus = { focus = .to } }
         else {
-            DispatchQueue.main.async {
+            refocus = { [editor] in
                 guard let view = editor.view else { return }
                 view.becomeFirstResponder()
                 if #available(iOS 26, *), !selections.isEmpty { view.selectedRanges = selections }
@@ -445,6 +398,13 @@ struct ComposerView: View {
                 if resume != nil { view.revealCaret(); editor.revealOnKeyboard = true }
             }
         }
+    }
+    /// Gives the keyboard back to the field that has it now.
+    private func editingFocus() -> (() -> Void)? {
+        if editor.view?.isFirstResponder == true { return { [editor] in editor.view?.becomeFirstResponder() } }
+        if subjectFocused { return { subjectFocused = true } }
+        if let field = focus { return { focus = field } }
+        return nil
     }
     /// Swaps the inserted signature for `signature`. An edited signature stays, because it is no longer the account's.
     private func replaceSignature(with signature: String) {
@@ -467,25 +427,22 @@ struct ComposerView: View {
         result.updatedAt = .now
         return result
     }
-    /// Closes the draft for good, and takes it out of the dock. Any draft minimized before shows again under the
-    /// closing sheet.
+    /// Closes the draft for good, and takes it out of the dock. Any draft minimized before shows again once the
+    /// panel is gone.
     private func complete() {
         completed = true
-        drafts.sheetOverDock = false
-        if drafts.preview == draft.id { drafts.preview = nil }
         if drafts.docked?.id == draft.id { drafts.docked = nil }
     }
-    /// Closes the sheet into the dock. The dock shows this draft as the sheet slides down, not only once it is gone.
-    private func minimizeNow() {
-        if saved { showInDock() }
-        drafts.sheetOverDock = false
-        dismiss()
+    /// Finishes a pull while the panel heads for the dock: saves the edits, then puts the draft in
+    /// the dock. Ending editing first commits text the keyboard is still composing. An untouched new draft closes.
+    private func minimize() {
+        editor.view?.window?.endEditing(true)
+        if !canPull { panel.open() }
+        else if dirty { Task { await saveDraft(then: .minimize) } }
+        else if saved { recordDockPosition(); panel.dockReady() }
+        else { complete(); panel.close() }
     }
-    /// Shows this saved draft in the dock under the sheet. A save that finishes after the draft closed must not.
-    private func showInDock() {
-        if !completed { drafts.preview = draft.id }
-    }
-    /// Puts the saved draft in the dock after the sheet is pulled down or Minimize draft closes it.
+    /// Puts the saved draft in the dock, with the editor's position, so a resume continues there.
     private func recordDockPosition() {
         guard loaded, saved else { return }
         let selections: [NSRange]
@@ -511,14 +468,18 @@ struct ComposerView: View {
         let submitted = submitted ?? input
         do {
             let content = try snapshot(submitted)
-            guard await drafts.save(content) else { return }
+            // A failed save keeps the composer open, so the alert can show and the edits stay.
+            guard await drafts.save(content) else { if after == .minimize { panel.open() }; return }
             if drafts.drafts.first(where: { $0.id == content.id })?.matchesContent(of: content) == true { savedInput = submitted }
             switch after {
-            case .stay: showInDock()
-            case .close: complete(); dismiss()
-            case .minimize: minimizeNow()
+            case .stay: break
+            case .close: complete(); panel.close()
+            case .minimize: recordDockPosition(); panel.dockReady()
             }
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            self.error = error.localizedDescription
+            if after == .minimize { panel.open() }
+        }
     }
     /// Sends now, after the Undo Send delay, or at `scheduled`. Delayed mail waits in the outbox as this draft.
     private func send(at scheduled: Date? = nil) async {
@@ -555,7 +516,7 @@ struct ComposerView: View {
                 return
             }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
-            dismiss()
+            panel.close()
         } catch { self.error = error.localizedDescription }
     }
     private func importFiles(_ result: Result<[URL], any Error>) {

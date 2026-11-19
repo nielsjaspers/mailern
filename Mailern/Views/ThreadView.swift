@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ThreadView: View {
     @Environment(MailStore.self) private var store
+    @Environment(ComposerPanel.self) private var panel
     @Environment(DraftStore.self) private var drafts
     @Environment(\.dismiss) private var dismiss
     let id: UUID
@@ -18,9 +19,6 @@ struct ThreadView: View {
     @AppStorage(AfterSettle.key) private var afterSettle = AfterSettle.returnToList
     // The conversation to open after Settle waits for the discard-drafts confirmation.
     @State private var settleNext: UUID?
-    @State private var mode: ComposeMode?
-    // The message a per-message reply targets. Nil for the toolbar, which targets the latest.
-    @State private var target: UUID?
     @State private var snooze = false
     @State private var deleting = false
     @State private var settling: DraftDiscard?
@@ -28,9 +26,12 @@ struct ThreadView: View {
     @State private var confirmedMailbox = RemovedMailbox.trash
     private var scheduled: [ComposerDraft] { drafts.outbox.filter { $0.mode.replyID == id } }
     private var attachedDrafts: [ComposerDraft] { drafts.drafts.filter { $0.mode.replyID == id }.sorted { $0.updatedAt < $1.updatedAt } }
+    /// A per-message reply targets `message`. The toolbar passes nil, which targets the latest message.
     private func compose(_ mode: ComposeMode, message: UUID? = nil) {
-        target = message
-        self.mode = mode
+        switch mode {
+        case .draft, .mailto: panel.present(mode, inboxAccountID: inboxAccountID)
+        default: panel.present(mode, messageID: message)
+        }
     }
     private func leave(after next: UUID?) {
         if afterSettle == .openNext, let next { open(next) } else { dismiss() }
@@ -42,7 +43,7 @@ struct ThreadView: View {
     var body: some View {
         Group {
             if let c = store.conversation(id) {
-                ConversationContent(conversation: c, initialQuery: initialQuery, finding: $finding, drafts: attachedDrafts, scheduled: scheduled, editDraft: { mode = .draft($0) }, discardDraft: { draftID in
+                ConversationContent(conversation: c, initialQuery: initialQuery, finding: $finding, drafts: attachedDrafts, scheduled: scheduled, editDraft: { compose(.draft($0)) }, discardDraft: { draftID in
                     Task {
                         deleting = true
                         defer { deleting = false }
@@ -124,13 +125,8 @@ struct ThreadView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner(sendingOnly: true) }
         .toolbar(.hidden, for: .tabBar)
         .onAppear { store.markRead(id) }
-        .sheet(item: $mode) { mode in
-            switch mode {
-            case .draft, .mailto: ComposerView(mode: mode, inboxAccountID: inboxAccountID)
-            default: ComposerView(mode: mode, messageID: target)
-            }
-        }
-        .modifier(DraftStorageAlert(active: mode == nil))
+        .toolbar(panel.covering ? .hidden : .visible, for: .bottomBar)
+        .modifier(DraftStorageAlert(active: true))
         .modifier(DiscardDraftsConfirmation(request: $settling, onDone: { leave(after: settleNext) }))
         .confirmationDialog("Delete this conversation permanently?", isPresented: $deletingConversation, titleVisibility: .visible) {
             Button("Delete Permanently", role: .destructive) {

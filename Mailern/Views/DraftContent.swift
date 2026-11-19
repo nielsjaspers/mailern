@@ -67,9 +67,9 @@ struct DraftDetails: View {
 
 struct DraftThreadView: View {
     @Environment(DraftStore.self) private var drafts
+    @Environment(ComposerPanel.self) private var panel
     @Environment(\.dismiss) private var dismiss
     let id: UUID
-    @State private var mode: ComposeMode?
     @State private var deleting = false
     @State private var settling: DraftDiscard?
     @State private var snoozing = false
@@ -80,7 +80,7 @@ struct DraftThreadView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
                         Text(draft.title).font(.title2.bold()).textSelection(.enabled)
-                        DraftCard(draft: draft, edit: { mode = .draft(id) }, discard: {
+                        DraftCard(draft: draft, edit: { panel.present(.draft(id)) }, discard: {
                             Task {
                                 deleting = true
                                 defer { deleting = false }
@@ -108,23 +108,23 @@ struct DraftThreadView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
-        .modifier(DraftStorageAlert(active: mode == nil))
+        .toolbar(panel.covering ? .hidden : .visible, for: .bottomBar)
+        .modifier(DraftStorageAlert(active: true))
         .modifier(DiscardDraftsConfirmation(request: $settling))
         .sheet(isPresented: $snoozing) { SnoozeView(ids: [], draftIDs: [id], onSnooze: { dismiss() }) }
-        .sheet(item: $mode) { ComposerView(mode: $0) }
-        // Leave once the draft is gone, whether it was discarded here, settled, or sent or deleted from a composer,
-        // including one the dock opened.
-        .onChange(of: mode == nil && !drafts.drafts.contains { $0.id == id }) { _, gone in if gone { dismiss() } }
+        // Leave once the draft is gone, whether it was discarded here, settled, or sent or deleted from a composer.
+        .onChange(of: panel.request == nil && !drafts.drafts.contains { $0.id == id }) { _, gone in if gone { dismiss() } }
     }
 }
 
 struct DraftStorageAlert: ViewModifier {
     @Environment(DraftStore.self) private var drafts
+    @Environment(ComposerPanel.self) private var panel
     var active: Bool
     func body(content: Content) -> some View {
         content.alert("Draft storage", isPresented: Binding(
-            // Any open composer shows the error itself, including one the dock opened over this screen.
-            get: { active && !drafts.composerOpen && drafts.error != nil },
+            // An open composer shows the error itself.
+            get: { active && panel.request == nil && drafts.error != nil },
             set: { if !$0 && active { drafts.error = nil } }
         )) {
             Button("Retry") { Task { await drafts.reload() } }
@@ -133,88 +133,68 @@ struct DraftStorageAlert: ViewModifier {
     }
 }
 
-/// A minimized draft: the composer sheet resting at the bottom of the screen. Its top edge shows above the tab bar or
-/// toolbar, which float over the rest of it. It also sits under an open composer, so pulling that sheet down
-/// reveals it in place.
+/// A minimized draft: the composer panel resting at the bottom of the screen. Its top shows above the tab bar or
+/// toolbar, which float over the rest of it. A tap or an upward drag hands it to `ComposerPanel`, which takes its
+/// place and follows the finger.
 struct DraftDock: View {
     @Environment(DraftStore.self) private var drafts
-    let open: (UUID) -> Void
-    @GestureState(resetTransaction: Transaction(animation: .snappy)) private var lift: CGFloat = 0
-    /// Set when the dock opens the composer: the dock holds this lift while the sheet rises, and its header hides at
-    /// once, so the rising sheet's header is the only one.
-    @State private var handoff: CGFloat?
-    private static let radius: CGFloat = 30
-    /// How far a drag lifts the dock. The sheet background runs this far past the bottom of the screen.
-    private static let maxLift: CGFloat = 120
-    /// The composer sheet's own background, which dark mode lifts above the screen behind it.
-    private static let sheet = UIColor { traits in
-        UIColor.systemBackground.resolvedColor(with: traits.modifyingTraits { $0.userInterfaceLevel = .elevated })
-    }
+    @Environment(ComposerPanel.self) private var panel
+    @State private var dragging = false
+    @State private var shown = false
+    @State private var bottom: CGFloat?
     var body: some View {
-        // The container always exists, so the reset runs even while the keyboard has removed the dock.
+        // The container always exists, so it measures the dock's place even while no draft rests there.
         ZStack {
-            // The open composer's draft shows under its sheet. Otherwise the dock shows the minimized draft.
-            // While a composer is open, the dock ignores the keyboard, so keyboard changes never relayout the covered
+            // While the panel is up, the dock ignores the keyboard, so keyboard changes never relayout the covered
             // dock. Changing its bar while UIKit lays out the keyboard deadlocked the app once.
-            if drafts.composerOpen || !SoftwareKeyboard.shared.visible,
-               let draft = [drafts.composerOpen ? drafts.preview : nil, drafts.docked?.id].compactMap({ $0 })
-                   .filter({ !drafts.deleting.contains($0) })
-                   .lazy.compactMap({ id in drafts.all.first { $0.id == id && $0.sendAt == nil } }).first {
-                let id = draft.id
-                let summary = recipients(draft)
-                Button { resume(id) } label: {
-                    VStack(spacing: 0) {
-                        Capsule().fill(.tertiary).frame(width: 36, height: 5).padding(.top, 6)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(draft.title).font(.headline).lineLimit(1)
-                            Text(summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            if panel.request != nil || !SoftwareKeyboard.shared.visible,
+               let docked = drafts.docked?.id, !drafts.deleting.contains(docked),
+               let draft = drafts.drafts.first(where: { $0.id == docked }) {
+                let summary = DockSummary(draft)
+                Button { if panel.request == nil, !drafts.deleting.contains(draft.id) { panel.resume(draft.id, summary: summary) } } label: {
+                    DockHeader(summary: summary)
+                        .background(alignment: .top) {
+                            UnevenRoundedRectangle(topLeadingRadius: ComposerPanel.radius, topTrailingRadius: ComposerPanel.radius)
+                                .fill(ComposerPanel.background)
+                                .shadow(color: .black.opacity(0.15), radius: 12)
+                                .padding(.bottom, -200)
+                                .ignoresSafeArea(edges: .bottom)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 10)
-                    }
-                    .opacity(handoff == nil ? 1 : 0)
-                    // The drag's spring back must not fade the header out.
-                    .transaction { $0.animation = nil }
-                    .background(alignment: .top) {
-                        UnevenRoundedRectangle(topLeadingRadius: Self.radius, topTrailingRadius: Self.radius)
-                            .fill(Color(uiColor: Self.sheet))
-                            .shadow(color: .black.opacity(0.15), radius: 12)
-                            .padding(.bottom, -Self.maxLift)
-                            .ignoresSafeArea(edges: .bottom)
-                    }
-                    .contentShape(.rect)
+                        .overlay(alignment: .top) { PanelGrabber() }
+                        .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .offset(y: handoff ?? lift)
-                // The sheet follows an upward drag, then opens. A drag never counts as a tap.
-                .highPriorityGesture(DragGesture(minimumDistance: 10)
-                    .updating($lift) { value, lift, _ in if Self.vertical(value) { lift = Self.lift(value.translation.height) } }
+                // The panel draws the draft while it is up. The dock stays in place, hidden, so a drag that opened
+                // the panel keeps going.
+                .opacity(panel.request == nil ? 1 : 0)
+                .highPriorityGesture(DragGesture(minimumDistance: 10, coordinateSpace: .global)
+                    .onChanged { value in
+                        if !dragging {
+                            guard abs(value.translation.height) > abs(value.translation.width), value.translation.height < 0,
+                                  panel.request == nil, !drafts.deleting.contains(draft.id) else { return }
+                            dragging = true
+                            panel.beginResume(draft.id, summary: summary)
+                        }
+                        panel.followDock(value.translation.height)
+                    }
                     .onEnded { value in
-                        guard Self.vertical(value), value.translation.height < 0, value.predictedEndTranslation.height < -40 else { return }
-                        resume(id, holding: Self.lift(value.translation.height))
+                        guard dragging else { return }
+                        dragging = false
+                        panel.endDockDrag(translation: value.translation.height, predicted: value.predictedEndTranslation.height,
+                                          velocity: value.velocity.height)
                     })
-                // Fade out as the composer rises over the dock, and back in as a pull reveals it. Only this fade is
-                // animated, so the header hides at once.
-                .animation(.easeOut(duration: 0.25)) { $0.opacity(drafts.sheetOverDock ? 0 : 1) }
                 .accessibilityLabel("Resume draft, \(draft.title)")
-                .accessibilityValue(summary)
+                .accessibilityValue(summary.recipients)
             }
         }
-        .onChange(of: drafts.sheetOverDock) { _, covered in if !covered { handoff = nil } }
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { bottom = $0; report() }
+        .onAppear { shown = true; report() }
+        .onDisappear { shown = false }
+        .onChange(of: panel.covering) { _, _ in report() }
     }
-    private static func vertical(_ value: DragGesture.Value) -> Bool { abs(value.translation.height) > abs(value.translation.width) }
-    private static func lift(_ translation: CGFloat) -> CGFloat { max(-maxLift, min(0, translation) * 0.5) }
-    private func resume(_ id: UUID, holding lift: CGFloat = 0) {
-        handoff = lift
-        // Present after the dock has drawn without its header, so the rising sheet's header is the only one.
-        DispatchQueue.main.async { if !drafts.deleting.contains(id) { open(id) } }
-    }
-    private func recipients(_ draft: ComposerDraft) -> String {
-        let fields = [("To", draft.to), ("Cc", draft.cc), ("Bcc", draft.bcc)].compactMap { label, field in
-            let addresses = ComposerDraft.addresses(field)
-            return addresses.isEmpty ? nil : "\(label): \(addresses.joined(separator: ", "))"
-        }
-        return fields.isEmpty ? "No recipients" : fields.joined(separator: "  ")
+    /// Tells the panel where to stop. Only the screen on show counts, and only while its tab bar or toolbar shows.
+    private func report() {
+        if shown, !panel.covering, let bottom { panel.dockBottom = bottom }
     }
 }
 
@@ -242,9 +222,9 @@ struct DraftDock: View {
 extension View {
     /// Places the dock at the bottom. On iOS 26 and later it is a bar, so the scroll edge effect stays behind it
     /// instead of fading its text.
-    @ViewBuilder func draftDock(open: @escaping (UUID) -> Void) -> some View {
+    @ViewBuilder func draftDock() -> some View {
         let _ = SoftwareKeyboard.shared
-        if #available(iOS 26, *) { safeAreaBar(edge: .bottom, spacing: 0) { DraftDock(open: open) } }
-        else { safeAreaInset(edge: .bottom, spacing: 0) { DraftDock(open: open) } }
+        if #available(iOS 26, *) { safeAreaBar(edge: .bottom, spacing: 0) { DraftDock() } }
+        else { safeAreaInset(edge: .bottom, spacing: 0) { DraftDock() } }
     }
 }

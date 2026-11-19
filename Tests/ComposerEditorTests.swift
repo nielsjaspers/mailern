@@ -109,7 +109,7 @@ import SwiftUI
             let saved = await drafts.save(draft)
             XCTAssertTrue(saved)
             let window = UIWindow(windowScene: scene)
-            let host = UIHostingController(rootView: ComposerView(mode: mode).environment(store).environment(drafts))
+            let host = UIHostingController(rootView: ComposerView(mode: mode).environment(store).environment(drafts).environment(ComposerPanel()))
             window.rootViewController = host
             window.makeKeyAndVisible()
             defer { host.view.endEditing(true); window.isHidden = true }
@@ -254,7 +254,7 @@ import SwiftUI
         let window = UIWindow(windowScene: scene)
         let host = UIHostingController(rootView: ComposerView(mode: .draft(editingID))
             .environment(MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite"))))
-            .environment(drafts))
+            .environment(drafts).environment(ComposerPanel()))
         window.rootViewController = host
         window.makeKeyAndVisible()
         defer { host.view.endEditing(true); window.isHidden = true }
@@ -308,7 +308,7 @@ import SwiftUI
         let window = UIWindow(windowScene: scene)
         let directory = URL.temporaryDirectory.appending(path: "composer-field-check-\(UUID())")
         let store = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "mail.sqlite")))
-        let host = UIHostingController(rootView: ComposerView(mode: .new).environment(store).environment(DraftStore(url: directory.appending(path: "drafts.json"))))
+        let host = UIHostingController(rootView: ComposerView(mode: .new).environment(store).environment(DraftStore(url: directory.appending(path: "drafts.json"))).environment(ComposerPanel()))
         window.rootViewController = host
         window.makeKeyAndVisible()
         defer { host.view.endEditing(true); window.isHidden = true }

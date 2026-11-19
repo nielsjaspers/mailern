@@ -181,16 +181,8 @@ final class DraftStore {
         var typing: [NSAttributedString.Key: Any]
     }
     var docked: Docked?
-    /// The saved draft of the open composer. The dock shows it under the sheet, so a pull reveals it in place, and
-    /// shows the minimized draft again once that composer closes.
-    var preview: UUID?
     /// Drafts with a delete or discard in progress. The dock does not reopen them.
     private(set) var deleting: Set<UUID> = []
-    /// True while a composer sheet covers the dock. The dock fades out under a rising sheet, and shows again as soon
-    /// as a pull moves the sheet down.
-    var sheetOverDock = false
-    /// True while a composer sheet is presented, from any screen. Its alert shows draft errors then.
-    var composerOpen = false
     var error: String?
     /// Counts Pin, Snooze, Restore, Settle, and Discard on standalone drafts, like `MailStore.actionCount`.
     private(set) var actionCount = 0
