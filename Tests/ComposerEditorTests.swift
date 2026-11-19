@@ -564,6 +564,14 @@ import SwiftUI
         XCTAssertFalse(html.contains("'.S"), "private system font names must not reach the recipient")
         XCTAssertTrue(html.contains("-apple-system"))
         XCTAssertTrue(html.contains("color: #"), "an explicit color stays")
+        // Text that looks like CSS stays as written.
+        let literal = "Use color: #000000; or '.pdf'"
+        let plain = OutgoingHTML.make(NSAttributedString(string: literal, attributes: [.font: UIFont.preferredFont(forTextStyle: .body)])) ?? ""
+        XCTAssertTrue(plain.contains("Use color: #000000; or '.pdf'"), plain)
+        // A black highlight keeps its background color.
+        let highlighted = OutgoingHTML.make(NSAttributedString(string: "marked", attributes: [
+            .font: UIFont.preferredFont(forTextStyle: .body), .backgroundColor: UIColor.black])) ?? ""
+        XCTAssertTrue(highlighted.contains("background-color: #000000"), highlighted)
     }
 }
 

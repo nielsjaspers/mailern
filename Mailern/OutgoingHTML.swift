@@ -25,11 +25,14 @@ enum OutgoingHTML {
             }
         }
         guard let data = try? prepared.data(from: range, documentAttributes: [.documentType: NSAttributedString.DocumentType.html]),
-              var html = String(data: data, encoding: .utf8) else { return nil }
-        html = html.replacingOccurrences(of: #"'\.[^']*'|'UICTFont[^']*'"#, with: fontStack, options: .regularExpression)
-        // Text without a color still gets black from the exporter. Removing it lets the client choose.
-        html = html.replacingOccurrences(of: #";\s*color:\s*#000000|color:\s*#000000;?\s*"#, with: "", options: .regularExpression)
-        return html
+              let html = String(data: data, encoding: .utf8) else { return nil }
+        // The exporter puts all styles in one stylesheet in the head. Only that part changes, never the message text.
+        guard let end = html.range(of: "</style>") else { return html }
+        let style = String(html[..<end.lowerBound])
+            .replacingOccurrences(of: #"'\.[^']*'|'UICTFont[^']*'"#, with: fontStack, options: .regularExpression)
+            // Text without a color still gets black from the exporter. Removing it lets the client choose.
+            .replacingOccurrences(of: #"(?<![\w-])color:\s*#000000\s*;?"#, with: "", options: .regularExpression)
+        return style + html[end.lowerBound...]
     }
 
     /// Compares color values, since decoded rich text can use another color space than UIKit's own colors.
