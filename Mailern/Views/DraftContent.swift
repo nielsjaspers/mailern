@@ -123,7 +123,8 @@ struct DraftStorageAlert: ViewModifier {
     var active: Bool
     func body(content: Content) -> some View {
         content.alert("Draft storage", isPresented: Binding(
-            get: { active && drafts.error != nil },
+            // Any open composer shows the error itself, including one the dock opened over this screen.
+            get: { active && !drafts.sheetOverDock && drafts.error != nil },
             set: { if !$0 && active { drafts.error = nil } }
         )) {
             Button("Retry") { Task { await drafts.reload() } }
@@ -181,7 +182,7 @@ struct DraftDock: View {
                 .highPriorityGesture(DragGesture(minimumDistance: 10)
                     .updating($lift) { value, lift, _ in lift = Self.lift(value.translation.height) }
                     .onEnded { value in
-                        guard value.predictedEndTranslation.height < -40 else { return }
+                        guard value.translation.height < 0, value.predictedEndTranslation.height < -40 else { return }
                         resume(id, holding: Self.lift(value.translation.height))
                     })
                 // Fade out as the composer rises over the dock, and back in as a pull reveals it. Only this fade is

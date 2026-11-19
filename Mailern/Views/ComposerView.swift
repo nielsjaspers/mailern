@@ -161,7 +161,7 @@ struct ComposerView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Minimize draft", systemImage: "chevron.down") {
                         // Like a pull, this keeps a saved draft without writing it again, and closes an untouched one.
-                        if !dirty { dismiss() }
+                        if !dirty { minimizeNow() }
                         else { Task { await saveDraft(then: .minimize) } }
                     }
                         .labelStyle(.iconOnly).disabled(!loaded || importing || finishing || completed)
@@ -226,7 +226,6 @@ struct ComposerView: View {
                 await saveDraft(submitted: value)
             }
         }
-        .onChange(of: completed) { _, done in if done, drafts.docked?.id == draft.id { drafts.docked = displaced } }
         .onDisappear {
             drafts.sheetOverDock = false
             autosave?.cancel()
@@ -290,7 +289,7 @@ struct ComposerView: View {
                         finishing = true
                         defer { finishing = false }
                         guard await drafts.delete(draft.id) else { return }
-                        completed = true
+                        complete()
                         dismiss()
                     }
                 }
@@ -298,7 +297,7 @@ struct ComposerView: View {
             } label: { Image(systemName: "xmark") }
             .accessibilityLabel("Cancel").tint(.primary).disabled(importing)
         } else {
-            Button("Cancel", systemImage: "xmark") { completed = true; dismiss() }
+            Button("Cancel", systemImage: "xmark") { complete(); dismiss() }
                 .labelStyle(.iconOnly).tint(.primary)
         }
     }
@@ -415,7 +414,7 @@ struct ComposerView: View {
                 if #available(iOS 26, *), !selections.isEmpty { view.selectedRanges = selections }
                 else { view.selectedRange = selection }
                 view.typingAttributes = typing
-                if resume != nil { view.revealCaret() }
+                if resume != nil { view.revealCaret(); editor.revealOnKeyboard = true }
             }
         }
     }
@@ -439,6 +438,17 @@ struct ComposerView: View {
         result.richText = try RichText.encode(value.text)
         result.updatedAt = .now
         return result
+    }
+    /// Closes the draft for good. If it held the dock, the draft it took the dock from gets it back.
+    private func complete() {
+        completed = true
+        if drafts.docked?.id == draft.id { drafts.docked = displaced }
+    }
+    /// Closes the sheet into the dock. The dock shows this draft as the sheet slides down, not only once it is gone.
+    private func minimizeNow() {
+        if saved { takeDock() }
+        drafts.sheetOverDock = false
+        dismiss()
     }
     /// Shows this saved draft in the dock under the sheet, so a pull reveals it.
     private func takeDock() {
@@ -473,10 +483,10 @@ struct ComposerView: View {
             let content = try snapshot(submitted)
             guard await drafts.save(content) else { return }
             if drafts.drafts.first(where: { $0.id == content.id })?.matchesContent(of: content) == true { savedInput = submitted }
-            if after != .close { takeDock() }
-            if dismissAfter {
-                if after == .close { completed = true }
-                dismiss()
+            switch after {
+            case .stay: takeDock()
+            case .close: complete(); dismiss()
+            case .minimize: minimizeNow()
             }
         } catch { self.error = error.localizedDescription }
     }
@@ -506,7 +516,7 @@ struct ComposerView: View {
                     return
                 }
             }
-            completed = true
+            complete()
             focus = nil
             editor.view?.resignFirstResponder()
             if sendAt == nil, !(await drafts.delete(draft.id)) {

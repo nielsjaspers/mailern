@@ -431,6 +431,28 @@ final class MinimizedDraftUITests: MailernUITestCase {
         XCTAssertFalse(dock.exists)
     }
     @MainActor
+    func testResumeReplacesTheSelectedWord() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launch()
+        app.buttons["Compose"].tap()
+        let body = app.textViews["Message body"]
+        body.tap()
+        body.typeText("Keep middle words")
+        // Select "middle" from its end.
+        for _ in 0..<6 { body.typeKey(.leftArrow, modifierFlags: []) }
+        for _ in 0..<6 { body.typeKey(.leftArrow, modifierFlags: .shift) }
+        app.buttons["Minimize draft"].tap()
+        let resume = app.buttons["Resume draft, New Message"]
+        XCTAssertTrue(resume.wait(for: \.isHittable, toEqual: true, timeout: 6))
+        resume.tap()
+        body.typeText("other")
+        XCTAssertTrue((body.value as? String ?? "").hasPrefix("Keep other words"))
+        app.buttons["Cancel"].tap()
+        app.buttons["Delete Draft"].tap()
+        waitForAbsence(body)
+    }
+    @MainActor
     func testPullDownAndResumeBodyCursor() {
         continueAfterFailure = false
         let app = TestApplication()
