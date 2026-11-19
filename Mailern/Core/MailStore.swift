@@ -725,7 +725,8 @@ final class MailStore {
         guard canWrite() else { return .refused }
         if remoteSendsInFlight.contains(draft.id) { return .waitingToFile }
         let prepared: PreparedRemoteSend
-        if let pending = pendingRemoteSends[draft.id] {
+        let previousAttempt = pendingRemoteSends[draft.id]
+        if let pending = previousAttempt {
             prepared = pending.prepared
         } else if sentConversation(draft.id) != nil {
             // The server has a copy, but there is no record of which local draft was submitted.
@@ -761,6 +762,16 @@ final class MailStore {
                     guard save(replacingConversations: conversations, pendingSends: pending) else { return .waitingToFile }
                     self.error = "Message could not be sent. \(error.localizedDescription)"
                     return .refused
+                }
+                // A connection that never opened sent nothing, so the attempt can be dropped: the draft stays
+                // scheduled and can still be canceled or edited.
+                if previousAttempt == nil, let failure = error as? URLError, [.notConnectedToInternet, .cannotFindHost, .cannotConnectToHost,
+                                                       .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff].contains(failure.code) {
+                    var pending = pendingRemoteSends
+                    pending.removeValue(forKey: draft.id)
+                    guard save(replacingConversations: conversations, pendingSends: pending) else { return .waitingToFile }
+                    self.error = "Mailern could not reach the mail server, so nothing was sent. \(error.localizedDescription)"
+                    return .waitingToFile
                 }
                 self.error = "Delivery is unconfirmed. Retry to finish sending this message. \(error.localizedDescription)"
                 return .waitingToFile

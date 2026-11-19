@@ -922,6 +922,21 @@ import os
         assert(posts == 1 && store.error == nil)
         await drafts.sendDue(through: store, now: start.addingTimeInterval(61))
         assert(posts == 2 && store.error == nil)
+        var fresh = draft
+        fresh.id = UUID()
+        let freshQueued = await drafts.schedule(fresh, at: start)
+        assert(freshQueued)
+        store.sendRemote = { prepared in
+            assert(prepared.draft.id == fresh.id)
+            throw URLError(.networkConnectionLost)
+        }
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(62))
+        assert(store.hasPendingRemoteSend(fresh.id) && !store.hasPendingRemoteSend(draft.id))
+        store.sendRemote = { _ in throw URLError(.cannotConnectToHost) }
+        _ = await drafts.sendNow(fresh.id, through: store)
+        assert(store.hasPendingRemoteSend(fresh.id), "An offline retry cannot resolve a previous ambiguous send")
+        store.sendRemote = { _ in }
+        _ = await drafts.sendNow(fresh.id, through: store)
         // A permanent rejection goes back to Drafts and does not hold up the next message.
         store.sendRemote = { _ in throw RemoteSendRejection(message: "Unknown recipient") }
         await drafts.sendDue(through: store, now: start.addingTimeInterval(122))

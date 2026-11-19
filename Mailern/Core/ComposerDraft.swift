@@ -405,13 +405,14 @@ final class DraftStore {
     func edit(_ id: UUID) async {
         if await unschedule(id) { reopening = id }
     }
-    /// Sends outbox mail that is due.
-    /// Automatic sends that failed wait until this time before they try again.
-    @ObservationIgnored private var automaticRetryAfter: Date?
+    /// When each automatic send that failed may try again. Other due mail, such as a fresh Undo Send, does not wait.
+    @ObservationIgnored private var retryAfter: [UUID: Date] = [:]
     @ObservationIgnored private var automaticFailureReported = false
+    /// Sends outbox mail that is due.
     func sendDue(through store: MailStore, now: Date = .now, whileActive: @escaping @MainActor () -> Bool = { true }) async {
-        guard all.contains(where: { ($0.sendAt ?? .distantFuture) <= now }), (automaticRetryAfter ?? .distantPast) <= now else { return }
-        _ = await deliver(through: store, automatic: true) { whileActive() && ($0.sendAt ?? .distantFuture) <= now }
+        let due = { (draft: ComposerDraft) in (draft.sendAt ?? .distantFuture) <= now && (self.retryAfter[draft.id] ?? .distantPast) <= now }
+        guard all.contains(where: due) else { return }
+        _ = await deliver(through: store, automatic: true, now: now) { whileActive() && due($0) }
     }
     /// Sends one scheduled message at once.
     func sendNow(_ id: UUID, through store: MailStore) async -> Bool {
@@ -419,7 +420,7 @@ final class DraftStore {
     }
     /// Sends the scheduled mail that `pick` selects. Each message goes out with its draft's ID, so a retry after a
     /// failed draft write removes the draft without sending it again. Mail the store refuses goes back to Drafts.
-    private func deliver(through store: MailStore, automatic: Bool = false, pick: @escaping (ComposerDraft) -> Bool) async -> Bool {
+    private func deliver(through store: MailStore, automatic: Bool = false, now: Date = .now, pick: @escaping (ComposerDraft) -> Bool) async -> Bool {
         await enqueue {
             // A failed reload can leave an obsolete outbox snapshot in memory.
             guard self.hasReadableManifest, !store.needsReload else { return false }
@@ -429,9 +430,10 @@ final class DraftStore {
             guard !queued.isEmpty else { return true }
             var failure: String?
             let errorBefore = store.error
-            // Only sends that stay queued retry. A refused one is back in Drafts and is always reported.
+            // Only sends that stay queued retry. Refused ones are back in Drafts and are always reported.
             var retrying = false
-            var refused: String?
+            var refusedTitles: [String] = []
+            var refusalReason = ""
             var updated: [ComposerDraft] = []
             for var draft in self.all {
                 guard queued.contains(draft.id) else {
@@ -440,15 +442,18 @@ final class DraftStore {
                 }
                 switch await store.deliver(draft) {
                 case .filed:
+                    self.retryAfter[draft.id] = nil
                     continue
                 case .waitingToFile:
                     failure = store.error ?? "Mailern is still finishing this send."
                     retrying = true
+                    if automatic { self.retryAfter[draft.id] = now.addingTimeInterval(60) }
                 case .refused:
+                    self.retryAfter[draft.id] = nil
                     draft.sendAt = nil
                     draft.holdingForUndo = nil
-                    refused = "“\(draft.title)” could not be sent and is back in Drafts. \(store.error ?? "")"
-                    failure = refused
+                    refusedTitles.append("“\(draft.title)”")
+                    refusalReason = store.error ?? ""
                 }
                 updated.append(draft)
             }
@@ -463,9 +468,12 @@ final class DraftStore {
                store.hasSentOrDiscarded(undoable) || !self.all.contains(where: { $0.id == undoable && $0.sendAt != nil }) {
                 self.undoable = nil
             }
+            let refused = refusedTitles.isEmpty ? nil : refusedTitles.count == 1
+                ? "\(refusedTitles[0]) could not be sent and is back in Drafts. \(refusalReason)"
+                : "\(ListFormatter.localizedString(byJoining: refusedTitles)) could not be sent and are back in Drafts. \(refusalReason)"
+            if let refused, failure == nil { failure = refused }
             if automatic {
-                // An outage would fail every second. Wait a minute between tries and say it once.
-                self.automaticRetryAfter = retrying ? .now.addingTimeInterval(60) : nil
+                // An outage would fail every second. Failed sends wait a minute between tries, said once.
                 // A repeat failure clears only its own message, so an error from sync during the send stays.
                 if let refused {
                     store.error = refused
