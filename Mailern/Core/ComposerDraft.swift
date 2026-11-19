@@ -180,6 +180,7 @@ final class DraftStore {
     private var needsMailRecovery = false
     private var retryMailRecoveryAfter: Date?
     private var recoveryFailureReported = false
+    private var failedDraftWakes: [UUID: Date] = [:]
     private var retryDraftWakeAfter: Date?
     @ObservationIgnored private var pending: Task<Bool, Never>?
 
@@ -212,6 +213,7 @@ final class DraftStore {
             }
         }
         all = loaded.filter { mail?.discardedDraftIDs.contains($0.id) != true }
+        clearResolvedWakeFailures()
     }
 
     func reload(automatic: Bool = false) async {
@@ -288,6 +290,7 @@ final class DraftStore {
                 defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
                 guard committingMail(removed) else { return false }
                 self.all = remaining
+                self.clearResolvedWakeFailures()
                 do {
                     try AttachmentJSON.installRemoval(staged, at: url)
                     self.mail?.finishDraftDiscards(discards)
@@ -377,6 +380,7 @@ final class DraftStore {
             let saved = await self.persist(updated, reportFailure: !automatic || !self.recoveryFailureReported)
             if !saved, !store.discardedDraftIDs.isEmpty {
                 self.all.removeAll { store.discardedDraftIDs.contains($0.id) }
+                self.clearResolvedWakeFailures()
                 self.needsMailRecovery = true
             }
             if let undoable = self.undoable, !self.all.contains(where: { $0.id == undoable && $0.sendAt != nil }) { self.undoable = nil }
@@ -408,7 +412,13 @@ final class DraftStore {
             }
             if updated == self.all { return true }
             let saved = await self.persist(updated, reportFailure: !self.recoveryFailureReported && self.retryDraftWakeAfter == nil)
-            self.retryDraftWakeAfter = saved ? nil : now.addingTimeInterval(30)
+            if !saved {
+                self.failedDraftWakes = Dictionary(uniqueKeysWithValues: self.all.compactMap { draft in
+                    guard let date = draft.snoozedUntil, date <= now else { return nil }
+                    return (draft.id, date)
+                })
+                self.retryDraftWakeAfter = now.addingTimeInterval(30)
+            }
             return saved
         }
     }
@@ -450,6 +460,7 @@ final class DraftStore {
                 try AttachmentJSON.save(updated, to: url, write: write)
             }.value
             all = updated
+            clearResolvedWakeFailures()
             mail?.finishDraftDiscards(discarded, reportFailure: reportFailure)
             needsMailRecovery = mail?.discardedDraftIDs.isEmpty == false
             recoveryFailureReported = needsMailRecovery
@@ -464,6 +475,16 @@ final class DraftStore {
             return false
         }
     }
+    private func clearResolvedWakeFailures() {
+        guard !failedDraftWakes.isEmpty else { return }
+        if all.contains(where: { draft in
+            guard let failedDate = failedDraftWakes[draft.id] else { return false }
+            return draft.snoozedUntil == failedDate
+        }) { return }
+        failedDraftWakes = [:]
+        retryDraftWakeAfter = nil
+    }
+
     private func failedToLoad(_ error: any Error, report: Bool = true) {
         needsMailRecovery = true
         loadFailure = "Could not load drafts. Existing storage has not been changed. \(error.localizedDescription)"

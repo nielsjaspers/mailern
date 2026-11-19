@@ -831,17 +831,38 @@ import SQLite3
         await cleanup.sendDue(through: cleanupMail, now: deadline)
         assert(cleanup.error != nil && cleanupMail.discardedDraftIDs == [automatic.id])
         cleanup.error = nil
-        await cleanup.recoverAfterMailLoad(now: deadline)
-        await cleanup.wakeDue(now: deadline)
-        assert(cleanup.error == nil && cleanupMail.error == nil)
+        for seconds in [0, 30, 60] {
+            let tick = deadline.addingTimeInterval(Double(seconds))
+            async let retry: Void = cleanup.recoverAfterMailLoad(now: tick)
+            async let wake: Void = cleanup.wakeDue(now: tick)
+            _ = await (retry, wake)
+            assert(cleanup.error == nil && cleanupMail.error == nil)
+            assert(cleanupMail.discardedDraftIDs == [automatic.id])
+        }
         await cleanup.reload() // A user can still retry and see the current error.
         assert(cleanup.error != nil)
         cleanup.error = nil
         try FileManager.default.removeItem(at: blockWrites)
-        await cleanup.recoverAfterMailLoad(now: deadline.addingTimeInterval(30))
-        await cleanup.wakeDue(now: deadline.addingTimeInterval(30))
+        await cleanup.recoverAfterMailLoad(now: deadline.addingTimeInterval(90))
+        assert(cleanupMail.discardedDraftIDs.isEmpty)
+        assert(DraftStore(url: cleanupURL).all.map(\.id) == [sleeper.id])
+        await cleanup.wakeDue(now: deadline.addingTimeInterval(90))
         assert(cleanupMail.discardedDraftIDs.isEmpty && cleanup.drafts.first?.snoozedUntil == nil)
         assert(cleanupMail.conversations.flatMap(\.messages).filter { $0.id == automatic.id }.count == 1)
+        let nextSleeper = ComposerDraft(subject: "Separate wake failure", snoozedUntil: deadline.addingTimeInterval(180))
+        let restored = await cleanup.snooze([sleeper.id], until: deadline)
+        let nextSaved = await cleanup.save(nextSleeper)
+        assert(restored && nextSaved)
+        try Data().write(to: blockWrites)
+        await cleanup.wakeDue(now: deadline.addingTimeInterval(120))
+        assert(cleanup.error != nil)
+        cleanup.error = nil
+        try FileManager.default.moveItem(at: blockWrites, to: directory.appending(path: "first-failure"))
+        let restoredManually = await cleanup.restore(sleeper.id)
+        assert(restoredManually)
+        try Data().write(to: blockWrites)
+        await cleanup.wakeDue(now: deadline.addingTimeInterval(180))
+        assert(cleanup.error != nil && cleanup.drafts.contains { $0.id == nextSleeper.id && $0.snoozedUntil != nil })
         print("PASS: existing outbox reconciles before sent mail deletion and survives startup Trash expiry without redelivery")
     }
 
