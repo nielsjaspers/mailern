@@ -65,7 +65,8 @@ struct ComposerView: View {
         return Self.isDirty(input, saved: savedInput, initial: initial)
     }
     private var saved: Bool { drafts.drafts.contains { $0.id == draft.id } }
-    private var canPull: Bool { !(draggingContent || importing || finishing || dirty) }
+    /// A pull minimizes the draft. A closed composer is on its way out and does not minimize.
+    private var canPull: Bool { !(completed || draggingContent || importing || finishing || dirty) }
     private var account: MailAccount { store.account(draft.accountID) }
     private let attachmentLimit = 25 * 1024 * 1024
     private var importing: Bool { importsInFlight > 0 }
@@ -379,7 +380,8 @@ struct ComposerView: View {
             RichText.markQuote(in: text, from: start, body: bodyRange.location)
         }
         editor.text = text
-        let resume = drafts.docked.flatMap { $0.id == draft.id ? $0.position : nil }
+        // A replaced signature moves the text, so the saved position no longer fits.
+        let resume = missingAccount ? nil : drafts.docked.flatMap { $0.id == draft.id ? $0.position : nil }
         let selections: [NSRange] = resume?.selections.map { range in
             let start = min(range.location, text.length)
             return NSRange(location: start, length: min(range.length, text.length - start))
@@ -461,7 +463,7 @@ struct ComposerView: View {
             let content = try snapshot(submitted)
             guard await drafts.save(content) else { return }
             if drafts.drafts.first(where: { $0.id == content.id })?.matchesContent(of: content) == true { savedInput = submitted }
-            takeDock()
+            if after != .close { takeDock() }
             if dismissAfter {
                 if after == .close { completed = true }
                 dismiss()

@@ -454,6 +454,8 @@ final class MinimizedDraftUITests: MailernUITestCase {
         app.buttons["Cancel"].tap()
         app.buttons["Save Draft"].tap()
         waitForAbsence(body)
+        // Save Draft closes the draft, so it leaves the dock.
+        waitForAbsence(resume)
     }
 }
 

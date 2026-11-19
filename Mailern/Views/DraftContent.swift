@@ -186,6 +186,7 @@ struct DraftDock: View {
                 // animated, so the header hides at once.
                 .animation(.easeOut(duration: 0.25)) { $0.opacity(drafts.sheetOverDock ? 0 : 1) }
                 .accessibilityLabel("Resume draft, \(draft.title)")
+                .accessibilityValue(recipients(draft))
             }
         }
         .onChange(of: drafts.sheetOverDock) { _, covered in if !covered { handoff = nil } }
