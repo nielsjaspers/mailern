@@ -8,22 +8,24 @@ struct Sender: Hashable {
 struct SenderHistoryView: View {
     @Environment(MailStore.self) private var store
     let sender: Sender
+    let open: (UUID, [UUID]) -> Void
 
     var body: some View {
-        List {
+        let conversations = store.conversations(with: sender.address)
+        return List {
             Section {
                 Text(sender.address).textSelection(.enabled)
                 SenderBlockButton(address: sender.address)
             }
             Section("Conversations") {
-                ForEach(store.conversations(with: sender.address)) { conversation in
-                    NavigationLink(value: MailboxRoute.conversation(conversation.id)) {
+                ForEach(conversations) { conversation in
+                    Button { open(conversation.id, conversations.map(\.id)) } label: {
                         VStack(alignment: .leading, spacing: 5) {
                             ConversationRow(conversation: conversation)
                             Text(conversation.removal?.mailbox.title ?? conversation.workflow.title)
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                    }
+                    }.buttonStyle(.plain)
                 }
             }
         }

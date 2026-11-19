@@ -5,6 +5,14 @@ struct ConversationContent: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let conversation: Conversation
     var isPreview = false
+    var initialQuery = ""
+    var finding: Binding<Bool> = .constant(false)
+    @State private var query = ""
+    @State private var matches: [MessageMatch] = []
+    @State private var matchIndex = 0
+    @State private var completedFind: FindRequest?
+    @State private var openingResult = false
+    @FocusState private var findFocused: Bool
     var drafts: [ComposerDraft] = []
     var scheduled: [ComposerDraft] = []
     var editDraft: (UUID) -> Void = { _ in }
@@ -18,14 +26,18 @@ struct ConversationContent: View {
     @State private var showsMiddle = false
     /// A longer thread shows its first message and its last two, with one row for the messages between.
     private static let foldAfter = 4
-    private func isExpanded(_ message: MailMessage) -> Bool { (message.id == latest.id) != toggled.contains(message.id) }
+    private func isExpanded(_ message: MailMessage) -> Bool { match?.messageID == message.id || ((message.id == latest.id) != toggled.contains(message.id)) }
     private var workflow: Workflow { conversation.workflow }
     private var latest: MailMessage { conversation.latest }
     private var earlier: [MailMessage] { Array(conversation.messages.dropLast()) }
     private var margin: CGFloat { isPreview ? 18 : 20 }
     private var ownAddresses: Set<String> { Set(store.accounts.map { $0.address.lowercased() }) }
 
+    private struct FindRequest: Equatable { let query: String; let latest: UUID }
+
     var body: some View {
+        let request = FindRequest(query: query, latest: latest.id)
+        let resultsReady = completedFind == request
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -67,17 +79,83 @@ struct ConversationContent: View {
                 }.padding(.vertical, isPreview ? 18 : 16)
             }
             .background(Color(uiColor: isPreview ? .secondarySystemGroupedBackground : .systemBackground))
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if finding.wrappedValue {
+                    HStack {
+                        TextField("Find in conversation", text: $query).focused($findFocused)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        if !query.isEmpty {
+                            Button("Clear find", systemImage: "xmark.circle.fill") { query = ""; findFocused = true }
+                        }
+                        if !query.isEmpty {
+                            ZStack {
+                                Text("No matches").hidden().accessibilityHidden(true)
+                                Text(matches.isEmpty ? "No matches" : "\(matchIndex + 1) of \(matches.count)")
+                                    .opacity(resultsReady ? 1 : 0).accessibilityHidden(!resultsReady)
+                            }.font(.caption).monospacedDigit()
+                        }
+                        Button("Previous match", systemImage: "chevron.up") { matchIndex -= 1 }.disabled(!resultsReady || matchIndex == 0)
+                        Button("Next match", systemImage: "chevron.down") { matchIndex += 1 }.disabled(!resultsReady || matchIndex + 1 >= matches.count)
+                        Button("Done") { finishFind(proxy) }.accessibilityIdentifier("Close find")
+                    }.labelStyle(.iconOnly).padding(10).background(.bar)
+                }
+            }
+            .onChange(of: finding.wrappedValue) { _, active in findFocused = active }
+            .task(id: request) {
+                let previous = match
+                guard !query.isEmpty else { matches = []; completedFind = nil; matchIndex = 0; return }
+                let thread = conversation, term = query
+                let worker = Task.detached(priority: .userInitiated) { thread.messageMatches(term) }
+                let found = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+                guard !Task.isCancelled, query == term else { return }
+                completedFind = request
+                matches = found
+                matchIndex = previous.flatMap { found.firstIndex(of: $0) } ?? 0
+                if openingResult && found.isEmpty { openNormally(proxy) }
+                openingResult = false
+                revealMatch(proxy)
+            }
+            .onChange(of: matchIndex) { _, _ in revealMatch(proxy) }
             // A long thread opens on its latest message, or on a draft below it.
             .onAppear {
-                if let id = (drafts + scheduled).last?.id { proxy.scrollTo(id, anchor: .bottom) }
-                else if !isPreview, !earlier.isEmpty { proxy.scrollTo(latest.id, anchor: .top) }
+                if initialQuery.isEmpty { openNormally(proxy) }
+                else { openingResult = true; query = initialQuery }
             }
             // A new message opens and the one it replaces folds, whatever the reader did to it.
             .onChange(of: latest.id) { old, new in
                 toggled.remove(old)
-                if !isPreview { withAnimation(reduceMotion ? nil : .snappy) { proxy.scrollTo(new, anchor: .top) } }
+                if !finding.wrappedValue, !isPreview {
+                    query = ""
+                    withAnimation(reduceMotion ? nil : .snappy) { proxy.scrollTo(new, anchor: .top) }
+                }
             }
-            .onChange(of: (drafts + scheduled).map(\.id)) { _, ids in if let id = ids.last { proxy.scrollTo(id, anchor: .bottom) } }
+            .onChange(of: (drafts + scheduled).map(\.id)) { _, ids in if !finding.wrappedValue, let id = ids.last { query = ""; proxy.scrollTo(id, anchor: .bottom) } }
+        }
+    }
+
+    private var match: MessageMatch? { matches.indices.contains(matchIndex) ? matches[matchIndex] : nil }
+    private func openNormally(_ proxy: ScrollViewProxy) {
+        if let id = (drafts + scheduled).last?.id { proxy.scrollTo(id, anchor: .bottom) }
+        else if !isPreview, !earlier.isEmpty { proxy.scrollTo(latest.id, anchor: .top) }
+    }
+    private func finishFind(_ proxy: ScrollViewProxy) {
+        let id = match?.messageID
+        if let id {
+            if conversation.messages.dropFirst().dropLast(2).contains(where: { $0.id == id }) { showsMiddle = true }
+            if id == latest.id { toggled.remove(id) } else { toggled.insert(id) }
+        }
+        finding.wrappedValue = false
+        matches = []
+        query = ""
+        if let id { Task { @MainActor in await Task.yield(); proxy.scrollTo(id, anchor: .top) } }
+    }
+    private func revealMatch(_ proxy: ScrollViewProxy) {
+        guard let match else { return }
+        let id = match.messageID
+        Task { @MainActor in
+            await Task.yield()
+            guard self.match == match else { return }
+            proxy.scrollTo(id, anchor: .top)
         }
     }
 
@@ -93,7 +171,8 @@ struct ConversationContent: View {
     }
     private var items: [Item] {
         let messages = conversation.messages
-        return showsMiddle || messages.count <= Self.foldAfter
+        let targetsMiddle = match.map { hit in messages.dropFirst().dropLast(2).contains { $0.id == hit.messageID } } ?? false
+        return showsMiddle || targetsMiddle || messages.count <= Self.foldAfter
             ? messages.map(Item.message)
             : [.message(messages[0]), .middle(count: messages.count - 3)] + messages.suffix(2).map(Item.message)
     }
@@ -110,15 +189,17 @@ struct ConversationContent: View {
                     switch item {
                     case .message(let message):
                         let folded = !isExpanded(message)
-                        MessageRow(
-                            message: message, conversationID: conversation.id, threadSubject: conversation.subject,
-                            // A folded row shows only its first line, so it needs no quote.
-                            quoteStart: folded ? nil : conversation.quoteStart(of: message),
-                            answered: folded ? nil : conversation.answered(by: message),
-                            ownAddresses: ownAddresses, margin: margin, expanded: !folded,
-                            toggle: conversation.messages.count > 1 ? { toggle(message) } : nil,
-                            compose: compose.map { compose in { compose($0, message.id) } }, showSender: showSender
-                        )
+                        VStack(alignment: .leading, spacing: 0) {
+                            MessageRow(
+                                activeMatch: match?.messageID == message.id ? match : nil, message: message, conversationID: conversation.id, threadSubject: conversation.subject,
+                                // A folded row shows only its first line, so it needs no quote.
+                                quoteStart: folded ? nil : conversation.quoteStart(of: message),
+                                answered: folded ? nil : conversation.answered(by: message),
+                                ownAddresses: ownAddresses, margin: margin, expanded: !folded,
+                                toggle: conversation.messages.count > 1 && match?.messageID != message.id ? { toggle(message) } : nil,
+                                compose: compose.map { compose in { compose($0, message.id) } }, showSender: showSender
+                            )
+                        }
                     case .middle(let count):
                         Button { withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) { showsMiddle = true } } label: {
                             Label("\(count) earlier messages", systemImage: "rectangle.stack")
@@ -165,6 +246,7 @@ struct ConversationContent: View {
 private struct MessageRow: View {
     @Environment(\.dynamicTypeSize) private var textSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var activeMatch: MessageMatch?
     let message: MailMessage
     let conversationID: UUID
     let threadSubject: String
@@ -217,7 +299,18 @@ private struct MessageRow: View {
         }
     }
 
+    private static func highlighted(_ match: MessageMatch) -> AttributedString {
+        var hit = AttributedString(match.text)
+        hit.backgroundColor = .yellow
+        hit.foregroundColor = .black
+        return AttributedString(match.before) + hit + AttributedString(match.after)
+    }
+
     @ViewBuilder private var content: some View {
+            if let activeMatch {
+                Text(Self.highlighted(activeMatch)).font(.callout).padding(.horizontal, margin)
+                    .accessibilityIdentifier("matching-passage")
+            }
             if showsDetails { details.padding(.horizontal, margin) }
             if let subject = message.subject,
                subject != threadSubject, subject.caseInsensitiveCompare("Re: \(threadSubject)") != .orderedSame {
@@ -229,7 +322,9 @@ private struct MessageRow: View {
             } else {
                 let rich = richText
                 // Only the composer writes rich text with a quote, so plain mail never folds.
-                if let rich, quoteStart != nil, quoteIsUnchanged(rich), let quoteStart {
+                if let hit = activeMatch, hit.inBody, let rich, rich.string.utf16.elementsEqual(message.body.utf16) {
+                    messageText(highlighted(rich, match: hit))
+                } else if let rich, quoteStart != nil, quoteIsUnchanged(rich), let quoteStart {
                     // The composer separates the quote with exactly two line breaks. Blank lines above them stay.
                     messageText(rich.attributedSubstring(from: NSRange(location: 0, length: quoteStart - 2)))
                     if !isPreview {
@@ -255,9 +350,23 @@ private struct MessageRow: View {
             }
     }
 
+    private func highlighted(_ rich: NSAttributedString, match: MessageMatch) -> NSAttributedString {
+        let marked = NSMutableAttributedString(attributedString: rich)
+        marked.addAttributes([.backgroundColor: UIColor.systemYellow, .foregroundColor: UIColor.black],
+                             range: NSRange(match.range, in: match.field))
+        return marked
+    }
+    private var linkedBody: AttributedString {
+        var text = MessageLinks.linked(message.body)
+        if let hit = activeMatch, hit.inBody, let range = Range(NSRange(hit.range, in: hit.field), in: text) {
+            text[range].backgroundColor = .yellow
+            text[range].foregroundColor = .black
+        }
+        return text
+    }
     private func messageText(_ text: NSAttributedString?) -> some View {
         Group {
-            if let text { RichMessageText(text: text) } else { Text(MessageLinks.linked(message.body)) }
+            if let text { RichMessageText(text: text) } else { Text(linkedBody) }
         }
         .font(.body).lineSpacing(5).textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -281,6 +390,7 @@ private struct MessageRow: View {
             HStack(spacing: 8) {
                 if let compose {
                     Button { compose(.reply(id)) } label: { Image(systemName: "arrowshape.turn.up.left") }
+                        .accessibilityIdentifier((activeMatch == nil ? "reply-" : "matched-reply-") + message.id.uuidString)
                         .accessibilityLabel("Reply to \(message.sender), \(time)")
                 }
                 Menu {
@@ -338,13 +448,13 @@ private struct MessageRow: View {
                 // message and acts as a button. Folded, the whole row is the button.
                 nameLine
                     .gesture(TapGesture().onEnded { toggle?() }, including: expanded && toggle != nil ? .all : .subviews)
-                    // VoiceOver reads the whole folded row here, and this element folds or opens the message.
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(expanded ? "\(message.sender), \(dateText)" : foldedSummary)
-                    .accessibilityAddTraits(toggle != nil ? .isButton : [])
-                    .accessibilityHint(toggle == nil ? "" : expanded ? "Collapses the message" : "Expands the message")
-                    // VoiceOver activates this directly: folded, the touch target is the hidden overlay, not this line.
-                    .modifier(ToggleAction(toggle: toggle))
+                    .accessibilityRepresentation {
+                        let label = expanded ? "\(message.sender), \(dateText)" : foldedSummary
+                        if let toggle {
+                            Button(label, action: toggle)
+                                .accessibilityHint(expanded ? "Collapses the message" : "Expands the message")
+                        } else { Text(label) }
+                    }
                 if expanded {
                     // At accessibility sizes the reply controls get their own line, so the recipients keep the full width.
                     let layout = textSize.isAccessibilitySize
@@ -417,14 +527,5 @@ private struct MessageRow: View {
         }
         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
         .padding(.leading, 48)
-    }
-}
-
-/// The sender line's VoiceOver action. A peek or a single-message thread cannot fold, so it gets none. Whether a row
-/// can fold does not change while it toggles, so this never swaps the view during the animation.
-private struct ToggleAction: ViewModifier {
-    let toggle: (() -> Void)?
-    func body(content: Content) -> some View {
-        if let toggle { content.accessibilityAction { toggle() } } else { content }
     }
 }

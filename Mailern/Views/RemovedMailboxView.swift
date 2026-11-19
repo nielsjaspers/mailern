@@ -5,7 +5,9 @@ struct RemovedMailboxView: View {
     @Environment(MailStore.self) private var store
     @Environment(DraftStore.self) private var drafts
     let mailbox: RemovedMailbox
-    @State private var search = ""
+    let open: (UUID, [UUID], String) -> Void
+    @State private var searchInput = MailboxSearchInput()
+    private var search: String { searchInput.text }
     @State private var selecting = false
     @State private var selectedIDs: Set<UUID> = []
     // Conversations waiting for confirmation before permanent deletion.
@@ -20,7 +22,7 @@ struct RemovedMailboxView: View {
         content
             .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner() }
             .navigationTitle(mailbox.title)
-            .searchable(text: $search, prompt: "Search \(mailbox.title)")
+            .searchable(text: $searchInput.text, prompt: "Search \(mailbox.title)")
             .navigationBarBackButtonHidden(selecting)
             .toolbar(.hidden, for: .tabBar)
             .toolbar {
@@ -92,11 +94,11 @@ struct RemovedMailboxView: View {
                     ForEach(conversations) { conversation in
                         Group {
                             if selecting {
-                                ConversationRow(conversation: conversation, hasDraft: false)
+                                ConversationRow(query: search, searchSession: searchInput.session, conversation: conversation, hasDraft: false)
                             } else {
-                                NavigationLink(value: MailboxRoute.conversation(conversation.id)) {
-                                    ConversationRow(conversation: conversation, hasDraft: false)
-                                }
+                                Button { open(conversation.id, conversations.map(\.id), search) } label: {
+                                    ConversationRow(query: search, searchSession: searchInput.session, conversation: conversation, hasDraft: false)
+                                }.buttonStyle(.plain)
                             }
                         }
                         .listRowBackground(conversation.unread ? ConversationRow.unreadBackground : Color.clear)
