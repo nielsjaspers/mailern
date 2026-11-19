@@ -130,3 +130,43 @@ struct DraftStorageAlert: ViewModifier {
         } message: { Text(drafts.error ?? "") }
     }
 }
+
+/// A minimized draft: the composer sheet resting at the bottom of the screen. Its top edge shows above the tab bar or
+/// toolbar, which float over the rest of it.
+struct DraftDock: View {
+    let draft: ComposerDraft
+    let open: () -> Void
+    private static let radius: CGFloat = 30
+    /// The composer sheet's own background, which dark mode lifts above the screen behind it.
+    private static let sheet = UIColor { traits in
+        UIColor.systemBackground.resolvedColor(with: traits.modifyingTraits { $0.userInterfaceLevel = .elevated })
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule().fill(.tertiary).frame(width: 36, height: 5).padding(.top, 6)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(draft.title).font(.headline).lineLimit(1)
+                Text(draft.to.isEmpty ? "No recipients" : "To: \(draft.to)")
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 10)
+        }
+        .background(alignment: .top) {
+            UnevenRoundedRectangle(topLeadingRadius: Self.radius, topTrailingRadius: Self.radius)
+                .fill(Color(uiColor: Self.sheet))
+                .shadow(color: .black.opacity(0.15), radius: 12)
+                .ignoresSafeArea(edges: .bottom)
+        }
+        .contentShape(.rect)
+        .onTapGesture(perform: open)
+        // Swiping the sheet up opens the composer again.
+        .simultaneousGesture(DragGesture(minimumDistance: 10).onEnded { value in
+            if value.translation.height < -20 { open() }
+        })
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Resume draft, \(draft.title)")
+        .accessibilityAction { open() }
+    }
+}

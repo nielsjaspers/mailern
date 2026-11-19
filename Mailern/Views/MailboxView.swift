@@ -11,7 +11,6 @@ struct MailboxView: View {
     @State private var filtering: Workflow?
     @State private var settling: DraftDiscard?
     @State private var snoozingDraft: ComposerDraft?
-    @Namespace private var composeTransition
     @Environment(DraftStore.self) private var drafts
     @State private var selecting = false
     @State private var selectedIDs: Set<UUID> = []
@@ -112,7 +111,7 @@ struct MailboxView: View {
         }
         .sheet(item: $reopened) { ComposerView(mode: $0) }
         .sheet(item: $composer) {
-            ComposerView(mode: $0, inboxAccountID: composeInboxAccount).modifier(ComposerTransition(source: composerSourceID, namespace: composeTransition))
+            ComposerView(mode: $0, inboxAccountID: composeInboxAccount)
         }
         .modifier(DraftStorageAlert(active: composer == nil && paths[selection, default: []].isEmpty))
         .sheet(isPresented: $settings) {
@@ -178,7 +177,6 @@ struct MailboxView: View {
                     Color.clear
                 } label: {
                     Label("Compose", systemImage: "square.and.pencil")
-                        .modifier(ComposerSource(source: "compose-bottom", namespace: composeTransition))
                 }
             }
             .background(ComposeTabAction { openComposer(.new) })
@@ -199,7 +197,7 @@ struct MailboxView: View {
             path: Binding(get: { paths[status, default: []] }, set: { paths[status] = $0 })
         ) {
             mailboxViewport(status)
-                .safeAreaInset(edge: .bottom, spacing: 0) { minimizedBar }
+                .safeAreaInset(edge: .bottom, spacing: 0) { dock }
                 .safeAreaInset(edge: .bottom, spacing: 0) { UndoBanner() }
                 .navigationTitle(status.title)
                 .searchable(text: $searchInput.text, isPresented: Binding(
@@ -212,7 +210,6 @@ struct MailboxView: View {
                     if legacyBottomCompose && !selecting {
                         ToolbarItem(placement: .bottomBar) {
                             Button("Compose", systemImage: "square.and.pencil") { openComposer(.new) }
-                                .modifier(ComposerSource(source: "compose-\(status.rawValue)", namespace: composeTransition))
                         }
                     }
                 }
@@ -251,20 +248,15 @@ struct MailboxView: View {
                         case .scheduled: ScheduledMailboxView()
                         case .scheduledMessage(let id): ScheduledMessageView(id: id)
                         }
-                    }.safeAreaInset(edge: .bottom, spacing: 0) { minimizedBar }
+                    }.safeAreaInset(edge: .bottom, spacing: 0) { dock }
                 }
         }
     }
-    @ViewBuilder private var minimizedBar: some View {
-        if let minimized = drafts.minimized, let draft = drafts.all.first(where: { $0.id == minimized.id && $0.sendAt == nil }) {
-            Button {
-                reopened = .draft(draft.id)
-            } label: {
-                Label(draft.title, systemImage: "square.and.pencil")
-                    .lineLimit(1).frame(maxWidth: .infinity).padding(10)
+    @ViewBuilder private var dock: some View {
+        if let docked = drafts.docked {
+            DraftDock(draft: docked.draft) {
+                if docked.minimized, composer == nil, reopened == nil { reopened = .draft(docked.draft.id) }
             }
-            .accessibilityLabel("Resume draft, \(draft.title)")
-            .background(.bar)
         }
     }
     @ToolbarContentBuilder private func mailboxToolbar(_ status: Workflow) -> some ToolbarContent {
@@ -325,10 +317,6 @@ struct MailboxView: View {
         withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
             filterBinding(status).wrappedValue.enabled.toggle()
         }
-    }
-    private var composerSourceID: String {
-        if #available(iOS 27, *) { return "compose-bottom" }
-        return "compose-\(selection.rawValue)"
     }
     private var legacyBottomCompose: Bool {
         if #available(iOS 27, *) { return false }

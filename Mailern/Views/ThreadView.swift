@@ -18,7 +18,6 @@ struct ThreadView: View {
     @AppStorage(AfterSettle.key) private var afterSettle = AfterSettle.returnToList
     // The conversation to open after Settle waits for the discard-drafts confirmation.
     @State private var settleNext: UUID?
-    @Namespace private var composeTransition
     @State private var mode: ComposeMode?
     // The message a per-message reply targets. Nil for the toolbar, which targets the latest.
     @State private var target: UUID?
@@ -117,7 +116,6 @@ struct ThreadView: View {
                                 Button("Reply All") { compose(.replyAll(id)) }
                                 Button("Forward") { compose(.forward(id)) }
                             } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
-                            .modifier(ComposerSource(source: "reply", namespace: composeTransition))
                         }
                     }
                 }
@@ -129,10 +127,7 @@ struct ThreadView: View {
         .sheet(item: $mode) { mode in
             switch mode {
             case .draft, .mailto: ComposerView(mode: mode, inboxAccountID: inboxAccountID)
-            // The zoom transition belongs to the toolbar's Reply button.
-            default:
-                if target != nil { ComposerView(mode: mode, messageID: target) }
-                else { ComposerView(mode: mode).modifier(ComposerTransition(source: "reply", namespace: composeTransition)) }
+            default: ComposerView(mode: mode, messageID: target)
             }
         }
         .modifier(DraftStorageAlert(active: mode == nil))

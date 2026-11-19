@@ -19,12 +19,14 @@ struct ComposerView: View {
     @State private var editor = RichTextState()
     @State private var loaded = false
     @State private var completed = false
-    @State private var detent = PresentationDetent.large
     @State private var finishing = false
     @State private var savesInFlight = 0
     @State private var autosave: Task<Void, Never>?
     @State private var subjectFocused = false
     @State private var expanded = false
+    @GestureState private var draggingContent = false
+    /// The sheet's highest top edge, to tell when a pull moves it down.
+    @State private var restingTop = CGFloat.infinity
     @State private var filePicker = false
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
@@ -137,7 +139,9 @@ struct ComposerView: View {
             .scrollDismissesKeyboard(.immediately)
             .scrollBounceBehavior(.always)
             // A body drag must dismiss editing without also dismissing the sheet.
-            .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { value in
+            .simultaneousGesture(DragGesture(minimumDistance: 10).updating($draggingContent) { value, state, _ in
+                state = abs(value.translation.height) > abs(value.translation.width)
+            }.onChanged { value in
                 guard abs(value.translation.height) > abs(value.translation.width) else { return }
                 focus = nil
                 subjectFocused = false
@@ -148,7 +152,7 @@ struct ComposerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { closeControl.disabled(importing || finishing) }
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Minimize draft", systemImage: "chevron.down") { Task { await minimize() } }
+                    Button("Minimize draft", systemImage: "chevron.down") { Task { await saveDraft(dismissAfter: true, minimizing: true) } }
                         .labelStyle(.iconOnly).disabled(!loaded || importing || finishing || completed)
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -165,12 +169,17 @@ struct ComposerView: View {
             }
         }
         .tint(.blue)
+        // Put the keyboard away as soon as a pull moves the sheet, so it does not stay up over the mailbox after the
+        // sheet has gone.
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { top in
+            restingTop = min(restingTop, top)
+            if top - restingTop > 24 { editor.view?.window?.endEditing(true) }
+        }
         .writingToolsBehavior(.disabled)
-        .presentationDetents([.medium, .large], selection: $detent)
-        .onChange(of: detent) { _, value in if value == .medium { Task { await minimize() } } }
+        .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
-        .interactiveDismissDisabled()
+        // Pulling the sheet down minimizes the draft once its edits are saved.
+        .interactiveDismissDisabled(draggingContent || importing || finishing || savesInFlight > 0 || dirty)
         .presentationBackground(Color(uiColor: .systemBackground))
         .onAppear(perform: load)
         .onChange(of: draft.accountID) { _, id in if loaded { replaceSignature(with: store.account(id).signature) } }
@@ -184,7 +193,12 @@ struct ComposerView: View {
                 await saveDraft(dismissAfter: false, submitted: value)
             }
         }
-        .onDisappear { autosave?.cancel() }
+        .onChange(of: draft) { _, value in if drafts.docked?.draft.id == value.id { drafts.docked?.draft = value } }
+        .onChange(of: completed) { _, done in if done, drafts.docked?.draft.id == draft.id { drafts.docked = nil } }
+        .onDisappear {
+            autosave?.cancel()
+            if !completed { minimize() }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background && !completed && dirty { Task { await saveDraft(dismissAfter: false) } }
         }
@@ -321,6 +335,7 @@ struct ComposerView: View {
     }
     private func load() {
         guard !loaded else { return }
+        let resume = drafts.docked.flatMap { docked in docked.minimized && mode == .draft(docked.draft.id) ? docked : nil }
         if case .draft(let id) = mode {
             guard let saved = drafts.drafts.first(where: { $0.id == id }) else {
                 error = "This draft is no longer available."
@@ -347,8 +362,6 @@ struct ComposerView: View {
             RichText.markQuote(in: text, from: start, body: bodyRange.location)
         }
         editor.text = text
-        let resume = drafts.minimized.flatMap { $0.id == draft.id ? $0 : nil }
-        if resume != nil { drafts.minimized = nil }
         let selections: [NSRange] = resume?.selections.map { range in
             let start = min(range.location, text.length)
             return NSRange(location: start, length: min(range.length, text.length - start))
@@ -358,6 +371,7 @@ struct ComposerView: View {
         editor.typing = resume?.typing ?? [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label]
         if missingAccount { replaceSignature(with: account.signature) }
         initial = draft
+        drafts.docked = DraftStore.Docked(draft: draft)
         loaded = true
         if draft.to.isEmpty && resume == nil { focus = .to }
         else {
@@ -391,19 +405,17 @@ struct ComposerView: View {
         result.updatedAt = .now
         return result
     }
-    private func minimize() async {
-        guard loaded, !completed, !finishing, !importing else { detent = .large; return }
-        if mode == .new && !dirty && !saved { completed = true; dismiss(); return }
+    /// Puts the saved draft in the dock after the sheet is pulled down or Minimize draft closes it.
+    private func minimize() {
+        guard loaded, !finishing, saved else { drafts.docked = nil; return }
         let selections: [NSRange]
         if #available(iOS 26, *), let view = editor.view { selections = view.selectedRanges }
         else { selections = [editor.view?.selectedRange ?? editor.selection] }
-        let position = DraftStore.Minimized(id: draft.id, selections: selections,
-                                            typing: editor.view?.typingAttributes ?? editor.typing)
-        autosave?.cancel()
-        await saveDraft(dismissAfter: true, minimized: position)
-        if !completed { detent = .large }
+        drafts.docked = DraftStore.Docked(draft: draft, selections: selections,
+                                          typing: editor.view?.typingAttributes ?? editor.typing, minimized: true)
     }
-    private func saveDraft(dismissAfter: Bool, submitted: DraftInput? = nil, minimized: DraftStore.Minimized? = nil) async {
+    /// With `minimizing`, the draft goes to the dock after it is saved, instead of closing.
+    private func saveDraft(dismissAfter: Bool, minimizing: Bool = false, submitted: DraftInput? = nil) async {
         guard loaded, !completed, !finishing else { return }
         let activity = DraftSaveActivity()
         defer { activity.end() }
@@ -420,14 +432,7 @@ struct ComposerView: View {
             guard await drafts.save(content) else { return }
             if drafts.drafts.first(where: { $0.id == content.id })?.matchesContent(of: content) == true { savedInput = submitted }
             if dismissAfter {
-                if let minimized {
-                    guard drafts.drafts.contains(where: { $0.matchesContent(of: content) }) else {
-                        error = "This draft is no longer available."
-                        return
-                    }
-                    drafts.minimized = minimized
-                }
-                completed = true
+                if !minimizing { completed = true }
                 dismiss()
             }
         } catch { self.error = error.localizedDescription }

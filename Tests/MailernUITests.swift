@@ -401,7 +401,7 @@ final class MinimizedDraftUITests: MailernUITestCase {
         XCTAssertTrue(resume.wait(for: \.isHittable, toEqual: true, timeout: 6))
         app.tabBars.buttons["Settled"].tap()
         XCTAssertTrue(app.navigationBars["Settled"].waitForExistence(timeout: 5))
-        resume.tap()
+        resume.swipeUp()
         body.typeText(" second")
         XCTAssertTrue((body.value as? String ?? "").contains("First second!"))
         app.buttons["Cancel"].tap()

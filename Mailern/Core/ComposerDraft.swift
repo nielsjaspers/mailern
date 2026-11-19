@@ -161,7 +161,9 @@ final class DraftStore {
     private(set) var all: [ComposerDraft] = [] {
         didSet {
             reminderRevision &+= 1
-            if let id = minimized?.id, !all.contains(where: { $0.id == id && $0.sendAt == nil }) { minimized = nil }
+            // A minimized draft that leaves Drafts, for example when it is sent or discarded, leaves the dock too.
+            if let docked, docked.minimized, oldValue.contains(where: { $0.id == docked.draft.id }),
+               !all.contains(where: { $0.id == docked.draft.id && $0.sendAt == nil }) { self.docked = nil }
         }
     }
     private(set) var reminderRevision: UInt64 = 0
@@ -173,12 +175,15 @@ final class DraftStore {
     var undoable: UUID?
     /// A draft to open in the composer, set when Undo Send or Edit takes scheduled mail back.
     var reopening: UUID?
-    struct Minimized {
-        let id: UUID
-        let selections: [NSRange]
-        let typing: [NSAttributedString.Key: Any]
+    /// The draft the composer has open or minimized. The dock shows it, and resuming restores the selection and
+    /// typing style the editor had.
+    struct Docked {
+        var draft: ComposerDraft
+        var selections: [NSRange] = []
+        var typing: [NSAttributedString.Key: Any] = [:]
+        var minimized = false
     }
-    var minimized: Minimized?
+    var docked: Docked?
     var error: String?
     /// Counts Pin, Snooze, Restore, Settle, and Discard on standalone drafts, like `MailStore.actionCount`.
     private(set) var actionCount = 0
