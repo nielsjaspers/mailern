@@ -495,6 +495,16 @@
       "finished_at": "2026-11-19T15:31:51+00:00",
       "bundle_id": "com.example.mailern",
       "ipa_sha256": "82ca54a5fd47f9a30f1be3a6529653f798dfad025e88948c9a23e7b4efc6e622"
+    },
+    {
+      "source_revision": "f282fd384193d8d2d71db5de4ee91093d992b50b",
+      "branch": "fix/composer-keyboard-background",
+      "uncommitted_changes": false,
+      "source_digest": "fbeba221d9511a9188c4fbea6fe18a2245765f61985e52fbf259c8c37acd19a1",
+      "build": 72,
+      "version": "0.7.5",
+      "status": "reserved",
+      "created_at": "2026-11-19T17:42:07+00:00"
     }
   ]
 }
