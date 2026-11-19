@@ -108,7 +108,7 @@ struct DraftThreadView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
-        .toolbar(panel.covering ? .hidden : .visible, for: .bottomBar)
+        .toolbar(panel.hidesToolbar ? .hidden : .visible, for: .bottomBar)
         .modifier(DraftStorageAlert(active: true))
         .modifier(DiscardDraftsConfirmation(request: $settling))
         .sheet(isPresented: $snoozing) { SnoozeView(ids: [], draftIDs: [id], onSnooze: { dismiss() }) }
@@ -140,6 +140,7 @@ struct DraftDock: View {
     @Environment(DraftStore.self) private var drafts
     @Environment(ComposerPanel.self) private var panel
     @State private var dragging = false
+    @GestureState private var touching = false
     @State private var shown = false
     @State private var bottom: CGFloat?
     var body: some View {
@@ -153,6 +154,7 @@ struct DraftDock: View {
                 let summary = DockSummary(draft)
                 Button { if panel.request == nil, !drafts.deleting.contains(draft.id) { panel.resume(draft.id, summary: summary) } } label: {
                     DockHeader(summary: summary)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panel.headerHeight = $0 }
                         .background(alignment: .top) {
                             UnevenRoundedRectangle(topLeadingRadius: ComposerPanel.radius, topTrailingRadius: ComposerPanel.radius)
                                 .fill(ComposerPanel.background)
@@ -168,6 +170,7 @@ struct DraftDock: View {
                 // the panel keeps going.
                 .opacity(panel.request == nil ? 1 : 0)
                 .highPriorityGesture(DragGesture(minimumDistance: 10, coordinateSpace: .global)
+                    .updating($touching) { _, state, _ in state = true }
                     .onChanged { value in
                         if !dragging {
                             guard abs(value.translation.height) > abs(value.translation.width), value.translation.height < 0,
@@ -191,6 +194,15 @@ struct DraftDock: View {
         .onAppear { shown = true; report() }
         .onDisappear { shown = false }
         .onChange(of: panel.covering) { _, _ in report() }
+        // `onEnded` does not run for a drag the system cancels. The panel then goes back to the dock.
+        .onChange(of: touching) { _, active in
+            guard !active else { return }
+            DispatchQueue.main.async {
+                guard dragging else { return }
+                dragging = false
+                panel.endDockDrag()
+            }
+        }
     }
     /// Tells the panel where to stop. Only the screen on show counts, and only while its tab bar or toolbar shows.
     private func report() {

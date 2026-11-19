@@ -207,7 +207,7 @@ struct MailboxView: View {
                 .modifier(MailboxSearchToolbar())
                 .toolbar { mailboxToolbar(status) }
                 .toolbar {
-                    if legacyBottomCompose && !selecting {
+                    if legacyBottomCompose && !selecting && !panel.hidesToolbar {
                         ToolbarItem(placement: .bottomBar) {
                             Button("Compose", systemImage: "square.and.pencil") { compose(.new) }
                         }

@@ -138,6 +138,8 @@ struct ComposerView: View {
             }
             .disabled(completed || finishing)
             .scrollDismissesKeyboard(.immediately)
+            // The top inset is the navigation bar, with the large title while it shows: the panel's pull zone.
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.top } action: { _, top in panel.pullZone = top }
             .scrollBounceBehavior(.always)
             .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { value in
                 guard abs(value.translation.height) > abs(value.translation.width) else { return }
@@ -163,12 +165,6 @@ struct ComposerView: View {
             }
         }
         .tint(.blue)
-        // A pull minimizes the draft. VoiceOver gets the same as an action, since it has no pull.
-        .accessibilityAction(named: "Minimize draft") {
-            guard canPull, panel.settled else { return }
-            panel.dock()
-            minimize()
-        }
         .writingToolsBehavior(.disabled)
         .onAppear { load() }
         .onChange(of: canPull, initial: true) { _, value in panel.canPull = value }
