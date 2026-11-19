@@ -183,7 +183,11 @@ struct ComposerView: View {
             refocus = editingFocus()
             editor.view?.window?.endEditing(true)
         }
-        .onChange(of: panel.minimizeRequests) { _, _ in minimize() }
+        .onChange(of: panel.minimizeVelocity) { _, velocity in
+            guard let velocity else { return }
+            panel.minimizeVelocity = nil
+            minimize(velocity: velocity)
+        }
         .onChange(of: draft.accountID) { _, id in if loaded { replaceSignature(with: store.account(id).signature) } }
         .onChange(of: input) { _, value in
             autosave?.cancel()
@@ -431,14 +435,18 @@ struct ComposerView: View {
         completed = true
         if drafts.docked?.id == draft.id { drafts.docked = nil }
     }
-    /// Finishes a pull while the panel heads for the dock: saves the edits, then puts the draft in
-    /// the dock. Ending editing first commits text the keyboard is still composing. An untouched new draft closes.
-    private func minimize() {
+    /// Ending editing commits any text the keyboard is still composing before deciding where the panel goes.
+    private func minimize(velocity: CGFloat) {
         editor.view?.window?.endEditing(true)
-        if !canPull { panel.open() }
-        else if dirty { Task { await saveDraft(then: .minimize) } }
-        else if saved { recordDockPosition(); panel.dockReady() }
-        else { complete(); panel.close() }
+        guard canPull else { panel.open(); return }
+        guard saved || dirty else { complete(); panel.close(velocity: velocity); return }
+        panel.dock(velocity: velocity)
+        if dirty {
+            Task { await saveDraft(then: .minimize) }
+        } else {
+            recordDockPosition()
+            panel.dockReady()
+        }
     }
     /// Puts the saved draft in the dock, with the editor's position, so a resume continues there.
     private func recordDockPosition() {

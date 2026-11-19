@@ -4,6 +4,27 @@ import UserNotifications
 import SwiftUI
 @testable import Mailern
 
+@MainActor final class ComposerPanelTests: XCTestCase {
+    func testComposeRequestedDuringCloseOpensNext() async throws {
+        let animationsEnabled = UIView.areAnimationsEnabled
+        UIView.setAnimationsEnabled(false)
+        defer { UIView.setAnimationsEnabled(animationsEnabled) }
+
+        let panel = ComposerPanel()
+        panel.present(.new)
+        for _ in 0..<20 where !panel.settled { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(panel.settled)
+
+        let draftID = UUID()
+        panel.close()
+        panel.present(.draft(draftID))
+        for _ in 0..<20 where panel.request?.mode != .draft(draftID) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(panel.request?.mode, .draft(draftID))
+    }
+}
+
 @MainActor final class ComposerEditorTests: XCTestCase {
     func testFormattedSignatureCountsAsEdited() throws {
         let text = NSMutableAttributedString(attributedString: RichText.plain("Hi\n\nMorgan"))

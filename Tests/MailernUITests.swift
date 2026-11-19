@@ -364,6 +364,7 @@ final class MinimizedDraftUITests: MailernUITestCase {
         XCTAssertFalse(replyBar.exists)
         row(subject, in: app).tap()
         app.buttons["Edit draft"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         let restored = body.value as? String ?? ""
         XCTAssertTrue(restored.hasPrefix("Earlier the reply"))
         XCTAssertTrue(restored.contains("Are you free on Saturday?"))
@@ -423,6 +424,7 @@ final class MinimizedDraftUITests: MailernUITestCase {
         row("Reader check", in: app).tap()
         XCTAssertTrue(app.buttons["Edit draft"].waitForExistence(timeout: 5))
         dock.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
         app.buttons["Delete Draft"].tap()
         waitForAbsence(body)

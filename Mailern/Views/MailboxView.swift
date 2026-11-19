@@ -31,7 +31,7 @@ struct MailboxView: View {
     @State private var panel = ComposerPanel()
     /// The tab the open composer belongs to. A tab switch while it docks keeps its editor alive there, so a failed save
     /// can bring that same editor back.
-    @State private var panelTab: Workflow?
+    @State private var panelLocation: PanelLocation?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var demo = false
     @State private var snoozing: Conversation?
@@ -116,7 +116,9 @@ struct MailboxView: View {
             drafts.reopening = nil
             compose(.draft(id))
         }
-        .onChange(of: panel.request?.id) { _, id in panelTab = id == nil ? nil : (panelTab ?? selection) }
+        .onChange(of: panel.request?.id) { _, id in
+            panelLocation = id.map { PanelLocation(id: $0, tab: selection) }
+        }
         // A failed save brings the composer back up, on its own tab.
         .onChange(of: panel.covering) { _, covering in
             if covering, let panelTab, panelTab != selection { selection = panelTab }
@@ -147,6 +149,11 @@ struct MailboxView: View {
         }
     }
     private struct ReopenState: Equatable { var id: UUID?; var open: Bool }
+    private struct PanelLocation { let id: UUID; let tab: Workflow }
+    private var panelTab: Workflow? {
+        guard let panelLocation, panelLocation.id == panel.request?.id else { return nil }
+        return panelLocation.tab
+    }
     private func compose(_ mode: ComposeMode) { panel.present(mode, inboxAccountID: composeInboxAccount) }
     private enum SearchScope: CaseIterable, Identifiable {
         case section, allMail
