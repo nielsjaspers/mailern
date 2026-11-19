@@ -835,6 +835,68 @@ final class SenderBlockingUITests: MailernUITestCase {
     }
 }
 
+final class ReaderSearchUITests: MailernUITestCase {
+    @MainActor
+    func testOpenFoldedMatchAndFindAnother() {
+        continueAfterFailure = false
+        let app = TestApplication()
+        app.launchEnvironment["MAILERN_TEST_LONG_THREAD"] = "1"
+        app.launch()
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Inbox pull-down")).firstMatch.tap()
+        app.buttons["Search"].tap()
+        app.buttons["Done"].tap()
+        waitForAbsence(app.navigationBars["Settings"])
+        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+        top.press(forDuration: 0.01, thenDragTo: top.withOffset(CGVector(dx: 0, dy: 360)),
+                  withVelocity: .slow, thenHoldForDuration: 0.5)
+        let field = app.searchFields.firstMatch
+        field.tap()
+        field.typeText("Sounds good")
+        let result = row("Dinner on Saturday?", in: app)
+        XCTAssertTrue(result.label.localizedCaseInsensitiveContains("sounds good"))
+        result.tap()
+        let passage = app.staticTexts["matching-passage"]
+        XCTAssertTrue(passage.wait(for: \.isHittable, toEqual: true, timeout: 8))
+        XCTAssertTrue(passage.label.localizedCaseInsensitiveContains("sounds good"))
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Morgan")).firstMatch.exists)
+        XCTAssertFalse(app.buttons["15 earlier messages"].exists)
+        XCTAssertFalse(app.buttons["Previous conversation"].isEnabled)
+        XCTAssertFalse(app.buttons["Next conversation"].isEnabled)
+        app.buttons["More actions"].tap()
+        app.buttons["Find in conversation"].tap()
+        let find = app.textFields["Find in conversation"]
+        app.buttons["Clear find"].tap()
+        find.typeText("quick follow")
+        XCTAssertTrue(app.buttons["Next match"].wait(for: \.isEnabled, toEqual: true, timeout: 5))
+        app.buttons["Next match"].tap()
+        XCTAssertTrue(app.staticTexts["2 of 15"].existsOrWait(timeout: 5))
+        let proof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        proof.name = "find-in-conversation"
+        proof.lifetime = .keepAlways
+        add(proof)
+        app.buttons["Close find"].tap()
+        waitForAbsence(passage)
+    }
+    @MainActor
+    func testChevronsReplaceTheThread() {
+        let app = TestApplication()
+        app.launch()
+        let first = app.collectionViews.buttons.matching(NSPredicate(format: "value == 'Unread' OR value == 'Read'")).firstMatch
+        first.tap()
+        let previous = app.buttons["Previous conversation"]
+        let next = app.buttons["Next conversation"]
+        XCTAssertFalse(previous.isEnabled)
+        next.tap()
+        XCTAssertTrue(previous.wait(for: \.isEnabled, toEqual: true, timeout: 5))
+        previous.tap()
+        XCTAssertTrue(previous.wait(for: \.isEnabled, toEqual: false, timeout: 5))
+        app.navigationBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.buttons["Compose"].isHittable)
+    }
+}
+
 final class LongThreadScrollsToLatestMessageUITests: MailernUITestCase {
     @MainActor
     func testLongThreadScrollsToLatestMessage() {

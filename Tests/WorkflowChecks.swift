@@ -154,7 +154,13 @@ import os
     static func checkNextConversation() {
         let (a, draft, b, c, d) = (UUID(), UUID(), UUID(), UUID(), UUID())
         let order = [a, draft, b, c]
-        func next(_ id: UUID, _ available: Set<UUID>) -> UUID? { MailboxItem.conversation(after: id, in: order, available: available) }
+        let list = ReaderList(order: order, query: "", scope: .inbox, filter: MailboxFilter())
+        func next(_ id: UUID, _ available: Set<UUID>) -> UUID? {
+            let adjacent = list.neighbors(of: id, available: available)
+            return adjacent.next ?? adjacent.previous
+        }
+        assert(list.neighbors(of: c, available: [a,b,c]).next == nil)
+        assert(list.neighbors(of: a, available: [a,b,c]).previous == nil)
         assert(next(a, [a, b, c]) == b, "Drafts are skipped")
         assert(next(c, [a, b, c]) == b, "The last one goes up")
         // An Unread filter drops the opened conversation once it is read. Its place in the order still counts.
@@ -162,6 +168,19 @@ import os
         assert(next(b, [a, c]) == c, "Conversations that left the list are skipped")
         assert(next(a, []) == nil, "Nothing left")
         assert(next(d, [a, b, c]) == nil, "Not opened from this list")
+        var thread = DemoData.conversations().first { $0.subject == "Dinner on Saturday?" }!
+        thread.messages[0].body = "Résumé only"
+        thread.messages[1].body = "Earlier line\nResume and resume again"
+        let hits = thread.messageMatches("resume")
+        assert(hits.count == 2 && hits.allSatisfy { $0.messageID == thread.messages[1].id })
+        assert(hits[0].text == "Resume" && hits[1].text == "resume")
+        assert(!hits[0].snippet.contains("\n") && hits[0].snippet.contains("Resume"))
+        assert(thread.messageMatches("resume", firstOnly: true) == [hits[0]])
+        assert(thread.messageMatches("unmatched account name").isEmpty)
+        thread.messages[0].body = "Straße"
+        assert(thread.messageMatches("ras").first?.text == "raß")
+        thread.messages[1].subject = "Re: " + thread.subject
+        assert(thread.messageMatches("Re: " + thread.subject).first?.messageID == thread.messages[1].id)
         print("PASS: next conversation after Settle goes down, then up, keeps the opened conversation's place, skips drafts and departed mail")
     }
 
