@@ -183,3 +183,19 @@ func TestMutedInboxReplyStaysRead(t *testing.T) {
 		t.Fatalf("a reply to a read, muted thread must not make it unread: %s unread=%v", c.Workflow, c.Unread)
 	}
 }
+
+func TestReplyDatedBeforeItsParentJoinsTheThread(t *testing.T) {
+	h := newHarness(t)
+	now := time.Now()
+	parent := LabMessage("Sam <sam@example.com>", labAddress, "Plans", "Free Friday?", "", now)
+	reply := LabMessage("Alex <alex@example.com>", labAddress, "Re: Plans", "Yes.", labMessageID(parent), now.Add(-2*time.Minute))
+	for _, raw := range [][]byte{parent, reply} {
+		if err := h.lab.Deliver(labAddress, "INBOX", raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.sync()
+	if c := h.conversations()["Plans"]; len(c.Messages) != 2 {
+		t.Fatalf("a reply with an earlier date should join its parent, got %d messages", len(c.Messages))
+	}
+}

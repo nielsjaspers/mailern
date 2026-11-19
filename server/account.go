@@ -661,10 +661,29 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 		m.Deleted = slices.Contains(flags, imap.FlagDeleted)
 	}
 	slices.SortStableFunc(fresh, func(x, y *parsedArrival) int { return x.Date.Compare(y.Date) })
+	// A reply can sort before its parent, for example when the sender's clock is behind. Threading the parent
+	// first keeps them in one conversation.
+	waiting := map[string]*parsedArrival{}
 	for _, f := range fresh {
+		waiting[f.Key] = f
+	}
+	var place func(f *parsedArrival)
+	place = func(f *parsedArrival) {
+		if waiting[f.Key] == nil {
+			return
+		}
+		delete(waiting, f.Key)
+		for _, id := range append(slices.Clone(f.References), f.InReplyTo) {
+			if parent := waiting[id]; parent != nil {
+				place(parent)
+			}
+		}
 		a.thread(st, account, f.Message, f.role)
 		locationsChanged[f.ConversationID] = true
 		changed[f.ConversationID] = true
+	}
+	for _, f := range fresh {
+		place(f)
 	}
 	// Mail this service sent can wait briefly for its Sent copy before losing its place in a thread.
 	for key, m := range account.Messages {
