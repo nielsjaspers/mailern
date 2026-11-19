@@ -180,7 +180,11 @@ final class DraftStore {
     private var needsMailRecovery = false
     private var retryMailRecoveryAfter: Date?
     private var recoveryFailureReported = false
-    private var failedDraftWakes: [UUID: Date] = [:]
+    private struct DraftWake: Hashable {
+        let id: UUID
+        let deadline: Date
+    }
+    private var failedDraftWakes: Set<DraftWake> = []
     private var retryDraftWakeAfter: Date?
     @ObservationIgnored private var pending: Task<Bool, Never>?
 
@@ -413,9 +417,9 @@ final class DraftStore {
             if updated == self.all { return true }
             let saved = await self.persist(updated, reportFailure: !self.recoveryFailureReported && self.retryDraftWakeAfter == nil)
             if !saved {
-                self.failedDraftWakes = Dictionary(uniqueKeysWithValues: self.all.compactMap { draft in
+                self.failedDraftWakes = Set(self.all.compactMap { draft in
                     guard let date = draft.snoozedUntil, date <= now else { return nil }
-                    return (draft.id, date)
+                    return DraftWake(id: draft.id, deadline: date)
                 })
                 self.retryDraftWakeAfter = now.addingTimeInterval(30)
             }
@@ -478,10 +482,10 @@ final class DraftStore {
     private func clearResolvedWakeFailures() {
         guard !failedDraftWakes.isEmpty else { return }
         if all.contains(where: { draft in
-            guard let failedDate = failedDraftWakes[draft.id] else { return false }
-            return draft.snoozedUntil == failedDate
+            guard let date = draft.snoozedUntil else { return false }
+            return failedDraftWakes.contains(DraftWake(id: draft.id, deadline: date))
         }) { return }
-        failedDraftWakes = [:]
+        failedDraftWakes.removeAll()
         retryDraftWakeAfter = nil
     }
 

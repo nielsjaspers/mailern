@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import os
 
 @main struct WorkflowChecks {
     @MainActor static func main() async throws {
@@ -823,8 +824,12 @@ import SQLite3
         let sleeper = ComposerDraft(subject: "Draft waking during cleanup", snoozedUntil: deadline)
         try AttachmentJSON.save([automatic, sleeper], to: cleanupURL)
         let cleanupMail = MailStore(persistence: SQLitePersistence(url: directory.appending(path: "cleanup.sqlite")))
+        let attemptedWrites = OSAllocatedUnfairLock(initialState: [Data]())
         let cleanup = DraftStore(url: cleanupURL, mail: cleanupMail) { data, url in
-            if FileManager.default.fileExists(atPath: blockWrites.path) { throw CocoaError(.fileWriteOutOfSpace) }
+            if FileManager.default.fileExists(atPath: blockWrites.path) {
+                attemptedWrites.withLock { $0.append(data) }
+                throw CocoaError(.fileWriteOutOfSpace)
+            }
             try data.write(to: url, options: .atomic)
         }
         try Data().write(to: blockWrites)
@@ -832,10 +837,16 @@ import SQLite3
         assert(cleanup.error != nil && cleanupMail.discardedDraftIDs == [automatic.id])
         cleanup.error = nil
         for seconds in [0, 30, 60] {
+            attemptedWrites.withLock { $0.removeAll() }
             let tick = deadline.addingTimeInterval(Double(seconds))
             async let retry: Void = cleanup.recoverAfterMailLoad(now: tick)
             async let wake: Void = cleanup.wakeDue(now: tick)
             _ = await (retry, wake)
+            let payloads = attemptedWrites.withLock { $0 }
+            let attempts = try payloads.map { try JSONDecoder().decode([ComposerDraft].self, from: $0) }
+            assert(attempts.count == 2)
+            assert(attempts.allSatisfy { $0.map(\.id) == [sleeper.id] })
+            assert(attempts.filter { $0.first?.snoozedUntil != nil }.count == 1)
             assert(cleanup.error == nil && cleanupMail.error == nil)
             assert(cleanupMail.discardedDraftIDs == [automatic.id])
         }
@@ -849,7 +860,7 @@ import SQLite3
         await cleanup.wakeDue(now: deadline.addingTimeInterval(90))
         assert(cleanupMail.discardedDraftIDs.isEmpty && cleanup.drafts.first?.snoozedUntil == nil)
         assert(cleanupMail.conversations.flatMap(\.messages).filter { $0.id == automatic.id }.count == 1)
-        let nextSleeper = ComposerDraft(subject: "Separate wake failure", snoozedUntil: deadline.addingTimeInterval(180))
+        let nextSleeper = ComposerDraft(subject: "Separate wake failure", snoozedUntil: deadline.addingTimeInterval(130))
         let restored = await cleanup.snooze([sleeper.id], until: deadline)
         let nextSaved = await cleanup.save(nextSleeper)
         assert(restored && nextSaved)
@@ -861,8 +872,13 @@ import SQLite3
         let restoredManually = await cleanup.restore(sleeper.id)
         assert(restoredManually)
         try Data().write(to: blockWrites)
-        await cleanup.wakeDue(now: deadline.addingTimeInterval(180))
+        await cleanup.wakeDue(now: deadline.addingTimeInterval(130))
         assert(cleanup.error != nil && cleanup.drafts.contains { $0.id == nextSleeper.id && $0.snoozedUntil != nil })
+        let duplicateURL = directory.appending(path: "duplicate-drafts.json")
+        try AttachmentJSON.save([sleeper, sleeper], to: duplicateURL)
+        let duplicates = DraftStore(url: duplicateURL) { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        await duplicates.wakeDue(now: deadline)
+        assert(duplicates.error != nil && duplicates.all == [sleeper, sleeper])
         print("PASS: existing outbox reconciles before sent mail deletion and survives startup Trash expiry without redelivery")
     }
 
