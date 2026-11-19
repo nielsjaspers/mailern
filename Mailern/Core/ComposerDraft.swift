@@ -236,7 +236,7 @@ final class DraftStore {
     }
     private var failedDraftWakes: Set<DraftWake> = []
     private var retryDraftWakeAfter: Date?
-    @ObservationIgnored private var pending: Task<Bool, Never>?
+    @ObservationIgnored private var pending: Task<Void, Never>?
 
     init(url: URL = URL.applicationSupportDirectory.appending(path: "Mailern/drafts-v1.json"), mail: MailStore? = nil,
          write: @escaping @Sendable (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }) {
@@ -433,13 +433,42 @@ final class DraftStore {
     /// failed draft write removes the draft without sending it again. Mail the store refuses goes back to Drafts.
     private func deliver(through store: MailStore, automatic: Bool = false, now: Date = .now, pick: @escaping (ComposerDraft) -> Bool) async -> Bool {
         let started = ProcessInfo.processInfo.systemUptime
-        return await enqueue {
+        var attempted: Set<UUID> = []
+        var succeeded = true
+        var alerts: [String] = []
+        // One message per turn of the draft queue: a Cancel Send that waits behind a slow send applies before the next
+        // message is picked.
+        while true {
+            let skip = attempted
+            switch await deliverNext(through: store, automatic: automatic, now: now, started: started, pick: { !skip.contains($0.id) && pick($0) }) {
+            case .blocked:
+                succeeded = false
+            case .none:
+                break
+            case .delivered(let id, let ok, let messages):
+                attempted.insert(id)
+                succeeded = succeeded && ok
+                alerts += messages
+                continue
+            }
+            break
+        }
+        if !alerts.isEmpty { store.error = alerts.joined(separator: "\n") }
+        return succeeded
+    }
+    private enum NextDelivery {
+        case blocked, none
+        case delivered(UUID, ok: Bool, alerts: [String])
+    }
+    private func deliverNext(through store: MailStore, automatic: Bool, now: Date, started: TimeInterval,
+                             pick: @escaping (ComposerDraft) -> Bool) async -> NextDelivery {
+        await enqueue {
             // A failed reload can leave an obsolete outbox snapshot in memory.
-            guard self.hasReadableManifest, !store.needsReload else { return false }
+            guard self.hasReadableManifest, !store.needsReload else { return .blocked }
             // Standalone draft stores bind to their mailbox the first time they deliver.
             if self.mail == nil { self.mail = store }
-            let queued = Set(self.all.lazy.filter { $0.sendAt != nil && pick($0) }.map(\.id))
-            guard !queued.isEmpty else { return true }
+            guard let next = self.all.first(where: { $0.sendAt != nil && pick($0) })?.id else { return .none }
+            let queued: Set = [next]
             var failed = false
             var alerts: [String] = []
             var refused: [(title: String, reason: String)] = []
@@ -501,8 +530,7 @@ final class DraftStore {
                 let placement = saved ? "is back in Drafts" : "remains in Scheduled because the draft list could not be saved"
                 alerts.append("“\(item.title)” could not be sent and \(placement). \(item.reason)")
             }
-            if !alerts.isEmpty { store.error = alerts.joined(separator: "\n") }
-            return saved && !failed
+            return .delivered(next, ok: saved && !failed, alerts: alerts)
         }
     }
     func togglePin(_ id: UUID) async {
@@ -549,7 +577,7 @@ final class DraftStore {
     }
 
     func finishPendingWrites() async {
-        _ = await pending?.value
+        await pending?.value
     }
     private func updateMailbox(ids: Set<UUID>, change: @escaping (inout ComposerDraft) -> Void) async -> Bool {
         await enqueue {
@@ -558,14 +586,14 @@ final class DraftStore {
             return await self.persist(updated)
         }
     }
-    private func enqueue(_ operation: @escaping @MainActor () async -> Bool) async -> Bool {
+    private func enqueue<Result: Sendable>(_ operation: @escaping @MainActor () async -> Result) async -> Result {
         let previous = pending
         // Once submitted, writes finish in order even if an autosave task is cancelled.
         let task = Task { @MainActor in
-            _ = await previous?.value
+            await previous?.value
             return await operation()
         }
-        pending = task
+        pending = Task { _ = await task.value }
         return await task.value
     }
     private func persist(_ updated: [ComposerDraft], reportFailure: Bool = true) async -> Bool {

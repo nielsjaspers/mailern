@@ -514,6 +514,7 @@ import os
         try await checkAccountAliases()
         try await checkReplyDuringSend()
         try await checkLateConfirmation()
+        try await checkCancelDuringSlowSend()
         try await checkReplyWinsOverUnsyncedMove()
         try await checkOutboxBackoffAndReplyTo()
         try checkOverdueAndOwnRichText()
@@ -1197,6 +1198,40 @@ import os
         assert(own.richText != nil && own.remoteHTML == nil && own.html == nil)
         assert(c.workflow == .inbox && c.followUp == .noReply)
         print("PASS: a late confirmation keeps the reminder due and the composer's rich text")
+    }
+
+    @MainActor static func checkCancelDuringSlowSend() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-cancel-during-send-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        assert(store.mergeRemote(remoteBatch(1, [], reset: true)))
+        let drafts = DraftStore(url: directory.appending(path: "drafts.json"), mail: store)
+        var messages: [ComposerDraft] = []
+        for subject in ["First", "Second"] {
+            var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+            draft.to = "alex@example.test"
+            draft.subject = subject
+            let scheduled = await drafts.schedule(draft, at: .now.addingTimeInterval(-1))
+            assert(scheduled)
+            messages.append(draft)
+        }
+        // The first send hangs. Canceling the other message while it waits must keep that message from going out.
+        var submitted: [UUID] = []
+        var release: CheckedContinuation<Void, Never>?
+        store.sendRemote = { prepared in
+            submitted.append(prepared.draft.id)
+            if submitted.count == 1 { await withCheckedContinuation { release = $0 } }
+        }
+        let sending = Task { await drafts.sendDue(through: store) }
+        while release == nil { await Task.yield() }
+        let other = messages.first { $0.id != submitted[0] }!.id
+        let canceling = Task { await drafts.unschedule(other) }
+        for _ in 0..<10 { await Task.yield() }
+        release?.resume()
+        await sending.value
+        let canceled = await canceling.value
+        assert(canceled && submitted.count == 1 && drafts.all.contains { $0.id == other && $0.sendAt == nil })
+        print("PASS: Cancel Send during another message's slow send keeps the canceled message")
     }
 
     @MainActor static func checkAccountAliases() async throws {
