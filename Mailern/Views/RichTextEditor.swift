@@ -373,18 +373,23 @@ struct RichTextEditor: UIViewRepresentable {
             state.edited = true
             state.sync()
             // The body grows inside the composer's scroll view; keep the caret above the keyboard.
-            DispatchQueue.main.async { [weak textView] in
-                guard let textView, let range = textView.selectedTextRange else { return }
-                var ancestor = textView.superview
-                while let parent = ancestor {
-                    if let scroll = parent as? UIScrollView {
-                        let caret = textView.convert(textView.caretRect(for: range.end), to: scroll).insetBy(dx: 0, dy: -20)
-                        scroll.scrollRectToVisible(caret, animated: false)
-                        break
-                    }
-                    ancestor = parent.superview
-                }
+            DispatchQueue.main.async { [weak textView] in textView?.revealCaret() }
+        }
+    }
+}
+
+extension UITextView {
+    /// Scrolls the composer's scroll view, which holds the whole body, to show the caret.
+    func revealCaret() {
+        guard let range = selectedTextRange else { return }
+        var ancestor = superview
+        while let parent = ancestor {
+            if let scroll = parent as? UIScrollView {
+                let caret = convert(caretRect(for: range.end), to: scroll).insetBy(dx: 0, dy: -20)
+                scroll.scrollRectToVisible(caret, animated: false)
+                return
             }
+            ancestor = parent.superview
         }
     }
 }

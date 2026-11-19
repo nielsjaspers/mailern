@@ -84,7 +84,7 @@ struct DraftThreadView: View {
                             Task {
                                 deleting = true
                                 defer { deleting = false }
-                                if await drafts.delete(id) { dismiss() }
+                                await drafts.delete(id)
                             }
                         }, deleting: deleting)
                     }.padding(18)
@@ -109,13 +109,12 @@ struct DraftThreadView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .modifier(DraftStorageAlert(active: mode == nil))
-        .modifier(DiscardDraftsConfirmation(request: $settling, onDone: { dismiss() }))
+        .modifier(DiscardDraftsConfirmation(request: $settling))
         .sheet(isPresented: $snoozing) { SnoozeView(ids: [], draftIDs: [id], onSnooze: { dismiss() }) }
-        .sheet(item: $mode, onDismiss: {
-            if !drafts.drafts.contains(where: { $0.id == id }) { dismiss() }
-        }) { ComposerView(mode: $0) }
-        // The dock can resume this draft in another sheet, so leave when it is deleted or sent there too.
-        .onChange(of: drafts.drafts.contains { $0.id == id }) { _, exists in if !exists && mode == nil { dismiss() } }
+        .sheet(item: $mode) { ComposerView(mode: $0) }
+        // Leave once the draft is gone, whether it was discarded here, settled, or sent or deleted from a composer,
+        // including one the dock opened.
+        .onChange(of: mode == nil && !drafts.drafts.contains { $0.id == id }) { _, gone in if gone { dismiss() } }
     }
 }
 
@@ -140,6 +139,10 @@ struct DraftDock: View {
     @Environment(DraftStore.self) private var drafts
     let open: (UUID) -> Void
     @GestureState private var lift: CGFloat = 0
+    /// Where a drag that opened the composer let go, so the dock stays there while the sheet rises.
+    @State private var held: CGFloat = 0
+    /// Set when the dock opens the composer. Its header hides at once, so the rising sheet's header is the only one.
+    @State private var opening = false
     private static let radius: CGFloat = 30
     /// The composer sheet's own background, which dark mode lifts above the screen behind it.
     private static let sheet = UIColor { traits in
@@ -147,7 +150,7 @@ struct DraftDock: View {
     }
     var body: some View {
         if let id = drafts.docked?.id, let draft = drafts.drafts.first(where: { $0.id == id }), !SoftwareKeyboard.shared.visible {
-            Button { open(id) } label: {
+            Button { resume(id) } label: {
                 VStack(spacing: 0) {
                     Capsule().fill(.tertiary).frame(width: 36, height: 5).padding(.top, 6)
                     VStack(alignment: .leading, spacing: 1) {
@@ -157,6 +160,7 @@ struct DraftDock: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 10)
                 }
+                .opacity(opening ? 0 : 1)
                 .background(alignment: .top) {
                     // The sheet runs past the bottom of the screen, so lifting it never shows a lower edge.
                     UnevenRoundedRectangle(topLeadingRadius: Self.radius, topTrailingRadius: Self.radius)
@@ -168,16 +172,25 @@ struct DraftDock: View {
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .offset(y: lift)
+            .offset(y: lift + held)
             // The sheet follows an upward drag, then opens.
             .simultaneousGesture(DragGesture(minimumDistance: 10)
                 .updating($lift) { value, lift, _ in lift = min(0, value.translation.height) * 0.5 }
-                .onEnded { value in if value.predictedEndTranslation.height < -40 { open(id) } })
+                .onEnded { value in
+                    guard value.predictedEndTranslation.height < -40 else { return }
+                    held = min(0, value.translation.height) * 0.5
+                    resume(id)
+                })
             // Fade out as the composer rises over the dock, and back in as a pull reveals it.
             .opacity(drafts.sheetOverDock ? 0 : 1)
             .animation(.easeOut(duration: 0.25), value: drafts.sheetOverDock)
+            .onChange(of: drafts.sheetOverDock) { _, covered in if !covered { opening = false; held = 0 } }
             .accessibilityLabel("Resume draft, \(draft.title)")
         }
+    }
+    private func resume(_ id: UUID) {
+        opening = true
+        open(id)
     }
     private func recipients(_ draft: ComposerDraft) -> String {
         let fields = [("To", draft.to), ("Cc", draft.cc), ("Bcc", draft.bcc)]
