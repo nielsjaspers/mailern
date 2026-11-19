@@ -335,6 +335,20 @@ final class MailFilterBarLayoutAndSearchUITests: MailernUITestCase {
 
 final class MinimizedDraftUITests: MailernUITestCase {
     @MainActor
+    func testFailedMinimizeKeepsReplyOpen() {
+        let app = TestApplication()
+        defer { app.terminate() }
+        app.launchEnvironment["MAILERN_TEST_DRAFT_WRITE_FAILURE"] = "1"
+        app.launch()
+        row("Dinner on Saturday?", in: app).tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to Casey Rivera")).firstMatch.tap()
+        let body = app.textViews["Message body"]
+        app.buttons["Minimize draft"].tap()
+        XCTAssertTrue(app.alerts["Composer"].waitForExistence(timeout: 5))
+        app.alerts.buttons["OK"].tap()
+        XCTAssertTrue((body.value as? String ?? "").contains("Bring something to drink"))
+    }
+    @MainActor
     func testPullDownAndResumeBodyCursor() {
         continueAfterFailure = false
         let app = TestApplication()
@@ -349,6 +363,7 @@ final class MinimizedDraftUITests: MailernUITestCase {
         let resume = app.buttons["Resume draft, New Message"]
         XCTAssertTrue(resume.wait(for: \.isHittable, toEqual: true, timeout: 6))
         app.tabBars.buttons["Settled"].tap()
+        XCTAssertTrue(app.navigationBars["Settled"].waitForExistence(timeout: 5))
         resume.tap()
         body.typeText(" second")
         XCTAssertTrue((body.value as? String ?? "").contains("First second"))

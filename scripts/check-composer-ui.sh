@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 simulator_id=${1:?Usage: scripts/check-composer-ui.sh DISPOSABLE_SIMULATOR_ID}
 shift
 exec scripts/check-ui.sh "$simulator_id" "$@" \
+  --only-testing MailernUITests/MinimizedDraftUITests \
   --only-testing MailernTests \
   --only-testing MailernUITests/RecipientSearchUITests \
   --only-testing MailernUITests/ComposerSelectionHandleDragKeepsEditingUITests \
