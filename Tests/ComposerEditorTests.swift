@@ -393,9 +393,9 @@ import SwiftUI
         let state = RichTextState()
         state.view = view
         state.sync()
-        let coordinator = RichTextEditor.Coordinator(state: state, attach: {}, photos: {})
+        let coordinator = RichTextEditor.Coordinator(state: state)
         view.delegate = coordinator
-        coordinator.installKeyboard(on: view)
+        coordinator.configureEditing(for: view)
         state.showFormat()
         try await Task.sleep(for: .milliseconds(500))
         let panel = try XCTUnwrap(host.presentedViewController as? UITextFormattingViewController)
@@ -431,9 +431,9 @@ import SwiftUI
         let state = RichTextState()
         state.view = view
         state.sync()
-        let coordinator = RichTextEditor.Coordinator(state: state, attach: {}, photos: {})
+        let coordinator = RichTextEditor.Coordinator(state: state)
         view.delegate = coordinator
-        coordinator.installKeyboard(on: view)
+        coordinator.configureEditing(for: view)
         state.showFormat()
         try await Task.sleep(for: .milliseconds(500))
         let panel = try XCTUnwrap(host.presentedViewController as? UITextFormattingViewController)

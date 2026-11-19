@@ -128,13 +128,18 @@ struct ComposerView: View {
                         }.frame(minHeight: 44)
                         Divider()
                     }
-                    RichTextEditor(state: editor, attach: { if !importing { filePicker = true } },
-                                   photos: { if !importing { photoPicker = true } }, canAttach: !importing)
+                    RichTextEditor(state: editor)
                     if !draft.attachments.isEmpty {
                         AttachmentList(attachments: draft.attachments) { id in draft.attachments.removeAll { $0.id == id } }
                             .padding(.bottom, 20)
                     }
                 }.padding(.horizontal, 16).padding(.top, 10)
+            }
+            .safeAreaInset(edge: .bottom, alignment: .trailing, spacing: 0) {
+                // Keep the tools in the composer so UIKit only has to animate the keyboard.
+                if editor.editing && !editor.formatting {
+                    keyboardTools.padding(.trailing, 16).padding(.top, 4).padding(.bottom, 12)
+                }
             }
             .disabled(completed || finishing)
             .scrollDismissesKeyboard(.immediately)
@@ -257,6 +262,29 @@ struct ComposerView: View {
         .alert("Composer", isPresented: Binding(get: { error != nil || drafts.error != nil }, set: { if !$0 { error = nil; drafts.error = nil } })) {
             Button("OK") { error = nil; drafts.error = nil; if completed { panel.close() } }
         } message: { Text(error ?? drafts.error ?? "") }
+    }
+
+    @ViewBuilder private var keyboardTools: some View {
+        let tools = HStack(spacing: 0) {
+            Button(action: editor.showFormat) {
+                Text("Aa").frame(width: 56, height: 46).contentShape(.rect)
+            }
+            .accessibilityLabel("Format")
+            Menu {
+                Button("Attach File", systemImage: "doc") { filePicker = true }
+                Button("Photo Library", systemImage: "photo.on.rectangle") { photoPicker = true }
+            } label: {
+                Image(systemName: "paperclip").frame(width: 56, height: 46).contentShape(.rect)
+            }
+            .accessibilityLabel("Attach").disabled(importing)
+        }
+        .font(.system(size: 22)).buttonStyle(.plain).foregroundStyle(.primary)
+        .padding(.horizontal, 8)
+        if #available(iOS 26, *) {
+            tools.glassEffect(.regular.interactive(), in: .capsule)
+        } else {
+            tools.background(.regularMaterial, in: .capsule)
+        }
     }
 
     @ViewBuilder private var closeControl: some View {

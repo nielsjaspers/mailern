@@ -139,6 +139,8 @@ final class RichTextState {
     var selection = NSRange(location: 0, length: 0)
     var typing: [NSAttributedString.Key: Any] = [:]
     var edited = false
+    var editing = false
+    var formatting = false
     /// Set on resume, so the caret shows once the keyboard is up. Later keyboard changes leave the scroll alone.
     @ObservationIgnored var revealOnKeyboard = false
     @ObservationIgnored weak var view: UITextView?
@@ -253,11 +255,8 @@ final class RichTextState {
 struct RichTextEditor: UIViewRepresentable {
     @Environment(\.isEnabled) private var isEnabled
     let state: RichTextState
-    let attach: () -> Void
-    let photos: () -> Void
-    var canAttach = true
 
-    func makeCoordinator() -> Coordinator { Coordinator(state: state, attach: attach, photos: photos) }
+    func makeCoordinator() -> Coordinator { Coordinator(state: state) }
     func makeUIView(context: Context) -> QuotedTextView {
         let view = QuotedTextView(usingTextLayoutManager: true)
         view.backgroundColor = .clear
@@ -272,12 +271,11 @@ struct RichTextEditor: UIViewRepresentable {
         view.accessibilityLabel = "Message body"
         view.delegate = context.coordinator
         state.view = view
-        context.coordinator.installKeyboard(on: view)
+        context.coordinator.configureEditing(for: view)
         return view
     }
     func updateUIView(_ view: QuotedTextView, context: Context) {
         view.isEditable = isEnabled
-        context.coordinator.attachmentButton?.isEnabled = isEnabled && canAttach
         if !view.attributedText.isEqual(to: state.text) {
             // UITextView changes selection while assigning content. Do not feed that temporary range back into the draft.
             let range = state.selection
@@ -304,17 +302,11 @@ struct RichTextEditor: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         let state: RichTextState
-        let attach: () -> Void
-        let photos: () -> Void
-        private var accessory: UIView?
         private var nativeFormat: NativeFormatting?
-        fileprivate weak var attachmentButton: UIButton?
         fileprivate var keyboardObserver: (any NSObjectProtocol)?
         var updating = false
-        init(state: RichTextState, attach: @escaping () -> Void, photos: @escaping () -> Void) {
-            self.state = state; self.attach = attach; self.photos = photos
-        }
-        func installKeyboard(on view: UITextView) {
+        init(state: RichTextState) { self.state = state }
+        func configureEditing(for view: UITextView) {
             state.didSync = { [weak self] in
                 self?.nativeFormat?.refreshDescriptor()
             }
@@ -327,60 +319,25 @@ struct RichTextEditor: UIViewRepresentable {
                     view?.revealCaret()
                 }
             }
-            let accessory = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 62))
-            accessory.autoresizingMask = [.flexibleWidth]
-            let effect: UIVisualEffect
-            if #available(iOS 26, *) {
-                let glass = UIGlassEffect(style: .regular)
-                glass.isInteractive = true
-                effect = glass
-            } else { effect = UIBlurEffect(style: .systemMaterial) }
-            let panel = UIVisualEffectView(effect: effect)
-            panel.translatesAutoresizingMaskIntoConstraints = false
-            if #available(iOS 26, *) { panel.cornerConfiguration = .capsule() }
-            else { panel.layer.cornerRadius = 23 }
-            panel.clipsToBounds = true
-            accessory.addSubview(panel)
-            let formatButton = UIButton(type: .system)
-            formatButton.setTitle("Aa", for: .normal)
-            formatButton.titleLabel?.font = .systemFont(ofSize: 22)
-            formatButton.accessibilityLabel = "Format"
-            formatButton.addAction(UIAction { [weak state] _ in state?.showFormat() }, for: .touchUpInside)
-            let attachment = UIButton(type: .system)
-            attachmentButton = attachment
-            attachment.setImage(UIImage(systemName: "paperclip"), for: .normal)
-            attachment.setPreferredSymbolConfiguration(.init(pointSize: 22), forImageIn: .normal)
-            attachment.accessibilityLabel = "Attach"
-            attachment.showsMenuAsPrimaryAction = true
-            attachment.menu = UIMenu(children: [
-                UIAction(title: "Attach File", image: UIImage(systemName: "doc")) { [attach] _ in attach() },
-                UIAction(title: "Photo Library", image: UIImage(systemName: "photo.on.rectangle")) { [photos] _ in photos() }
-            ])
-            let stack = UIStackView(arrangedSubviews: [formatButton, attachment])
-            stack.distribution = .fillEqually
-            stack.translatesAutoresizingMaskIntoConstraints = false
-            panel.contentView.addSubview(stack)
-            NSLayoutConstraint.activate([
-                panel.trailingAnchor.constraint(equalTo: accessory.trailingAnchor, constant: -16),
-                panel.topAnchor.constraint(equalTo: accessory.topAnchor, constant: 4),
-                panel.widthAnchor.constraint(equalToConstant: 128), panel.heightAnchor.constraint(equalToConstant: 46),
-                stack.leadingAnchor.constraint(equalTo: panel.contentView.leadingAnchor, constant: 8),
-                stack.trailingAnchor.constraint(equalTo: panel.contentView.trailingAnchor, constant: -8),
-                stack.topAnchor.constraint(equalTo: panel.contentView.topAnchor),
-                stack.bottomAnchor.constraint(equalTo: panel.contentView.bottomAnchor)
-            ])
-            formatButton.tintColor = .label; attachment.tintColor = .label
-            view.inputAccessoryView = accessory
-            self.accessory = accessory
             state.presentFormatting = { [weak self, weak view] in
                 guard let self, let view, self.nativeFormat == nil else { return }
-                let native = NativeFormatting(state: self.state) { [weak self] in self?.nativeFormat = nil }
+                let native = NativeFormatting(state: self.state) { [weak self] in
+                    self?.nativeFormat = nil
+                    self?.state.formatting = false
+                }
                 self.nativeFormat = native
+                self.state.formatting = true
                 native.present(from: view)
             }
         }
-        func textViewDidBeginEditing(_ textView: UITextView) { state.sync() }
-        func textViewDidEndEditing(_ textView: UITextView) { state.sync() }
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            state.editing = true
+            state.sync()
+        }
+        func textViewDidEndEditing(_ textView: UITextView) {
+            state.editing = false
+            state.sync()
+        }
         func textViewDidChangeSelection(_ textView: UITextView) { if !updating { state.sync() } }
         func textViewDidChange(_ textView: UITextView) {
             state.edited = true
