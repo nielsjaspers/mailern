@@ -46,6 +46,12 @@ out = args.output
 out.mkdir(parents=True, exist_ok=True)
 package_name = f'Mailern-{build}.ipa'
 manifest_name = f'manifest-{build}.plist'
+# Each publish replaces the previous one, so the folder only serves the current build.
+for pattern, current in (('Mailern-*.ipa', package_name), ('manifest-*.plist', manifest_name),
+                         ('build-*.json', f'build-{build}.json')):
+    for stale in out.glob(pattern):
+        if stale.name != current:
+            stale.unlink()
 package_temp = out / (package_name + '.tmp')
 if (out / package_name).exists() and hashlib.sha256((out / package_name).read_bytes()).hexdigest() != record['ipa_sha256']:
     parser.error(f'{package_name} already exists with different content')

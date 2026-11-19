@@ -5,3 +5,9 @@ Run `scripts/check-ui.sh <disposable-simulator-id> [--only-testing <Target/Class
 Script runs turn off UIKit animations. After changing a transition, also run the affected tests with `MAILERN_TEST_ANIMATIONS=on`.
 
 Runs shut down their simulator. Pass `--keep-booted` only when the user asks for it. After a killed run, use `--stop` to shut the simulator down.
+
+The runner keeps the 10 newest result bundles and logs in `build/` and removes older ones.
+
+# Build links
+
+Publish with `scripts/serve-demo.py` into its default `build/install`. Each publish replaces the previous build there, so serve that one folder from one server and one Tailscale route. Don't create numbered install folders.
