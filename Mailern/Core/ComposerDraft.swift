@@ -338,6 +338,13 @@ final class DraftStore {
                 guard scheduled || draft.sendAt == nil, self.mail?.hasPendingRemoteSend(draft.id) != true else { return false }
                 return ids.contains(draft.id) || draft.mode.replyID.map(ids.contains) == true
             }.map(\.id))
+            // A draft whose send is unconfirmed holds the only Retry Send. Opening it offers Retry Send.
+            let unconfirmed = ids.contains { self.mail?.hasPendingRemoteSend($0) == true }
+            let unconfirmedMessage = "A message that may already be sent stays in Drafts. Open it to retry the send."
+            if removed.isEmpty, unconfirmed {
+                self.error = unconfirmedMessage
+                return false
+            }
             guard !removed.isEmpty else { return committingMail?([]) ?? true }
             let standalone = self.drafts.contains { removed.contains($0.id) && ids.contains($0.id) }
             let discards = removed.union(self.mail?.discardedDraftIDs ?? [])
@@ -370,6 +377,7 @@ final class DraftStore {
                 guard await self.persist(remaining) else { return false }
             }
             if standalone { self.actionCount += 1 }
+            if unconfirmed { self.error = unconfirmedMessage }
             return true
         }
     }

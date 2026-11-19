@@ -1317,6 +1317,8 @@ import os
         let saved = await drafts.save(draft)
         let deleted = await drafts.delete(draft.id)
         assert(saved && !deleted && drafts.all.contains { $0.id == draft.id })
+        let discarded = await drafts.discardDrafts(for: [draft.id])
+        assert(!discarded && drafts.error != nil && drafts.all.contains { $0.id == draft.id })
         drafts.error = nil
         // A retry repeats the first submission, which may already be out, and says that later changes were not sent.
         var edited = draft
