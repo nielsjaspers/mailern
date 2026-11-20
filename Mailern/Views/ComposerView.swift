@@ -68,6 +68,24 @@ struct ComposerView: View {
     private let attachmentLimit = 25 * 1024 * 1024
     private var importing: Bool { importsInFlight > 0 }
 
+    private struct Sender: Hashable { let accountID: String; let address: String }
+    /// Every address the draft can send as. A reply stays with its conversation's account.
+    private var senders: [Sender] {
+        let accounts = draft.mode.replyID != nil ? [account] : store.accounts
+        return accounts.flatMap { account in account.addresses.map { Sender(accountID: account.id, address: $0) } }
+    }
+    private var sender: Binding<Sender> {
+        Binding {
+            Sender(accountID: draft.accountID, address: store.senderAddress(for: draft))
+        } set: { choice in
+            draft.accountID = choice.accountID
+            draft.fromAddress = choice.address.caseInsensitiveCompare(store.account(choice.accountID).address) == .orderedSame ? nil : choice.address
+        }
+    }
+    private var awaitingConfirmation: Bool { store.hasPendingRemoteSend(draft.id) }
+    /// Sent, awaiting confirmation, or already filed. Its content can no longer change; Send only finishes it.
+    private var alreadySubmitted: Bool { store.hasSentOrDiscarded(draft.id) }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -82,12 +100,12 @@ struct ComposerView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text("From:").foregroundStyle(.secondary).fixedSize()
                             Menu {
-                                Picker("From", selection: $draft.accountID) {
-                                    ForEach(store.accounts) { Text($0.address).tag($0.id) }
+                                Picker("From", selection: sender) {
+                                    ForEach(senders, id: \.self) { Text($0.address).tag($0) }
                                 }
                             } label: {
                                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                    Text(account.address)
+                                    Text(store.senderAddress(for: draft))
                                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                                         .truncationMode(.middle)
                                         .multilineTextAlignment(.leading)
@@ -97,15 +115,15 @@ struct ComposerView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 12)
                                 .contentShape(Rectangle())
-                            }.tint(.primary).disabled(draft.mode.replyID != nil)
-                                .accessibilityLabel("From, \(account.address)")
+                            }.tint(.primary).disabled(senders.count < 2)
+                                .accessibilityLabel("From, \(store.senderAddress(for: draft))")
                         }.frame(minHeight: 48)
                         Divider()
                     } else {
                         Button {
                             withAnimation(.snappy(duration: 0.25)) { expanded = true }
                         } label: {
-                            Text("Cc/Bcc, From:  \(account.address)")
+                            Text("Cc/Bcc, From:  \(store.senderAddress(for: draft))")
                                 .font(.subheadline).foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                                 .contentShape(Rectangle())
@@ -141,13 +159,16 @@ struct ComposerView: View {
                     keyboardTools.padding(.trailing, 16).padding(.top, 4).padding(.bottom, 12)
                 }
             }
-            .disabled(completed || finishing)
+            // An unconfirmed send may already be out, so its content stays as sent until the server answers.
+            .disabled(completed || finishing || alreadySubmitted)
             .scrollDismissesKeyboard(.immediately)
             // The top inset is the navigation bar, with the large title while it shows: the panel's pull zone.
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.top } action: { _, top in panel.pullZone = top }
             .scrollBounceBehavior(.always)
+            // Dragging the content hides the keyboard, which the scroll view does not do by itself here. A drag that
+            // the body handles, such as one that extends a selection, keeps the keyboard and the selection.
             .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { value in
-                guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                guard abs(value.translation.height) > abs(value.translation.width), editor.view?.isTrackingTouch != true else { return }
                 focus = nil
                 subjectFocused = false
                 editor.view?.window?.endEditing(true)
@@ -160,10 +181,12 @@ struct ComposerView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     // Hold Send for Send Later and a follow-up reminder, as in Mail.
                     Menu {
-                        Button("Send Later…", systemImage: "calendar.badge.clock") { picking = .sendLater }
-                        Button(draft.followUp == nil ? "Remind Me If No Reply…" : "Change Reminder…", systemImage: "hourglass") { picking = .reminder }
+                        if !alreadySubmitted {
+                            Button("Send Later…", systemImage: "calendar.badge.clock") { picking = .sendLater }
+                            Button(draft.followUp == nil ? "Remind Me If No Reply…" : "Change Reminder…", systemImage: "hourglass") { picking = .reminder }
+                        }
                     } label: {
-                        Label("Send", systemImage: "arrow.up")
+                        Label(awaitingConfirmation ? "Retry Send" : "Send", systemImage: "arrow.up")
                     } primaryAction: { Task { await send() } }
                         .labelStyle(.iconOnly).tint(.blue)
                         .foregroundStyle(draft.canSend ? Color.white : Color.secondary).disabled(!draft.canSend || !loaded || completed || finishing || importing)
@@ -195,6 +218,13 @@ struct ComposerView: View {
             minimize(velocity: velocity)
         }
         .onChange(of: draft.accountID) { _, id in if loaded { replaceSignature(with: store.account(id).signature) } }
+        .onChange(of: store.account(draft.accountID).addresses) { _, _ in if loaded && !alreadySubmitted { correctSender() } }
+        // Sync can confirm an earlier send while the composer is open. The message is out, so the composer closes.
+        .onChange(of: store.hasFiledSend(draft.id)) { _, filed in
+            guard filed, loaded, !completed, !finishing else { return }
+            complete()
+            panel.close()
+        }
         .onChange(of: input) { _, value in
             autosave?.cancel()
             guard loaded, !completed, !finishing,
@@ -289,7 +319,8 @@ struct ComposerView: View {
     }
 
     @ViewBuilder private var closeControl: some View {
-        if completed {
+        if completed || awaitingConfirmation {
+            // An unconfirmed send stays in Drafts for Retry Send, so closing keeps it.
             Button("Cancel", systemImage: "xmark") { panel.close() }.labelStyle(.iconOnly).tint(.primary)
         } else if dirty || saved {
             Menu {
@@ -373,9 +404,15 @@ struct ComposerView: View {
         contacts = false
     }
     private var recipients: [(name: String, address: String)] {
-        var seen = Set(store.accounts.map(\.address))
+        var seen = Set(store.accounts.flatMap(\.addresses))
         return store.conversations.flatMap(\.messages).filter { seen.insert($0.address).inserted }
             .map { (name: $0.sender, address: $0.address) }.sorted { $0.name < $1.name }
+    }
+    /// An alias can leave the server config while its draft waits or is open. Say which address the draft uses now.
+    private func correctSender() {
+        guard !alreadySubmitted, let chosen = draft.fromAddress, !store.account(draft.accountID).owns(chosen) else { return }
+        draft.fromAddress = nil
+        error = "\(chosen) is no longer an address of this account. This message now goes out from \(store.account(draft.accountID).address)."
     }
     private func load() {
         guard !loaded else { return }
@@ -392,7 +429,12 @@ struct ComposerView: View {
         }
         // A draft can outlive its account, for example after a demo reset. It sends from the default account instead.
         let missingAccount = !store.accounts.contains { $0.id == draft.accountID }
-        if missingAccount { draft.accountID = store.accounts.first { $0.id == defaultAccount }?.id ?? store.accounts[0].id }
+        if missingAccount { draft.accountID = store.accounts.first { $0.id == defaultAccount }?.id ?? store.accounts.first?.id ?? draft.accountID }
+        correctSender()
+        // Recipients only in Cc or Bcc stay visible.
+        if ComposerDraft.addresses(draft.to).isEmpty && !(ComposerDraft.addresses(draft.cc) + ComposerDraft.addresses(draft.bcc)).isEmpty {
+            expanded = true
+        }
         let text = NSMutableAttributedString(attributedString: RichText.decode(draft.richText, fallback: draft.text))
         if !saved, draft.richText == nil, let sourceID = draft.mode.sourceID, let source = store.conversation(sourceID), text.length > 2 {
             // Retain the original formatting inside the editable reply or forward quote.
@@ -526,8 +568,10 @@ struct ComposerView: View {
         editor.view?.window?.endEditing(true)
         do {
             let content = try snapshot(input)
-            let sendAt = scheduled ?? (undoDelay > 0 ? Date.now.addingTimeInterval(TimeInterval(undoDelay)) : nil)
-            if let followUp = content.followUp, followUp <= (sendAt ?? .now) {
+            // Retry Send repeats the saved submission. Its schedule and reminder were checked on the first try.
+            let retrying = alreadySubmitted
+            let sendAt = retrying ? nil : scheduled ?? (undoDelay > 0 ? Date.now.addingTimeInterval(TimeInterval(undoDelay)) : nil)
+            if !retrying, let followUp = content.followUp, followUp <= (sendAt ?? .now) {
                 error = "Choose a reminder after the message is sent."
                 return
             }
@@ -535,8 +579,10 @@ struct ComposerView: View {
                 guard await drafts.schedule(content, at: sendAt, holdingForUndo: scheduled == nil) else { return }
                 if scheduled == nil { drafts.undoable = content.id }
             } else {
+                // A server send can end unconfirmed. Saving first keeps the message in Drafts for Retry Send.
+                if store.isServerMailbox, !retrying, !(await drafts.save(content)) { return }
                 // The draft's ID makes sending a leftover draft again a no-op if deleting it fails below.
-                guard store.send(content) else {
+                guard await store.sendNow(content) else {
                     error = store.error
                     store.error = nil
                     return

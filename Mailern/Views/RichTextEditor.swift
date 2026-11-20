@@ -349,6 +349,15 @@ struct RichTextEditor: UIViewRepresentable {
 }
 
 extension UITextView {
+    /// True while one of the text view's own gestures, such as a selection drag or the loupe, follows a touch.
+    var isTrackingTouch: Bool {
+        func tracking(_ view: UIView) -> Bool {
+            view.gestureRecognizers?.contains { $0.isEnabled && [.began, .changed].contains($0.state) } == true
+                || view.subviews.contains(where: tracking)
+        }
+        return tracking(self)
+    }
+
     /// Scrolls the composer's scroll view, which holds the whole body, to show the caret.
     func revealCaret() {
         guard let range = selectedTextRange else { return }

@@ -75,6 +75,19 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
     var holdingForUndo: Bool?
     /// When to return the sent conversation to Inbox if nobody replied.
     var followUp: Date?
+    /// The account address to send as. Nil sends as the account's main address.
+    var fromAddress: String?
+
+    /// The address this draft sends as from `account`: its chosen alias, or the main address.
+    func sender(in account: MailAccount) -> String {
+        fromAddress.flatMap { chosen in account.addresses.first { $0.caseInsensitiveCompare(chosen) == .orderedSame } } ?? account.address
+    }
+
+    /// Whether `other` would send the same message: sender, recipients, subject, body, and attachments.
+    func hasSameSubmission(as other: Self) -> Bool {
+        accountID == other.accountID && fromAddress == other.fromAddress && to == other.to && cc == other.cc && bcc == other.bcc && subject == other.subject
+            && text == other.text && richText == other.richText && attachments == other.attachments
+    }
 
     func matchesContent(of other: Self) -> Bool {
         // Pinning and snooze expiry do not change the editor's saved content.
@@ -135,14 +148,39 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
         guard let c = conversation else { return draft }
         let target = c.message(message)
         let subject = c.subject(at: target)
+        // Answer from the address the message was sent to, as Mail does. A blind copy or list mail names it only in
+        // its delivery address.
+        if let account = accounts.first(where: { $0.id == c.accountID }), !target.outgoing,
+           // Each server on a forwarding chain adds its own Delivered-To, so prefer an alias over the main address.
+           let alias = (target.to + target.cc).first(where: account.owns)
+            ?? (target.deliveredTo ?? []).first(where: { account.owns($0) && $0.caseInsensitiveCompare(account.address) != .orderedSame }),
+           alias.caseInsensitiveCompare(account.address) != .orderedSame {
+            draft.fromAddress = account.addresses.first { $0.caseInsensitiveCompare(alias) == .orderedSame }
+        } else if target.outgoing, let account = accounts.first(where: { $0.id == c.accountID }), account.owns(target.address),
+                  target.address.caseInsensitiveCompare(account.address) != .orderedSame {
+            draft.fromAddress = target.address
+        }
         switch mode {
         case .reply, .replyAll:
             draft.answering = target.id
-            draft.to = target.outgoing ? target.to.joined(separator: ", ") : target.address
+            // Answering your own message goes to its other recipients, not back to you. When you were its only To, a
+            // Reply goes to its Cc. Reply All keeps them in Cc.
+            let external = { (list: [String]) in list.filter { address in !accounts.contains { $0.owns(address) } } }
+            var others = external(target.to)
+            if case .reply = mode, others.isEmpty { others = external(target.cc) }
+            // Mail from any of your addresses, also one of another connected account, counts as your own.
+            let fromYou = target.outgoing || accounts.contains { $0.owns(target.address) }
+            // A reply goes where the sender asked: Reply-To when the message has one, otherwise its sender.
+            // Your own addresses never go in To, also not from Reply-To.
+            let replyTargets = (target.replyTo ?? []).filter { address in !accounts.contains { $0.owns(address) } }
+            draft.to = fromYou ? (others.isEmpty ? target.to : others).joined(separator: ", ")
+                : (replyTargets.isEmpty ? [target.address] : replyTargets).joined(separator: ", ")
             draft.subject = subject.lowercased().hasPrefix("re:") ? subject : "Re: \(subject)"
             if case .replyAll = mode {
-                var seen = Set(accounts.map { $0.address.lowercased() } + addresses(draft.to).map { $0.lowercased() })
+                var seen = Set(accounts.flatMap(\.addresses).map { $0.lowercased() } + addresses(draft.to).map { $0.lowercased() })
                 draft.cc = (target.to + target.cc).filter { seen.insert($0.lowercased()).inserted }.joined(separator: ", ")
+                // Reply All never addresses only you. Without other recipients, To stays empty for you to fill in.
+                if fromYou && others.isEmpty { draft.to = "" }
             }
             draft.text += "\n\n\(QuotedText.attribution(for: target))\n\(target.body)"
         case .forward:
@@ -201,7 +239,7 @@ final class DraftStore {
     }
     private var failedDraftWakes: Set<DraftWake> = []
     private var retryDraftWakeAfter: Date?
-    @ObservationIgnored private var pending: Task<Bool, Never>?
+    @ObservationIgnored private var pending: Task<Void, Never>?
 
     init(url: URL = URL.applicationSupportDirectory.appending(path: "Mailern/drafts-v1.json"), mail: MailStore? = nil,
          write: @escaping @Sendable (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }) {
@@ -255,6 +293,8 @@ final class DraftStore {
     @discardableResult func save(_ draft: ComposerDraft) async -> Bool {
         await enqueue {
             var draft = draft
+            // A filed send no longer has a draft. A composer still open on it must not bring one back.
+            if draft.sendAt == nil, self.mail?.hasFiledSend(draft.id) == true { return true }
             if draft.sendAt != nil, self.mail?.hasSentOrDiscarded(draft.id) == true {
                 self.error = "This draft has already been sent or discarded."
                 return false
@@ -270,6 +310,11 @@ final class DraftStore {
         }
     }
     @discardableResult func delete(_ id: UUID) async -> Bool {
+        // The draft holds the only Retry Send for a send that may not have gone out.
+        if mail?.hasPendingRemoteSend(id) == true {
+            error = "This message may already be sent. Retry Send confirms it."
+            return false
+        }
         deleting.insert(id)
         defer { deleting.remove(id) }
         let deleted = await enqueue {
@@ -293,8 +338,18 @@ final class DraftStore {
         return await enqueue {
             guard self.loadFailure == nil else { self.error = self.loadFailure; return false }
             let removed = Set(self.all.filter { draft in
-                (scheduled || draft.sendAt == nil) && (ids.contains(draft.id) || draft.mode.replyID.map(ids.contains) == true)
+                guard scheduled || draft.sendAt == nil, self.mail?.hasPendingRemoteSend(draft.id) != true else { return false }
+                return ids.contains(draft.id) || draft.mode.replyID.map(ids.contains) == true
             }.map(\.id))
+            // A draft whose send is unconfirmed holds the only Retry Send. Opening it offers Retry Send.
+            let unconfirmed = self.all.contains { draft in
+                (ids.contains(draft.id) || draft.mode.replyID.map(ids.contains) == true) && self.mail?.hasPendingRemoteSend(draft.id) == true
+            }
+            let unconfirmedMessage = "A message that may already be sent stays in Drafts. Open it to retry the send."
+            if removed.isEmpty, unconfirmed {
+                self.error = unconfirmedMessage
+                return false
+            }
             guard !removed.isEmpty else { return committingMail?([]) ?? true }
             let standalone = self.drafts.contains { removed.contains($0.id) && ids.contains($0.id) }
             let discards = removed.union(self.mail?.discardedDraftIDs ?? [])
@@ -327,6 +382,7 @@ final class DraftStore {
                 guard await self.persist(remaining) else { return false }
             }
             if standalone { self.actionCount += 1 }
+            if unconfirmed { self.error = unconfirmedMessage }
             return true
         }
     }
@@ -357,11 +413,13 @@ final class DraftStore {
     /// Takes scheduled mail back into Drafts. False when it already went out.
     func unschedule(_ id: UUID) async -> Bool {
         await enqueue {
+            guard self.mail?.hasSentOrDiscarded(id) != true else { return false }
             guard let i = self.all.firstIndex(where: { $0.id == id && $0.sendAt != nil }) else { return false }
             var updated = self.all
             updated[i].sendAt = nil
             updated[i].holdingForUndo = nil
             guard await self.persist(updated) else { return false }
+            self.automaticRetries[id] = nil
             if self.undoable == id { self.undoable = nil }
             return true
         }
@@ -370,10 +428,15 @@ final class DraftStore {
     func edit(_ id: UUID) async {
         if await unschedule(id) { reopening = id }
     }
+    /// When each automatic send that failed may try again. Other due mail, such as a fresh Undo Send, does not wait.
+    @ObservationIgnored private var automaticRetries: [UUID: (after: Date, message: String)] = [:]
+    // A refused send only needs a manifest write to return to Drafts.
+    @ObservationIgnored private var refusedAwaitingSave: Set<UUID> = []
     /// Sends outbox mail that is due.
     func sendDue(through store: MailStore, now: Date = .now, whileActive: @escaping @MainActor () -> Bool = { true }) async {
-        guard all.contains(where: { ($0.sendAt ?? .distantFuture) <= now }) else { return }
-        _ = await deliver(through: store, automatic: true) { whileActive() && ($0.sendAt ?? .distantFuture) <= now }
+        let due = { (draft: ComposerDraft) in (draft.sendAt ?? .distantFuture) <= now && (self.automaticRetries[draft.id]?.after ?? .distantPast) <= now }
+        guard all.contains(where: due) else { return }
+        _ = await deliver(through: store, automatic: true, now: now) { whileActive() && due($0) }
     }
     /// Sends one scheduled message at once.
     func sendNow(_ id: UUID, through store: MailStore) async -> Bool {
@@ -381,34 +444,106 @@ final class DraftStore {
     }
     /// Sends the scheduled mail that `pick` selects. Each message goes out with its draft's ID, so a retry after a
     /// failed draft write removes the draft without sending it again. Mail the store refuses goes back to Drafts.
-    private func deliver(through store: MailStore, automatic: Bool = false, pick: @escaping (ComposerDraft) -> Bool) async -> Bool {
+    private func deliver(through store: MailStore, automatic: Bool = false, now: Date = .now, pick: @escaping (ComposerDraft) -> Bool) async -> Bool {
+        let started = ProcessInfo.processInfo.systemUptime
+        var attempted: Set<UUID> = []
+        var succeeded = true
+        var alerts: [String] = []
+        // One message per turn of the draft queue: a Cancel Send that waits behind a slow send applies before the next
+        // message is picked.
+        while true {
+            let skip = attempted
+            switch await deliverNext(through: store, automatic: automatic, now: now, started: started, pick: { !skip.contains($0.id) && pick($0) }) {
+            case .blocked:
+                succeeded = false
+            case .none:
+                break
+            case .delivered(let id, let ok, let messages):
+                attempted.insert(id)
+                succeeded = succeeded && ok
+                alerts += messages
+                continue
+            }
+            break
+        }
+        if !alerts.isEmpty { store.error = alerts.joined(separator: "\n") }
+        return succeeded
+    }
+    private enum NextDelivery {
+        case blocked, none
+        case delivered(UUID, ok: Bool, alerts: [String])
+    }
+    private func deliverNext(through store: MailStore, automatic: Bool, now: Date, started: TimeInterval,
+                             pick: @escaping (ComposerDraft) -> Bool) async -> NextDelivery {
         await enqueue {
             // A failed reload can leave an obsolete outbox snapshot in memory.
-            guard self.hasReadableManifest, !store.needsReload else { return false }
+            guard self.hasReadableManifest, !store.needsReload else { return .blocked }
             // Standalone draft stores bind to their mailbox the first time they deliver.
             if self.mail == nil { self.mail = store }
-            let queued = Set(self.all.lazy.filter { $0.sendAt != nil && pick($0) }.map(\.id))
-            guard !queued.isEmpty else { return true }
-            var failure: String?
-            let updated = self.all.compactMap { draft -> ComposerDraft? in
-                guard queued.contains(draft.id) else { return draft }
-                guard !store.discardedDraftIDs.contains(draft.id) else { return nil }
-                if store.sendUnsentOutboxDraft(draft) { return nil }
-                var refused = draft
-                refused.sendAt = nil
-                refused.holdingForUndo = nil
-                failure = "“\(draft.title)” could not be sent and is back in Drafts. \(store.error ?? "")"
-                return refused
+            guard let next = self.all.first(where: { $0.sendAt != nil && pick($0) })?.id else { return .none }
+            let queued: Set = [next]
+            var failed = false
+            var alerts: [String] = []
+            var refused: [(title: String, reason: String)] = []
+            var returningToDrafts: Set<UUID> = []
+            var updated: [ComposerDraft] = []
+            for var draft in self.all {
+                guard queued.contains(draft.id) else {
+                    updated.append(draft)
+                    continue
+                }
+                var deliveryMessage: String?
+                let retryingSave = automatic && self.refusedAwaitingSave.contains(draft.id)
+                let result: DraftDelivery = retryingSave ? .refused : await store.deliver(draft) { deliveryMessage = $0 }
+                switch result {
+                case .filed:
+                    if let deliveryMessage { alerts.append(deliveryMessage) }
+                    self.automaticRetries[draft.id] = nil
+                    continue
+                case .waitingToFile:
+                    self.refusedAwaitingSave.remove(draft.id)
+                    failed = true
+                    let message = deliveryMessage ?? "Mailern is still finishing this send."
+                    if !automatic || self.automaticRetries[draft.id]?.message != message {
+                        alerts.append("“\(draft.title)”: \(message)")
+                    }
+                    if automatic {
+                        let elapsed = ProcessInfo.processInfo.systemUptime - started
+                        self.automaticRetries[draft.id] = (now.addingTimeInterval(elapsed + 60), message)
+                    }
+                case .refused:
+                    failed = true
+                    self.automaticRetries[draft.id] = nil
+                    draft.sendAt = nil
+                    draft.holdingForUndo = nil
+                    returningToDrafts.insert(draft.id)
+                    if !retryingSave { refused.append((draft.title, deliveryMessage ?? "")) }
+                }
+                updated.append(draft)
             }
-            let saved = await self.persist(updated, reportFailure: !automatic || !self.recoveryFailureReported)
+            let saved = if updated == self.all { true }
+            else { await self.persist(updated, reportFailure: !automatic || !self.recoveryFailureReported) }
+            if !saved {
+                self.refusedAwaitingSave.formUnion(returningToDrafts)
+                let elapsed = ProcessInfo.processInfo.systemUptime - started
+                for id in returningToDrafts {
+                    self.automaticRetries[id] = (now.addingTimeInterval(elapsed + 60), "")
+                }
+            }
             if !saved, !store.discardedDraftIDs.isEmpty {
                 self.all.removeAll { store.discardedDraftIDs.contains($0.id) }
                 self.clearResolvedWakeFailures()
                 self.needsMailRecovery = true
             }
-            if let undoable = self.undoable, !self.all.contains(where: { $0.id == undoable && $0.sendAt != nil }) { self.undoable = nil }
-            if let failure { store.error = failure }
-            return saved && failure == nil
+            if let undoable = self.undoable,
+               store.hasSentOrDiscarded(undoable) || !self.all.contains(where: { $0.id == undoable && $0.sendAt != nil }) {
+                self.undoable = nil
+            }
+            for item in refused {
+                let placement = saved ? "is back in Drafts" : "remains in Scheduled because the draft list could not be saved"
+                alerts.append("“\(item.title)” could not be sent and \(placement). \(item.reason)")
+            }
+            return .delivered(next, ok: saved && !failed, alerts: alerts)
         }
     }
     func togglePin(_ id: UUID) async {
@@ -447,14 +582,15 @@ final class DraftStore {
         }
     }
     func recoverAfterMailLoad(now: Date = .now) async {
-        guard needsMailRecovery, mail?.needsReload != true, (retryMailRecoveryAfter ?? .distantPast) <= now else { return }
+        guard needsMailRecovery || mail?.discardedDraftIDs.isEmpty == false,
+              mail?.needsReload != true, (retryMailRecoveryAfter ?? .distantPast) <= now else { return }
         await reload(automatic: true)
         needsMailRecovery = !hasReadableManifest || mail?.discardedDraftIDs.isEmpty == false
         if needsMailRecovery { retryMailRecoveryAfter = now.addingTimeInterval(30) }
     }
 
     func finishPendingWrites() async {
-        _ = await pending?.value
+        await pending?.value
     }
     private func updateMailbox(ids: Set<UUID>, change: @escaping (inout ComposerDraft) -> Void) async -> Bool {
         await enqueue {
@@ -463,14 +599,14 @@ final class DraftStore {
             return await self.persist(updated)
         }
     }
-    private func enqueue(_ operation: @escaping @MainActor () async -> Bool) async -> Bool {
+    private func enqueue<Result: Sendable>(_ operation: @escaping @MainActor () async -> Result) async -> Result {
         let previous = pending
         // Once submitted, writes finish in order even if an autosave task is cancelled.
         let task = Task { @MainActor in
-            _ = await previous?.value
+            await previous?.value
             return await operation()
         }
-        pending = task
+        pending = Task { _ = await task.value }
         return await task.value
     }
     private func persist(_ updated: [ComposerDraft], reportFailure: Bool = true) async -> Bool {
@@ -484,6 +620,7 @@ final class DraftStore {
                 try AttachmentJSON.save(updated, to: url, write: write)
             }.value
             all = updated
+            refusedAwaitingSave.formIntersection(updated.lazy.filter { $0.sendAt != nil }.map(\.id))
             clearResolvedWakeFailures()
             mail?.finishDraftDiscards(discarded, reportFailure: reportFailure)
             needsMailRecovery = mail?.discardedDraftIDs.isEmpty == false

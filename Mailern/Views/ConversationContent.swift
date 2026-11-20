@@ -31,7 +31,7 @@ struct ConversationContent: View {
     private var latest: MailMessage { conversation.latest }
     private var earlier: [MailMessage] { Array(conversation.messages.dropLast()) }
     private var margin: CGFloat { isPreview ? 18 : 20 }
-    private var ownAddresses: Set<String> { Set(store.accounts.map { $0.address.lowercased() }) }
+    private var ownAddresses: Set<String> { Set(store.accounts.flatMap(\.addresses).map { $0.lowercased() }) }
 
     private struct FindRequest: Equatable { let query: String; let latest: UUID }
 
@@ -234,7 +234,7 @@ struct ConversationContent: View {
             ForEach(earlier.reversed()) { message in
                 Divider().padding(.horizontal, margin)
                 MessageRow(message: message, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: message), answered: conversation.answered(by: message),
-                               ownAddresses: ownAddresses, margin: margin, isPreview: true)
+                               ownAddresses: ownAddresses, margin: margin, isPreview: true, loadsHTML: false)
             }
         }
     }
@@ -244,6 +244,7 @@ struct ConversationContent: View {
 /// One message in a thread or a peek. Folded, it shows who wrote it, when, and its first line. Open, it shows the
 /// recipients, the reply controls, and the whole message.
 private struct MessageRow: View {
+    @Environment(MailStore.self) private var store
     @Environment(\.dynamicTypeSize) private var textSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var activeMatch: MessageMatch?
@@ -258,6 +259,8 @@ private struct MessageRow: View {
     let margin: CGFloat
     /// A peek opens the conversation on any tap, so its HTML takes no touches and nothing folds or unfolds.
     var isPreview = false
+    /// Whether an open message fetches its HTML from the mail server. A peek fetches only its newest message.
+    var loadsHTML = true
     var expanded = true
     /// Folds or opens the message. Nil when it cannot fold: a single-message thread or a peek.
     var toggle: (() -> Void)?
@@ -296,6 +299,11 @@ private struct MessageRow: View {
         // A message opens as it was first shown, with its quote and addresses hidden.
         .onChange(of: expanded) { _, open in
             if !open { showsQuote = false; showsDetails = false }
+        }
+        // Server mail syncs as text. Its HTML loads the first time the message opens and then stays on the phone.
+        .task(id: expanded && loadsHTML && message.remoteHTML == true) {
+            guard expanded, loadsHTML, message.remoteHTML == true else { return }
+            await store.loadHTML(message: message.id, in: conversationID)
         }
     }
 

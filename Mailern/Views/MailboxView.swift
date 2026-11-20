@@ -233,7 +233,9 @@ struct MailboxView: View {
                                              apply: applySelection, snooze: { bulkSnooze = true })
                     }
                 }
-                .toolbar(selecting || panel.covering || !paths[status, default: []].isEmpty ? .hidden : .visible, for: .tabBar)
+                // Hidden or automatic, never forced visible: a pushed thread hides the tab bar itself, and a forced
+                // visible root showed the tab bar over the thread while the composer slid away.
+                .toolbar(selecting || panel.covering || !paths[status, default: []].isEmpty ? .hidden : .automatic, for: .tabBar)
                 .navigationDestination(for: MailboxRoute.self) { route in
                     Group {
                         switch route {
@@ -290,7 +292,9 @@ struct MailboxView: View {
                             }
                         }
                     }
-                    Button("Demo", systemImage: "play.circle") { demo = true }
+                    if !store.isServerMailbox {
+                        Button("Demo", systemImage: "play.circle") { demo = true }
+                    }
                     if drafts.needsReload { Button("Retry loading drafts", systemImage: "arrow.clockwise") { Task { await drafts.reload() } } }
                     Button("Settings", systemImage: "gearshape") { settings = true }
                     if store.needsReload { Button("Retry loading mail", systemImage: "arrow.clockwise") { store.reload() } }

@@ -7,6 +7,9 @@ struct MailData: Equatable {
     var accounts = MailAccount.demo
     var blockedSenders: Set<String> = []
     var discardedDraftIDs: Set<UUID> = []
+    var remoteRevision: UInt64 = 0
+    var pendingRemoteDeletes: [UUID: PendingRemoteDelete] = [:]
+    var pendingRemoteSends: [UUID: PendingRemoteSend] = [:]
 }
 
 protocol ConversationPersistence {
@@ -38,6 +41,8 @@ final class MailStore {
     }
     private(set) var mailboxRevision: UInt64 = 0
     private(set) var discardedDraftIDs: Set<UUID> = []
+    private(set) var remoteRevision: UInt64 = 0
+    private(set) var pendingRemoteDeletes: [UUID: PendingRemoteDelete] = [:]
     private var nextExpiryRetry: Date?
     private(set) var blockedSenders: Set<String> = []
     private(set) var accounts = MailAccount.demo
@@ -60,6 +65,17 @@ final class MailStore {
     private var undoAction: ConversationAction?
     @ObservationIgnored private var noticeExpiryTask: Task<Void, Never>?
     private let persistence: any ConversationPersistence
+    /// Sends a draft through the mail server before the store records it. Nil for demo mail, which sends nothing.
+    @ObservationIgnored var sendRemote: ((PreparedRemoteSend) async throws -> Void)?
+    @ObservationIgnored private var remoteSendsInFlight: Set<UUID> = []
+    @ObservationIgnored private var acceptedSends: Set<UUID> = []
+    /// Observed, so a Scheduled card leaves its unconfirmed state as soon as the server confirms the send.
+    private var pendingRemoteSends: [UUID: PendingRemoteSend] = [:]
+    private(set) var remoteSendGeneration: UInt64 = 0
+    /// Loads a message's HTML part from the mail server.
+    @ObservationIgnored var loadRemoteHTML: ((UUID) async throws -> String)?
+    /// Accounts come from the mail server, so they cannot be added or deleted here.
+    let isServerMailbox: Bool
     private var loadFailure: String?
     /// False after a failed save, when the stored search index can miss mail that only exists in memory.
     private var indexCurrent = true {
@@ -67,8 +83,9 @@ final class MailStore {
     }
     var needsReload: Bool { loadFailure != nil }
 
-    init(persistence: any ConversationPersistence = SQLitePersistence.local) {
+    init(persistence: any ConversationPersistence = SQLitePersistence.local, isServerMailbox: Bool = false) {
         self.persistence = persistence
+        self.isServerMailbox = isServerMailbox
         reload()
     }
     @discardableResult
@@ -83,6 +100,9 @@ final class MailStore {
                 return normalized
             }
             discardedDraftIDs = data.discardedDraftIDs
+            remoteRevision = data.remoteRevision
+            pendingRemoteDeletes = data.pendingRemoteDeletes
+            pendingRemoteSends = data.pendingRemoteSends
             blockedSenders = data.blockedSenders
             accounts = data.accounts
             loadFailure = nil
@@ -154,21 +174,36 @@ final class MailStore {
         return true
     }
 
-    private var data: MailData { MailData(conversations: conversations, accounts: accounts, blockedSenders: blockedSenders, discardedDraftIDs: discardedDraftIDs) }
-    @discardableResult private func save(replacingConversations updated: [Conversation]? = nil, metadataAt indices: [Int]? = nil, draftDiscards: Set<UUID>? = nil, reportFailure: Bool = true) -> Bool {
-        guard canWrite() else { return false }
+    private var data: MailData {
+        MailData(conversations: conversations, accounts: accounts, blockedSenders: blockedSenders,
+                 discardedDraftIDs: discardedDraftIDs, remoteRevision: remoteRevision, pendingRemoteDeletes: pendingRemoteDeletes,
+                 pendingRemoteSends: pendingRemoteSends)
+    }
+    @discardableResult private func save(replacingConversations updated: [Conversation]? = nil, metadataAt indices: [Int]? = nil,
+                                         draftDiscards: Set<UUID>? = nil, remoteAccounts: [MailAccount]? = nil, revision: UInt64? = nil,
+                                         pendingDeletes: [UUID: PendingRemoteDelete]? = nil, pendingSends: [UUID: PendingRemoteSend]? = nil,
+                                         reportFailure: Bool = true, onMessage: ((String?) -> Void)? = nil) -> Bool {
+        guard canWrite(onMessage) else { return false }
         var data = self.data
         if let updated { data.conversations = updated }
         if let draftDiscards { data.discardedDraftIDs = draftDiscards }
+        if let remoteAccounts { data.accounts = remoteAccounts }
+        if let revision { data.remoteRevision = revision }
+        if let pendingDeletes { data.pendingRemoteDeletes = pendingDeletes }
+        if let pendingSends { data.pendingRemoteSends = pendingSends }
         do {
             if let indices, indexCurrent { try persistence.saveMetadata(in: data, at: indices) }
             else { try persistence.save(data) }
             if let draftDiscards { discardedDraftIDs = draftDiscards }
+            if let remoteAccounts { accounts = remoteAccounts }
+            if let revision { remoteRevision = revision }
+            if let pendingDeletes { pendingRemoteDeletes = pendingDeletes }
+            if let pendingSends { pendingRemoteSends = pendingSends }
             indexCurrent = true
             return true
         } catch {
             if updated == nil { indexCurrent = false }
-            if reportFailure { self.error = "Changes could not be saved. \(error.localizedDescription)" }
+            if reportFailure { report("Changes could not be saved. \(error.localizedDescription)", to: onMessage) }
             return false
         }
     }
@@ -177,9 +212,12 @@ final class MailStore {
         save(replacingConversations: conversations, metadataAt: [], draftDiscards: discardedDraftIDs.subtracting(completed), reportFailure: reportFailure)
     }
 
-    private func canWrite() -> Bool {
+    private func report(_ message: String?, to recipient: ((String?) -> Void)?) {
+        if let recipient { recipient(message) } else { error = message }
+    }
+    private func canWrite(_ onMessage: ((String?) -> Void)? = nil) -> Bool {
         guard let loadFailure else { return true }
-        error = loadFailure
+        report(loadFailure, to: onMessage)
         return false
     }
     private func update(_ id: UUID, _ action: (inout Conversation) -> Void) {
@@ -278,7 +316,8 @@ final class MailStore {
         let originals = Dictionary(uniqueKeysWithValues: undoSnapshot.map { ($0.id, $0) })
         let indices = conversations.indices.filter { originals[conversations[$0].id] != nil }
         guard indices.count == originals.count,
-              indices.allSatisfy({ originals[conversations[$0].id]?.messages == conversations[$0].messages }) else {
+              // A sync can rewrite a message's metadata. Only a new or removed message ends Undo.
+              indices.allSatisfy({ originals[conversations[$0].id]?.messages.map(\.id) == conversations[$0].messages.map(\.id) }) else {
             clearNotice()
             return
         }
@@ -360,23 +399,131 @@ final class MailStore {
         }.map(\.id))
         if !expired.isEmpty { deletePermanently(expired) }
     }
-    /// Deletes conversations without Undo. Callers confirm first; expired Trash needs no confirmation.
-    @discardableResult func deletePermanently(_ ids: Set<UUID>, from confirmedMailbox: RemovedMailbox? = nil, discarding drafts: Set<UUID> = []) -> Bool {
-        guard canWrite(), !ids.isEmpty else { return false }
-        if let confirmedMailbox {
-            let stillInMailbox = conversations.count { ids.contains($0.id) && $0.removal?.mailbox == confirmedMailbox }
-            guard stillInMailbox == ids.count else {
-                error = "The mailbox changed. Review the selection before deleting."
-                return false
-            }
+    func prepareDelete(_ ids: Set<UUID>, from mailbox: RemovedMailbox) -> DeleteConfirmation? {
+        guard !ids.isEmpty else { return nil }
+        let selected = conversations.filter { ids.contains($0.id) && $0.removal?.mailbox == mailbox }
+        guard selected.count == ids.count else {
+            error = "The mailbox changed. Review the selection before deleting."
+            return nil
         }
+        var members: [UUID: DeleteConfirmation.Member] = [:]
+        for conversation in selected {
+            let identity = account(conversation.accountID).mailboxIdentities?[mailbox]
+            guard !isServerMailbox || identity != nil else {
+                error = "Sync this mailbox before deleting these messages."
+                return nil
+            }
+            members[conversation.id] = .init(messageIDs: Set(conversation.messages.map(\.id)), mailboxIdentity: identity)
+        }
+        return DeleteConfirmation(mailbox: mailbox, members: members)
+    }
+
+    @discardableResult func deletePermanently(_ confirmation: DeleteConfirmation, discarding drafts: Set<UUID> = []) -> Bool {
+        guard let current = prepareDelete(confirmation.ids, from: confirmation.mailbox) else { return false }
+        guard current.members == confirmation.members else {
+            error = "The messages or mailbox changed. Review the selection before deleting."
+            return false
+        }
+        return commitPermanentDelete(confirmation.ids, discarding: drafts)
+    }
+
+    /// Expired Trash needs no confirmation. The current membership still constrains the server delete.
+    @discardableResult func deletePermanently(_ ids: Set<UUID>, from mailbox: RemovedMailbox? = nil, discarding drafts: Set<UUID> = []) -> Bool {
+        if let mailbox {
+            guard let confirmation = prepareDelete(ids, from: mailbox) else { return false }
+            return deletePermanently(confirmation, discarding: drafts)
+        }
+        return commitPermanentDelete(ids, discarding: drafts)
+    }
+
+    private func commitPermanentDelete(_ ids: Set<UUID>, discarding drafts: Set<UUID>) -> Bool {
+        guard canWrite(), !ids.isEmpty else { return false }
         let remaining = conversations.filter { !ids.contains($0.id) }
         guard remaining.count != conversations.count else { return false }
+        var pending = pendingRemoteDeletes
+        if isServerMailbox {
+            for conversation in conversations where ids.contains(conversation.id) {
+                guard let removal = conversation.removal?.mailbox, let synced = conversation.synced,
+                      let identity = account(conversation.accountID).mailboxIdentities?[removal] else {
+                    error = "Sync this mailbox before deleting these messages."
+                    return false
+                }
+                let request = RemoteDelete(messageIDs: Set(conversation.messages.map(\.id)), expectedWorkflow: synced.workflow,
+                                           expectedRemoval: synced.removal, removal: removal, mailboxIdentity: identity)
+                pending[conversation.id] = PendingRemoteDelete(request: request, cached: conversation)
+            }
+        }
         let discards = discardedDraftIDs.union(drafts)
-        guard save(replacingConversations: remaining, draftDiscards: discards) else { return false }
+        guard save(replacingConversations: remaining, draftDiscards: discards, pendingDeletes: pending) else { return false }
         if undoSnapshot.contains(where: { ids.contains($0.id) }) { clearNotice() }
         conversations = remaining
         return true
+    }
+
+    func confirmRemoteDelete(_ id: UUID) -> Bool {
+        var pending = pendingRemoteDeletes
+        guard pending.removeValue(forKey: id) != nil else { return true }
+        return save(replacingConversations: conversations, pendingDeletes: pending)
+    }
+
+    func markRemoteDeleteConflict(_ id: UUID) -> Bool {
+        var pending = pendingRemoteDeletes
+        pending[id]?.needsRefresh = true
+        return save(replacingConversations: conversations, pendingDeletes: pending)
+    }
+
+    func recordPendingRemoteWrite(_ id: UUID, fields: Set<RemoteStateField>) -> Bool {
+        guard let index = conversations.firstIndex(where: { $0.id == id }) else { return false }
+        guard conversations[index].pendingRemoteWrite != fields else { return true }
+        var updated = conversations
+        updated[index].pendingRemoteWrite = fields
+        guard save(replacingConversations: updated, metadataAt: [index]) else { return false }
+        conversations = updated
+        return true
+    }
+
+    func acknowledgePlacementBeforeDelete(_ remote: RemoteConversation, sent: RemoteState, fields: Set<RemoteStateField>) -> Bool {
+        guard let original = pendingRemoteDeletes[remote.id] else { return true }
+        var updated = original
+        // Only acknowledge placement changes this client submitted. An unrelated change must still conflict.
+        if fields.contains(.workflow), remote.workflow == sent.workflow { updated.request.expectedWorkflow = remote.workflow }
+        if fields.contains(.removal), remote.removal == sent.removal { updated.request.expectedRemoval = remote.removal }
+        guard updated != original else { return true }
+        var pending = pendingRemoteDeletes
+        pending[remote.id] = updated
+        return save(replacingConversations: conversations, pendingDeletes: pending)
+    }
+
+    /// The pull cursor and its changes commit together, so a failed save can be replayed.
+    @discardableResult
+    func replaceRemote(conversations updated: [Conversation], accounts: [MailAccount], invalidatingUndo ids: Set<UUID>,
+                       revision: UInt64? = nil, pendingDeletes: [UUID: PendingRemoteDelete]? = nil) -> Bool {
+        guard canWrite() else { return false }
+        if updated != conversations || accounts != self.accounts || (revision ?? remoteRevision) != remoteRevision ||
+            (pendingDeletes ?? pendingRemoteDeletes) != pendingRemoteDeletes || !indexCurrent {
+            guard save(replacingConversations: updated, remoteAccounts: accounts, revision: revision, pendingDeletes: pendingDeletes) else { return false }
+        }
+        if conversations != updated { conversations = updated }
+        if !ids.isEmpty { clearWorkflowUndo(involving: ids) }
+        return true
+    }
+    /// Loads and stores the HTML part of a message from the mail server.
+    func loadHTML(message id: UUID, in conversationID: UUID) async {
+        guard let loadRemoteHTML else { return }
+        do {
+            let html = try await loadRemoteHTML(id)
+            guard let c = conversations.firstIndex(where: { $0.id == conversationID }),
+                  let m = conversations[c].messages.firstIndex(where: { $0.id == id }),
+                  // The send can be filed with its own rich text while the download runs.
+                  conversations[c].messages[m].richText == nil else { return }
+            conversations[c].messages[m].html = html.isEmpty ? nil : html
+            conversations[c].messages[m].remoteHTML = nil
+            save()
+        } catch where error is CancellationError || (error as? URLError)?.code == .cancelled {
+            // The reader closed or folded the message. Nothing failed.
+        } catch {
+            self.error = "The message could not be loaded. \(error.localizedDescription)"
+        }
     }
     /// Why `account` cannot be saved, or nil when it can.
     func problem(with account: MailAccount) -> String? {
@@ -478,7 +625,8 @@ final class MailStore {
         return closest?.index
     }
     func receiveReply(_ id: UUID) {
-        guard let c = conversation(id) else { return }
+        // A fictional reply has no place in real mail.
+        guard !isServerMailbox, let c = conversation(id) else { return }
         var reply = MailMessage(sender: c.correspondent.sender, address: c.correspondent.address, to: [account(c.accountID).address], date: .now,
                                 body: "Hi Morgan,\n\nA quick follow-up on this. Have you had a chance to take a look? Let me know what you think.\n\nThanks,\n\(c.correspondent.sender)",
                                 subject: c.effectiveSubject, messageID: MailMessage.newMessageID(from: c.correspondent.address))
@@ -503,26 +651,27 @@ final class MailStore {
     /// Sends a message. With a `threadID`, it answers the message `replyingTo` in that conversation, or the latest one.
     /// The conversation settles, or waits in Snoozed until `followUp` when that is still ahead.
     func send(threadID: UUID?, replyingTo: UUID? = nil, account: MailAccount, to: [String], cc: [String], subject: String, body: String,
-              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil, id: UUID = UUID(), discardingDraft: UUID? = nil) -> Bool {
-        guard canWrite() else { return false }
+              bcc: [String] = [], richText: Data? = nil, attachments: [MailAttachment] = [], followUp: Date? = nil, id: UUID = UUID(), discardingDraft: UUID? = nil, onMessage: ((String?) -> Void)? = nil) -> Bool {
+        guard canWrite(onMessage) else { return false }
         guard accounts.contains(where: { $0.id == account.id }) else {
-            error = "The sending account no longer exists. Choose another From address."
+            report("The sending account no longer exists. Choose another From address.", to: onMessage)
             return false
         }
         if let threadID, conversation(threadID) == nil {
-            error = "The original conversation is no longer available. Your draft has not been sent."
+            report("The original conversation is no longer available. Your draft has not been sent.", to: onMessage)
             return false
         }
         let before = conversations
         var message = MailMessage(id: id, sender: "Morgan", address: account.address, to: to, cc: cc, date: .now, body: body,
                                   outgoing: true, bcc: bcc.isEmpty ? nil : bcc, richText: richText, attachments: attachments.isEmpty ? nil : attachments,
-                                  subject: subject, messageID: MailMessage.newMessageID(from: account.address))
+                                  subject: subject, messageID: MailMessage.newMessageID(from: account.address, id: id))
         if let threadID, let i = conversations.firstIndex(where: { $0.id == threadID }) {
             message.answer(conversations[i].message(replyingTo))
             conversations[i].messages.append(message)
             conversations[i].removal = nil
         } else {
-            conversations.insert(Conversation(accountID: account.id, subject: subject, unread: false, messages: [message]), at: 0)
+            // A new conversation takes the message's ID, so the mail server files the sent copy in the same thread.
+            conversations.insert(Conversation(id: id, accountID: account.id, subject: subject, unread: false, messages: [message]), at: 0)
         }
         let i = threadID.flatMap { id in conversations.firstIndex { $0.id == id } } ?? 0
         if let followUp, followUp > .now {
@@ -538,38 +687,251 @@ final class MailStore {
             if discardingDraft != nil { discardedDraftIDs = sent.discardedDraftIDs }
             indexCurrent = true
             clearNotice()
-            error = nil
+            report(nil, to: onMessage)
             return true
         } catch {
             indexCurrent = false
             conversations = before
-            self.error = "Message could not be saved. Your draft has not been sent. \(error.localizedDescription)"
+            report("Message could not be saved. Your draft has not been sent. \(error.localizedDescription)", to: onMessage)
             return false
         }
     }
+    /// The draft went out and its sent message is filed in a conversation.
+    func hasFiledSend(_ id: UUID) -> Bool { sentConversation(id) != nil }
     func hasSentOrDiscarded(_ id: UUID) -> Bool {
-        discardedDraftIDs.contains(id) || conversations.contains { thread in
-            thread.messages.contains { $0.outgoing && $0.id == id }
+        discardedDraftIDs.contains(id) || hasPendingRemoteSend(id) || sentConversation(id) != nil
+    }
+    func senderAddress(for draft: ComposerDraft) -> String {
+        if let submission = pendingRemoteSends[draft.id]?.prepared {
+            return submission.draft.sender(in: submission.from)
         }
+        return draft.sender(in: account(draft.accountID))
+    }
+    func hasPendingRemoteSend(_ id: UUID) -> Bool {
+        pendingRemoteSends[id] != nil
     }
 
     /// Immediate sends use the same durable cleanup receipt as scheduled sends.
-    @discardableResult func send(_ draft: ComposerDraft) -> Bool {
+    @discardableResult func send(_ draft: ComposerDraft, onMessage: ((String?) -> Void)? = nil) -> Bool {
         if hasSentOrDiscarded(draft.id) { return true }
-        return sendUnsentOutboxDraft(draft)
+        return sendDraft(draft, id: draft.id, discardingDraft: draft.id, onMessage: onMessage)
+    }
+    func sendNow(_ draft: ComposerDraft) async -> Bool {
+        await deliver(draft) == .filed
     }
 
-    /// Delivery checks the queued IDs together before calling this method.
-    func sendUnsentOutboxDraft(_ draft: ComposerDraft) -> Bool {
-        sendDraft(draft, id: draft.id, discardingDraft: draft.id)
+    /// Sends a draft. A retry after an unconfirmed send repeats the first submission exactly, because that one may
+    /// already be out. Changes made since then are not sent, and the store says so.
+    func deliver(_ draft: ComposerDraft, onMessage: ((String?) -> Void)? = nil) async -> DraftDelivery {
+        let changed = pendingRemoteSends[draft.id].map { !$0.prepared.draft.hasSameSubmission(as: draft) } ?? false
+        let result = await deliverSubmission(draft, onMessage: onMessage)
+        if changed && result == .filed {
+            report("Message sent as first written. Changes made after the first try were not sent.", to: onMessage)
+        }
+        return result
     }
 
-    private func sendDraft(_ draft: ComposerDraft, id: UUID, discardingDraft: UUID? = nil) -> Bool {
+    private func deliverSubmission(_ draft: ComposerDraft, onMessage: ((String?) -> Void)?) async -> DraftDelivery {
+        if discardedDraftIDs.contains(draft.id) { return .filed }
+        guard isServerMailbox else { return send(draft, onMessage: onMessage) ? .filed : .refused }
+        guard canWrite(onMessage) else { return .refused }
+        if remoteSendsInFlight.contains(draft.id) { return .waitingToFile }
+        let prepared: PreparedRemoteSend
+        let previousAttempt = pendingRemoteSends[draft.id]
+        if let pending = previousAttempt {
+            prepared = pending.prepared
+        } else if sentConversation(draft.id) != nil {
+            // The server has a copy, but there is no record of which local draft was submitted.
+            guard save(replacingConversations: conversations, draftDiscards: discardedDraftIDs.union([draft.id]), onMessage: onMessage) else { return .waitingToFile }
+            report(nil, to: onMessage)
+            return .filed
+        } else {
+            guard let fresh = prepareRemoteSend(draft, onMessage: onMessage) else { return .refused }
+            guard sendRemote != nil else {
+                report("The mail server is unavailable.", to: onMessage)
+                return .refused
+            }
+            var pending = pendingRemoteSends
+            pending[draft.id] = PendingRemoteSend(prepared: fresh)
+            guard save(replacingConversations: conversations, pendingSends: pending, onMessage: onMessage) else { return .refused }
+            prepared = fresh
+        }
+
+        if canFileRemoteSend(draft.id) { return fileAcceptedSend(prepared, onMessage: onMessage) }
+        guard let sendRemote else {
+            report("The mail server is unavailable.", to: onMessage)
+            return .waitingToFile
+        }
+        remoteSendsInFlight.insert(draft.id)
+        defer { remoteSendsInFlight.remove(draft.id) }
+        do {
+            try await sendRemote(prepared)
+        } catch {
+            if sentConversation(draft.id) == nil {
+                if error is RemoteSendRejection {
+                    var pending = pendingRemoteSends
+                    pending.removeValue(forKey: draft.id)
+                    guard save(replacingConversations: conversations, pendingSends: pending, onMessage: onMessage) else { return .waitingToFile }
+                    report("Message could not be sent. \(error.localizedDescription)", to: onMessage)
+                    return .refused
+                }
+                // Retrying cannot settle it, so the draft returns to Drafts, where it can be kept or deleted.
+                if error is RemoteSendUnconfirmable {
+                    var pending = pendingRemoteSends
+                    pending.removeValue(forKey: draft.id)
+                    guard save(replacingConversations: conversations, pendingSends: pending, onMessage: onMessage) else { return .waitingToFile }
+                    report("Delivery could not be confirmed, so the message is back in Drafts. Check with the recipient. Mailern will not send this draft again, so use a new message if it did not arrive.", to: onMessage)
+                    return .refused
+                }
+                // A connection that never opened sent nothing, so the attempt can be dropped: the draft stays
+                // scheduled and can still be canceled or edited.
+                let unreachable = (error as? URLError).map { [.notConnectedToInternet, .cannotFindHost, .cannotConnectToHost,
+                        .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff].contains($0.code) } ?? false
+                if error is RemoteSendUnavailable || (previousAttempt == nil && unreachable) {
+                    var pending = pendingRemoteSends
+                    pending.removeValue(forKey: draft.id)
+                    guard save(replacingConversations: conversations, pendingSends: pending, onMessage: onMessage) else { return .waitingToFile }
+                    report("The mail server was unavailable. Nothing was sent. \(error.localizedDescription)", to: onMessage)
+                    return .waitingToFile
+                }
+                report("Delivery is unconfirmed. Retry to finish sending this message. \(error.localizedDescription)", to: onMessage)
+                return .waitingToFile
+            }
+        }
+        return fileAcceptedSend(prepared, onMessage: onMessage)
+    }
+
+    private func prepareRemoteSend(_ draft: ComposerDraft, onMessage: ((String?) -> Void)?) -> PreparedRemoteSend? {
+        guard let from = accounts.first(where: { $0.id == draft.accountID }) else {
+            report("The sending account no longer exists. Choose another From address.", to: onMessage)
+            return nil
+        }
+        // An alias removed from the server config must not turn into a send from the main address.
+        if let chosen = draft.fromAddress, !from.owns(chosen) {
+            report("\(chosen) is no longer an address of this account. Choose another From address.", to: onMessage)
+            return nil
+        }
+        var source: MailMessage?
+        if let id = draft.mode.replyID {
+            if let thread = conversation(id), thread.accountID == from.id {
+                if let messageID = draft.answering ?? draft.messageID {
+                    source = thread.messages.first { $0.id == messageID }
+                } else {
+                    source = thread.messages.last
+                }
+            }
+            guard source != nil else {
+                report("The original message is no longer available. Your draft has not been sent.", to: onMessage)
+                return nil
+            }
+        }
+        return PreparedRemoteSend(draft: draft, conversationID: draft.mode.replyID ?? draft.id, from: from, replyTo: source.map {
+            PreparedRemoteSend.Reply(id: $0.id, threadingID: $0.threadingID, references: ($0.references ?? []) + [$0.threadingID])
+        }, incomingIDs: (draft.mode.replyID.flatMap(conversation)?.messages ?? []).filter { !$0.outgoing }.map(\.id))
+    }
+
+    func fileReadyRemoteSends() {
+        guard !needsReload else { return }
+        let ready = pendingRemoteSends.values.filter { pending in
+            let id = pending.prepared.draft.id
+            return !remoteSendsInFlight.contains(id) && canFileRemoteSend(id)
+        }
+        for pending in ready { _ = fileAcceptedSend(pending.prepared) }
+    }
+
+    private func canFileRemoteSend(_ id: UUID) -> Bool {
+        acceptedSends.contains(id) || pendingRemoteSends[id]?.accepted == true || sentConversation(id) != nil
+    }
+
+    private func sentConversation(_ id: UUID) -> Conversation? {
+        conversations.first { $0.messages.contains { $0.id == id && $0.outgoing } }
+    }
+
+    private func fileAcceptedSend(_ accepted: PreparedRemoteSend, onMessage: ((String?) -> Void)? = nil) -> DraftDelivery {
+        let draft = accepted.draft
+        let threadID = sentConversation(draft.id)?.id ?? accepted.conversationID
+        acceptedSends.insert(draft.id)
+        guard pendingRemoteDeletes[threadID] == nil else {
+            return deferAcceptedSend(draft.id, message: "Message was sent. The sent copy will be filed once the conversation deletion is resolved.", onMessage: onMessage)
+        }
+        remoteSendGeneration &+= 1
+        var pending = pendingRemoteSends
+        pending.removeValue(forKey: draft.id)
+        var updated = conversations
+        let subject = draft.subject.isEmpty ? "(No Subject)" : draft.subject
+        let bcc = ComposerDraft.addresses(draft.bcc)
+        let attachments = draft.attachments.isEmpty ? nil : draft.attachments
+        let index: Int
+        if let existing = updated.firstIndex(where: { $0.id == threadID }) {
+            index = existing
+        } else {
+            index = 0
+            updated.insert(Conversation(id: threadID, accountID: accepted.from.id, subject: subject, unread: false, messages: []), at: index)
+        }
+        if let messageIndex = updated[index].messages.firstIndex(where: { $0.id == draft.id }) {
+            updated[index].messages[messageIndex].bcc = bcc.isEmpty ? nil : bcc
+            updated[index].messages[messageIndex].richText = draft.richText
+            updated[index].messages[messageIndex].attachments = attachments
+            // Sync can find the sent copy first. Its server HTML would show over the composer's rich text and quote.
+            if draft.richText != nil {
+                updated[index].messages[messageIndex].html = nil
+                updated[index].messages[messageIndex].remoteHTML = nil
+            }
+        } else {
+            var message = MailMessage(id: draft.id, sender: accepted.from.name, address: draft.sender(in: accepted.from),
+                                      to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
+                                      date: .now, body: draft.text, outgoing: true, bcc: bcc.isEmpty ? nil : bcc,
+                                      richText: draft.richText, attachments: attachments, subject: subject,
+                                      messageID: MailMessage.newMessageID(from: draft.sender(in: accepted.from), id: draft.id))
+            message.inReplyTo = accepted.replyTo?.threadingID
+            message.references = accepted.replyTo?.references
+            updated[index].messages.append(message)
+        }
+        updated[index].removal = nil
+        // A reply that arrived while the send was out keeps the thread in Inbox, unread, instead of settling it.
+        let answered = accepted.incomingIDs.map { known in
+            updated[index].messages.contains { !$0.outgoing && !known.contains($0.id) }
+        } ?? false
+        if !answered {
+            if let followUp = draft.followUp, followUp > .now {
+                updated[index].move(to: .snoozed, until: followUp)
+                updated[index].followUp = .waiting
+            } else if let followUp = draft.followUp {
+                // The send was confirmed after its reminder date. The reminder is due now, as if it had waited.
+                updated[index].move(to: .inbox)
+                updated[index].returnedFromSnoozeAt = followUp
+                updated[index].followUp = .noReply
+            } else {
+                updated[index].move(to: .settled)
+            }
+        }
+        guard save(replacingConversations: updated, draftDiscards: discardedDraftIDs.union([draft.id]),
+                   pendingSends: pending, reportFailure: false, onMessage: onMessage) else {
+            return deferAcceptedSend(draft.id, message: "Message was sent. Try again to save the sent copy.", onMessage: onMessage)
+        }
+        acceptedSends.remove(draft.id)
+        if conversations != updated { conversations = updated }
+        clearNotice()
+        report(nil, to: onMessage)
+        return .filed
+    }
+
+    private func deferAcceptedSend(_ id: UUID, message: String, onMessage: ((String?) -> Void)?) -> DraftDelivery {
+        if pendingRemoteSends[id]?.accepted == false {
+            var unfiled = pendingRemoteSends
+            unfiled[id]?.accepted = true
+            save(replacingConversations: conversations, pendingSends: unfiled, reportFailure: false, onMessage: onMessage)
+        }
+        report(message, to: onMessage)
+        return .waitingToFile
+    }
+
+    private func sendDraft(_ draft: ComposerDraft, id: UUID, discardingDraft: UUID? = nil, onMessage: ((String?) -> Void)? = nil) -> Bool {
         return send(threadID: draft.mode.replyID, replyingTo: draft.answering ?? draft.messageID, account: account(draft.accountID),
                     to: ComposerDraft.addresses(draft.to), cc: ComposerDraft.addresses(draft.cc),
                     subject: draft.subject.isEmpty ? "(No Subject)" : draft.subject, body: draft.text,
                     bcc: ComposerDraft.addresses(draft.bcc), richText: draft.richText, attachments: draft.attachments,
-                    followUp: draft.followUp, id: id, discardingDraft: discardingDraft)
+                    followUp: draft.followUp, id: id, discardingDraft: discardingDraft, onMessage: onMessage)
     }
     func reset() {
         let replacement = MailData(conversations: DemoData.conversations(), discardedDraftIDs: discardedDraftIDs)
@@ -577,6 +939,10 @@ final class MailStore {
             try persistence.save(replacement)
             conversations = replacement.conversations
             discardedDraftIDs = replacement.discardedDraftIDs
+            remoteRevision = replacement.remoteRevision
+            pendingRemoteDeletes = replacement.pendingRemoteDeletes
+            pendingRemoteSends = replacement.pendingRemoteSends
+            acceptedSends = []
             accounts = replacement.accounts
             blockedSenders = []
             indexCurrent = true

@@ -4,6 +4,10 @@ import os
 
 @main struct WorkflowChecks {
     @MainActor static func main() async throws {
+        if CommandLine.arguments.contains("--remote") {
+            try await checkRemoteWorkflows()
+            return
+        }
         try await checkUndoExpiry()
         try await mailboxLoadFailurePreservesStoredMail()
         try await checkComposerData()
@@ -34,6 +38,7 @@ import os
         await checkDraftDiscardHaptics()
         checkAllMailSearch()
         checkNextConversation()
+        try await checkRemoteWorkflows()
         let directory = URL.temporaryDirectory.appending(path: "mailern-check-\(UUID())")
         let disk = SQLitePersistence(url: directory.appending(path: "demo.sqlite"))
         let store = MailStore(persistence: disk)
@@ -454,6 +459,15 @@ import os
     }
 
     static func checkHTMLDocument() {
+        // A reply with a fixed-width signature wraps; a newsletter without quoted mail still scales to fit.
+        let reply = HTMLDocument("<p>Thanks</p><blockquote type=\"cite\"><table style=\"width:600px; white-space:nowrap\"><tr><td>Sam</td></tr></table></blockquote>", remoteContent: false)
+        assert(reply.isConversation && reply.html.contains("body { width: auto; min-width: 0; }") && reply.html.contains("min-width: 0 !important"))
+        let newsletter = HTMLDocument("<table style=\"width:600px\"><tr><td>Issue 12</td></tr></table>", remoteContent: false)
+        assert(!newsletter.isConversation && !newsletter.html.contains("white-space: normal !important"))
+        assert(HTMLDocument(#"<blockquote class="protonmail_quote">Sam</blockquote>"#, remoteContent: false).isConversation)
+        assert(!HTMLDocument("<blockquote>A great read.</blockquote><table width=600></table>", remoteContent: false).isConversation)
+        assert(HTMLDocument("<div>-----Original Message-----<br>From: Sam</div>", remoteContent: false).isConversation)
+        assert(!HTMLDocument("<table width=600><tr><td>View the original message online</td></tr></table>", remoteContent: false).isConversation)
         func dark(_ html: String) -> Bool { HTMLDocument(html, remoteContent: false).adaptsToDarkMode }
         assert(dark("<style>@media (prefers-color-scheme: dark) { body { color: #fff } }</style>"))
         assert(dark(#"<meta name="color-scheme" content="light dark">"#) && dark(":root { color-scheme: dark; }"))
@@ -492,6 +506,1087 @@ import os
         assert(String(text.characters).contains("*this*"), "Plain text is not read as Markdown")
         assert(MessageLinks.linked("Tuesday, 10:00–11:00\nOrder #10428").runs.allSatisfy { $0.link == nil })
         print("PASS: mailto parsing and drafts, web/email/phone links in plain text, no Markdown in plain text")
+    }
+
+    @MainActor private static func checkRemoteWorkflows() async throws {
+        try await checkRemoteMerge()
+        try await checkRemoteCursor()
+        try await checkRemoteUndo()
+        try await checkRemoteDelete()
+        try await checkRemoteSending()
+        try await checkUnconfirmedSendRetry()
+        try await checkAccountAliases()
+        try await checkReplyDuringSend()
+        try await checkLateConfirmation()
+        try await checkCancelDuringSlowSend()
+        try await checkReplyWinsOverUnsyncedMove()
+        try await checkOutboxBackoffAndReplyTo()
+        try checkOverdueAndOwnRichText()
+        try await checkOutboxDuringSourceDelete()
+    }
+
+    @MainActor static func checkRemoteMerge() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-remote-\(UUID())")
+        let disk = SQLitePersistence(url: directory.appending(path: "server.sqlite"))
+        let store = MailStore(persistence: disk)
+        // The server's JSON: UTC dates, and null lists from Go.
+        let json = """
+        {"revision":4,"reset":true,"accounts":[{"id":"gmail","name":"Gmail","address":"morgan@mail.example.com","mailboxIdentities":{"trash":"trash-fixture","junk":"junk-fixture"}}],
+         "conversations":[{"id":"6F1D1D2E-6C4B-4E0A-9C1E-1B3A0A6E2B10","accountID":"gmail","subject":"Dinner","workflow":"inbox",
+           "unread":true,"pinned":false,"muted":false,"revision":3,"messages":[{"id":"0B7C5B0E-0E9A-4B8E-8B57-4A1E0F2C6D11",
+           "sender":"Sam","address":"sam@example.com","to":["morgan@mail.example.com"],"cc":null,"date":"2026-11-19T14:16:51Z",
+           "body":"Saturday?","outgoing":false,"subject":"Dinner","hasHTML":true,"messageID":"<a@example.com>"}]}],"deleted":[]}
+        """
+        var sync = try RemoteJSON.decoder.decode(RemoteSync.self, from: Data(json.utf8))
+        assert(sync.accounts.first?.mailboxIdentities?[.trash] == "trash-fixture")
+        store.mergeRemote(sync)
+        // A reset replaces the demo mail and accounts with the server's.
+        assert(store.conversations.count == 1 && store.accounts.map(\.id) == ["gmail"])
+        let id = sync.conversations[0].id
+        var c = store.conversation(id)!
+        assert(c.workflow == .inbox && c.unread && !c.hasUnsyncedChanges && c.latest.remoteHTML == true && c.latest.cc.isEmpty)
+        var mixed = sync
+        mixed.reset = false
+        var inserted = sync.conversations[0]
+        inserted.id = UUID()
+        inserted.subject = "New thread"
+        inserted.messages[0].id = UUID()
+        var changed = sync.conversations[0]
+        changed.subject = "Updated thread"
+        mixed.conversations = [inserted, changed]
+        store.mergeRemote(mixed)
+        assert(store.conversations.map(\.id) == [inserted.id, id])
+        assert(store.conversation(id)?.subject == "Updated thread")
+        store.mergeRemote(sync)
+        // A local Settle waits for the server. A sync that still shows Inbox brings a sent copy but keeps the Settle.
+        // (A new incoming reply would win instead, as an arrival does; checkReplyWinsOverUnsyncedMove covers that.)
+        store.move(id, to: .settled)
+        assert(store.conversation(id)!.hasUnsyncedChanges)
+        sync.reset = false
+        var reply = sync.conversations[0].messages[0]
+        reply.outgoing = true
+        reply.id = UUID()
+        reply.date = reply.date.addingTimeInterval(60)
+        sync.conversations[0].messages.append(reply)
+        store.mergeRemote(sync)
+        c = store.conversation(id)!
+        assert(c.workflow == .settled && c.messages.count == 2 && c.hasUnsyncedChanges)
+        // The server confirms the Settle.
+        sync.conversations[0].workflow = .settled
+        sync.conversations[0].unread = false
+        store.mergeRemote(sync)
+        assert(!store.conversation(id)!.hasUnsyncedChanges && store.conversation(id)!.workflow == .settled)
+        // A snooze with fractions of a second matches the server's whole-second copy, so it is not sent again.
+        let until = Date.now.addingTimeInterval(3_600.25)
+        store.move(id, to: .snoozed, until: until)
+        sync.conversations[0].workflow = .snoozed
+        sync.conversations[0].snoozedUntil = Date(timeIntervalSince1970: until.timeIntervalSince1970.rounded(.down))
+        store.mergeRemote(sync)
+        assert(!store.conversation(id)!.hasUnsyncedChanges)
+        // HTML loaded on the phone stays when the conversation syncs again.
+        store.loadRemoteHTML = { _ in "<p>Saturday?</p>" }
+        let first = sync.conversations[0].messages[0].id
+        await store.loadHTML(message: first, in: id)
+        store.mergeRemote(sync)
+        let html = store.conversation(id)!.messages.first { $0.id == first }!
+        assert(html.html == "<p>Saturday?</p>" && html.remoteHTML == nil)
+        // A load canceled because the reader closed is not an error.
+        store.error = nil
+        for cancel in [CancellationError() as Error, URLError(.cancelled)] {
+            store.loadRemoteHTML = { _ in throw cancel }
+            await store.loadHTML(message: first, in: id)
+            assert(store.error == nil)
+        }
+        // A server reminder that returns without a reply is overdue; a reply ends it.
+        var waiting = store.conversation(id)!
+        waiting.followUp = .waiting
+        store.replaceRemote(conversations: [waiting], accounts: store.accounts, invalidatingUndo: [])
+        // Another client archiving the waiting thread ends the reminder instead of marking it overdue.
+        sync.conversations[0].workflow = .settled
+        sync.conversations[0].snoozedUntil = nil
+        store.mergeRemote(sync)
+        assert(store.conversation(id)!.followUp == nil)
+        waiting = store.conversation(id)!
+        waiting.followUp = .waiting
+        store.replaceRemote(conversations: [waiting], accounts: store.accounts, invalidatingUndo: [])
+        sync.conversations[0].workflow = .inbox
+        sync.conversations[0].returnedFromSnoozeAt = .now
+        store.mergeRemote(sync)
+        assert(store.conversation(id)!.followUp == .noReply)
+        // New mail from a blocked sender goes to Junk and syncs back.
+        store.setSenderBlocked(true, address: "spam@example.net")
+        var spam = sync.conversations[0]
+        spam.id = UUID()
+        spam.messages = [RemoteMessage(id: UUID(), sender: "Spam", address: "spam@example.net", to: nil, cc: nil, date: .now,
+                                       body: "Win", outgoing: false, subject: "Win", hasHTML: false)]
+        sync.conversations = [spam]
+        store.mergeRemote(sync)
+        assert(store.conversation(spam.id)!.removal == .junk && store.conversation(spam.id)!.hasUnsyncedChanges)
+        // Deletions on the server remove the conversation, and the merge persists.
+        sync.conversations = []
+        sync.deleted = [spam.id]
+        store.mergeRemote(sync)
+        assert(store.conversation(spam.id) == nil)
+        let reloaded = MailStore(persistence: SQLitePersistence(url: disk.url))
+        assert(reloaded.conversations.map(\.id) == [id] && reloaded.conversation(id)!.synced != nil)
+        print("PASS: server sync replaces demo mail, keeps unsynced local moves, takes replies, rounds snoozes, keeps loaded HTML, ends reminders, junks blocked senders, applies deletions, persists")
+    }
+
+    @MainActor private final class RemoteMailboxStub: RemoteMailboxClient {
+        var fetch: (UInt64, Int) async throws -> RemoteSync = { _, _ in fatalError("Unexpected sync request") }
+        var update: (UUID, RemoteState, Set<RemoteStateField>) async throws -> RemoteConversation? = { _, _, _ in fatalError("Unexpected state request") }
+        var remove: (UUID, RemoteDelete) async throws -> Bool = { _, _ in fatalError("Unexpected delete request") }
+
+        func sync(since revision: UInt64, wait: Int) async throws -> RemoteSync { try await fetch(revision, wait) }
+        func setState(_ id: UUID, _ state: RemoteState, fields: Set<RemoteStateField>, messageIDs: [UUID]) async throws -> RemoteConversation? {
+            try await update(id, state, fields)
+        }
+        func delete(_ id: UUID, _ request: RemoteDelete) async throws -> Bool { try await remove(id, request) }
+    }
+
+    private static let remoteAccount = RemoteAccount(id: "fixture", name: "Fixture", address: "me@example.test",
+                                                     mailboxIdentities: .init(trash: "trash-fixture", junk: "junk-fixture"))
+
+    private static func remoteThread() -> RemoteConversation {
+        let message = RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                    date: .now, body: "Checking in", outgoing: false, subject: "Plans", hasHTML: false,
+                                    messageID: "<source@example.test>")
+        return RemoteConversation(id: UUID(), accountID: remoteAccount.id, subject: message.subject, workflow: .inbox,
+                                  unread: true, pinned: false, muted: false, messages: [message])
+    }
+
+    private static func remoteBatch(_ revision: UInt64, _ threads: [RemoteConversation], reset: Bool = false,
+                                    deleted: [UUID] = [], account: RemoteAccount = remoteAccount) -> RemoteSync {
+        RemoteSync(revision: revision, reset: reset, accounts: [account], conversations: threads, deleted: deleted)
+    }
+
+    @MainActor private static func remoteStore(at url: URL) throws -> MailStore {
+        let disk = SQLitePersistence(url: url)
+        try disk.seedIfNeeded { MailData(conversations: [], accounts: []) }
+        return MailStore(persistence: disk, isServerMailbox: true)
+    }
+
+    @MainActor static func checkRemoteCursor() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-cursor-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "mail.sqlite")
+        let store = try remoteStore(at: url)
+        let client = RemoteMailboxStub()
+        let sync = ServerSync(client: client, store: store)
+        client.fetch = { since, wait in
+            assert(since == 0 && wait == 0)
+            return remoteBatch(4, [], reset: true)
+        }
+        let initial = try await sync.pull(wait: 0)
+        assert(initial && store.conversations.isEmpty && store.remoteRevision == 4)
+        let restored = try remoteStore(at: url)
+        let restarted = ServerSync(client: client, store: restored)
+        let thread = remoteThread()
+        client.fetch = { since, wait in
+            assert(since == 4 && wait == 25)
+            return remoteBatch(5, [thread])
+        }
+        var db: OpaquePointer?
+        assert(sqlite3_open(url.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let reject = "CREATE TRIGGER reject_cursor BEFORE INSERT ON settings WHEN NEW.key = 'remoteRevision' BEGIN SELECT RAISE(ABORT, 'cursor unavailable'); END"
+        assert(sqlite3_exec(db, reject, nil, nil, nil) == SQLITE_OK)
+        do {
+            try await restarted.pull(wait: 25)
+            assertionFailure("The pull must report that SQLite rolled back")
+        } catch {}
+        assert(restored.remoteRevision == 4 && restored.conversations.isEmpty && restarted.lastSync == nil)
+        let rolledBack = try remoteStore(at: url)
+        assert(rolledBack.remoteRevision == 4 && rolledBack.conversations.isEmpty)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_cursor", nil, nil, nil) == SQLITE_OK)
+        let replayed = try await restarted.pull(wait: 25)
+        assert(replayed && restored.remoteRevision == 5 && restored.conversation(thread.id) != nil)
+        client.fetch = { since, _ in
+            assert(since == 5)
+            return remoteBatch(6, [], deleted: [thread.id])
+        }
+        try await restarted.pull(wait: 25)
+        client.fetch = { since, wait in
+            assert(since == 6 && wait == 25)
+            return remoteBatch(6, [])
+        }
+        try await restarted.pull(wait: 25)
+        assert(restored.conversations.isEmpty && restored.remoteRevision == 6)
+        print("PASS: failed pull rolls back rows and cursor, retries the same revision, and long-polls an empty mailbox after reset, restart, and deletion")
+    }
+
+    @MainActor static func checkRemoteUndo() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-remote-undo-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        let thread = remoteThread()
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        let client = RemoteMailboxStub()
+        let sync = ServerSync(client: client, store: store)
+        var submitted: [Workflow] = []
+        client.update = { id, state, fields in
+            assert(id == thread.id && fields == [.workflow, .unread])
+            submitted.append(state.workflow)
+            var confirmed = thread
+            confirmed.workflow = state.workflow
+            confirmed.unread = state.unread
+            if state.workflow == .settled {
+                store.undo()
+                assert(store.conversation(id)?.hasUnsyncedChanges == false)
+            }
+            return confirmed
+        }
+        // A GET captured before the PUTs can finish after both. It must be fetched again.
+        client.fetch = { since, _ in
+            assert(since == 1)
+            assert(store.move(thread.id, to: .settled))
+            await sync.push()
+            var stale = thread
+            stale.workflow = .settled
+            stale.unread = false
+            return remoteBatch(2, [stale])
+        }
+        let applied = try await sync.pull(wait: 25)
+        assert(!applied && store.remoteRevision == 1 && submitted == [.settled, .inbox])
+        assert(store.conversation(thread.id)?.workflow == .inbox && store.conversation(thread.id)?.hasUnsyncedChanges == false)
+        client.fetch = { since, _ in
+            assert(since == 1)
+            return remoteBatch(3, [thread])
+        }
+        try await sync.pull(wait: 0)
+        assert(store.remoteRevision == 3)
+
+        assert(store.move(thread.id, to: .settled))
+        client.update = { _, _, fields in
+            assert(fields == [.workflow, .unread])
+            store.undo()
+            throw URLError(.networkConnectionLost)
+        }
+        await sync.push()
+        let recovered = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        let restarted = ServerSync(client: client, store: recovered)
+        assert(recovered.conversation(thread.id)?.remoteWriteFields == [.workflow, .unread])
+        assert(recovered.conversation(thread.id)?.hasUnsyncedChanges == false)
+        client.fetch = { _, _ in
+            var accepted = thread
+            accepted.workflow = .settled
+            accepted.unread = false
+            return remoteBatch(4, [accepted])
+        }
+        try await restarted.pull(wait: 0)
+        assert(recovered.conversation(thread.id)?.workflow == .inbox && recovered.conversation(thread.id)?.hasUnsyncedChanges == true)
+
+        let reply = ComposerDraft.make(mode: .reply(thread.id), conversation: recovered.conversation(thread.id), accounts: recovered.accounts)
+        recovered.sendRemote = { _ in }
+        submitted = []
+        client.update = { _, state, fields in
+            assert(fields == [.workflow, .unread])
+            submitted.append(state.workflow)
+            var confirmed = thread
+            confirmed.workflow = state.workflow
+            confirmed.unread = state.unread
+            confirmed.pinned = true
+            if state.workflow == .inbox {
+                let sent = await recovered.sendNow(reply)
+                assert(sent)
+            }
+            // This PUT response contains only the original message.
+            return confirmed
+        }
+        await restarted.push()
+        assert(submitted == [.inbox, .settled] && recovered.conversation(thread.id)?.latest.id == reply.id)
+        assert(recovered.conversation(thread.id)?.hasUnsyncedChanges == false)
+        assert(recovered.conversation(thread.id)?.pendingRemoteWrite == nil && recovered.conversation(thread.id)?.pinned == true)
+        let known = thread.messages[0].id
+        let body = try RemoteJSON.encoder.encode(RemoteStateWrite(state: thread.state, fields: [.workflow, .unread], messageIDs: [known]))
+        let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+        assert(json["fields"] as? [String] == ["workflow", "unread"] && json["workflow"] as? String == "inbox")
+        assert(json["messageIDs"] as? [String] == [known.uuidString.lowercased()])
+        print("PASS: Undo survives a stale pull, a lost PUT response, and restart. PUT acknowledgment adopts unrelated state and keeps a newly sent reply.")
+    }
+
+    @MainActor static func checkRemoteDelete() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-remote-delete-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "mail.sqlite")
+        let store = try remoteStore(at: url)
+        let thread = remoteThread()
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        let id = thread.id
+        assert(store.apply(ids: [id], action: .remove(.trash)))
+        let original = store.prepareDelete([id], from: .trash)!
+        var changed = thread
+        var reply = thread.messages[0]
+        reply.id = UUID()
+        // A sent copy, so the thread stays in Trash; an incoming reply would rescue it instead.
+        reply.outgoing = true
+        changed.messages.append(reply)
+        assert(store.mergeRemote(remoteBatch(2, [changed])))
+        assert(!store.deletePermanently(original) && store.conversation(id)?.messages.count == 2)
+        let beforeRemap = store.prepareDelete([id], from: .trash)!
+        var remapped = remoteAccount
+        remapped.mailboxIdentities?.trash = "remapped-trash"
+        assert(store.mergeRemote(remoteBatch(2, [], account: remapped)))
+        assert(!store.deletePermanently(beforeRemap) && store.conversation(id)?.messages.count == 2)
+        store.loadRemoteHTML = { _ in "<p>Cached message</p>" }
+        await store.loadHTML(message: thread.messages[0].id, in: id)
+        let confirmed = store.prepareDelete([id], from: .trash)!
+        assert(store.deletePermanently(confirmed))
+
+        let reopened = try remoteStore(at: url)
+        let request = reopened.pendingRemoteDeletes[id]!.request
+        assert(reopened.conversation(id) == nil && request.removal == .trash && request.expectedRemoval == nil)
+        assert(request.expectedWorkflow == .inbox && request.messageIDs == Set(changed.messages.map(\.id)))
+        assert(request.mailboxIdentity == "remapped-trash" && reopened.accounts.first?.mailboxIdentities?[.trash] == "remapped-trash")
+        let body = try RemoteJSON.encoder.encode(request)
+        let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+        assert(Set(json["messageIDs"] as! [String]) == Set(changed.messages.map { $0.id.uuidString.lowercased() }))
+        assert(json["mailboxIdentity"] as? String == "remapped-trash")
+        let client = RemoteMailboxStub()
+        let sync = ServerSync(client: client, store: reopened)
+        client.fetch = { _, _ in remoteBatch(3, [changed], reset: true) }
+        try await sync.pull(wait: 0)
+        assert(reopened.conversation(id) == nil && reopened.pendingRemoteDeletes[id]?.request == request)
+        assert(reopened.accounts.first?.mailboxIdentities?[.trash] == "trash-fixture")
+
+        var deletes = 0
+        client.remove = { target, actual in
+            assert(target == id && actual == request)
+            deletes += 1
+            if deletes == 1 { throw URLError(.networkConnectionLost) }
+            return false
+        }
+        await sync.push()
+        assert(deletes == 1 && reopened.pendingRemoteDeletes[id] != nil && sync.problem != nil)
+        client.fetch = { _, _ in throw URLError(.notConnectedToInternet) }
+        let retry = try remoteStore(at: url)
+        await ServerSync(client: client, store: retry).push()
+        assert(deletes == 2 && retry.pendingRemoteDeletes[id]?.needsRefresh == true && retry.conversation(id) == nil)
+
+        // A rejected confirmation must not be sent again, even after a failed refresh and restart.
+        let refreshed = try remoteStore(at: url)
+        changed.removal = .junk
+        client.fetch = { since, wait in
+            assert(since == 0 && wait == 0)
+            return remoteBatch(4, [changed], reset: true)
+        }
+        await ServerSync(client: client, store: refreshed).push()
+        assert(deletes == 2 && refreshed.pendingRemoteDeletes.isEmpty && refreshed.conversation(id)?.removal == .junk)
+        assert(refreshed.conversation(id)?.messages.map(\.id) == changed.messages.map(\.id))
+        assert(refreshed.conversation(id)?.messages.first?.html == "<p>Cached message</p>")
+
+        assert(refreshed.deletePermanently([id], from: .junk))
+        client.remove = { target, request in
+            assert(target == id && request.expectedRemoval == .junk && request.removal == .junk && request.mailboxIdentity == "junk-fixture")
+            return true
+        }
+        await ServerSync(client: client, store: refreshed).push()
+        let saved = try remoteStore(at: url)
+        assert(saved.pendingRemoteDeletes.isEmpty && saved.conversation(id) == nil)
+
+        assert(saved.mergeRemote(remoteBatch(5, [thread])))
+        assert(saved.apply(ids: [id], action: .remove(.trash)))
+        client.update = { target, state, fields in
+            assert(target == id && state.removal == .trash && fields == [.removal])
+            assert(saved.deletePermanently([id], from: .trash))
+            var acknowledged = thread
+            acknowledged.removal = .trash
+            return acknowledged
+        }
+        var deletedAfterPut = false
+        client.remove = { target, request in
+            assert(target == id && request.expectedRemoval == .trash && request.messageIDs == [thread.messages[0].id])
+            assert(request.mailboxIdentity == "trash-fixture")
+            deletedAfterPut = true
+            return true
+        }
+        await ServerSync(client: client, store: saved).push()
+        assert(deletedAfterPut && saved.pendingRemoteDeletes.isEmpty)
+        print("PASS: delete keeps confirmed IDs and mailbox identity across pulls, restart, and PUT acknowledgment. A conflict refreshes the mailbox.")
+    }
+
+    @MainActor static func checkOverdueAndOwnRichText() throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-overdue-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        let thread = remoteThread()
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        // Another client archives an overdue thread: the No Reply mark ends with it.
+        var overdue = store.conversation(thread.id)!
+        overdue.followUp = .noReply
+        overdue.returnedFromSnoozeAt = .now
+        overdue.synced = overdue.remoteState
+        store.replaceRemote(conversations: [overdue], accounts: store.accounts, invalidatingUndo: [])
+        var archived = thread
+        archived.workflow = .settled
+        archived.unread = false
+        assert(store.mergeRemote(remoteBatch(2, [archived])))
+        assert(store.conversation(thread.id)!.followUp == nil && store.conversation(thread.id)!.returnedFromSnoozeAt == nil)
+        // A message with rich text from this phone does not fetch the server's HTML, so its quote stays foldable.
+        var own = store.conversation(thread.id)!
+        own.messages[0].richText = Data("rich".utf8)
+        store.replaceRemote(conversations: [own], accounts: store.accounts, invalidatingUndo: [])
+        archived.messages[0].hasHTML = true
+        assert(store.mergeRemote(remoteBatch(3, [archived])))
+        assert(store.conversation(thread.id)!.messages[0].remoteHTML == nil)
+        print("PASS: an outside archive ends an overdue reminder, and own rich text skips the server's HTML")
+    }
+
+    @MainActor static func checkOutboxBackoffAndReplyTo() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-backoff-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        var thread = remoteThread()
+        thread.messages[0].replyTo = ["list@example.test", remoteAccount.address]
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        // A reply goes to Reply-To when the message has one.
+        let reply = ComposerDraft.make(mode: .reply(thread.id), conversation: store.conversation(thread.id), accounts: store.accounts)
+        assert(reply.to == "list@example.test")
+        // The demo's fictional reply is refused in real mail.
+        store.receiveReply(thread.id)
+        assert(store.conversation(thread.id)!.messages.count == 1)
+        // Offline, a due send tries once a minute and reports the problem once.
+        let drafts = DraftStore(url: directory.appending(path: "drafts.json"), mail: store)
+        var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        draft.to = "alex@example.test"
+        let scheduled = await drafts.schedule(draft, at: .now)
+        assert(scheduled)
+        var posts = 0
+        store.sendRemote = { _ in posts += 1; throw URLError(.notConnectedToInternet) }
+        let start = Date.now.addingTimeInterval(1)
+        await drafts.sendDue(through: store, now: start)
+        assert(posts == 1 && store.error != nil)
+        let initialAlert = store.error
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(1))
+        assert(posts == 1 && store.error == initialAlert)
+        store.sendRemote = { _ in
+            posts += 1
+            store.error = nil // The user dismisses the previous alert during the retry.
+            throw URLError(.notConnectedToInternet)
+        }
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(61))
+        assert(posts == 2 && store.error == nil)
+        var fresh = draft
+        fresh.id = UUID()
+        let freshQueued = await drafts.schedule(fresh, at: start)
+        assert(freshQueued)
+        store.sendRemote = { prepared in
+            assert(prepared.draft.id == fresh.id)
+            throw URLError(.networkConnectionLost)
+        }
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(62))
+        assert(store.hasPendingRemoteSend(fresh.id) && !store.hasPendingRemoteSend(draft.id))
+        assert(store.error?.contains("Delivery is unconfirmed") == true)
+        store.sendRemote = { _ in throw URLError(.cannotConnectToHost) }
+        _ = await drafts.sendNow(fresh.id, through: store)
+        assert(store.hasPendingRemoteSend(fresh.id), "An offline retry cannot resolve a previous ambiguous send")
+        store.sendRemote = { _ in }
+        _ = await drafts.sendNow(fresh.id, through: store)
+        // A permanent rejection goes back to Drafts and does not hold up the next message.
+        store.sendRemote = { _ in throw RemoteSendRejection(message: "Unknown recipient") }
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(122))
+        assert(store.error?.contains("back in Drafts") == true)
+        var next = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        next.to = "sam@example.test"
+        let queuedNext = await drafts.schedule(next, at: .now)
+        assert(queuedNext)
+        var sent = 0
+        store.sendRemote = { _ in sent += 1 }
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(123))
+        assert(sent == 1)
+        var edited = next
+        edited.id = UUID()
+        let initiallyScheduled = await drafts.schedule(edited, at: start)
+        assert(initiallyScheduled)
+        var attempts = 0
+        store.sendRemote = { _ in
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(150))
+            throw URLError(.cannotConnectToHost)
+        }
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(150))
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(210.01))
+        assert(attempts == 1, "Retry delay starts after the request finishes")
+        await drafts.edit(edited.id)
+        edited.text = "Revised fictional note"
+        let rescheduled = await drafts.schedule(edited, at: start.addingTimeInterval(210.02))
+        assert(rescheduled)
+        store.sendRemote = { sent in
+            assert(sent.draft.text == edited.text)
+            attempts += 1
+        }
+        await drafts.sendDue(through: store, now: start.addingTimeInterval(210.03))
+        assert(attempts == 2, "An edited send gets its new deadline")
+        let blocked = OSAllocatedUnfairLock(initialState: false)
+        let refusedURL = directory.appending(path: "refused.json")
+        let refusedDrafts = DraftStore(url: refusedURL, mail: store) { data, url in
+            if blocked.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+            try data.write(to: url, options: .atomic)
+        }
+        var refused = next
+        refused.id = UUID()
+        let scheduledRefusal = await refusedDrafts.schedule(refused, at: start)
+        assert(scheduledRefusal)
+        blocked.withLock { $0 = true }
+        var refusedPosts = 0
+        store.sendRemote = { _ in
+            refusedPosts += 1
+            throw RemoteSendRejection(message: "Unknown recipient")
+        }
+        await refusedDrafts.sendDue(through: store, now: start)
+        assert(store.error?.contains("remains in Scheduled") == true)
+        store.error = "Undismissed batch report"
+        for seconds in [1, 62] {
+            await refusedDrafts.sendDue(through: store, now: start.addingTimeInterval(Double(seconds)))
+            assert(refusedPosts == 1 && store.error == "Undismissed batch report")
+            assert(refusedDrafts.outbox.map(\.id) == [refused.id])
+        }
+        blocked.withLock { $0 = false }
+        await refusedDrafts.sendDue(through: store, now: start.addingTimeInterval(125))
+        assert(refusedPosts == 1 && DraftStore(url: refusedURL).drafts.map(\.id) == [refused.id])
+        // Another client trashing a waiting thread ends its reminder.
+        var waiting = store.conversation(thread.id)!
+        waiting.move(to: .snoozed, until: .now.addingTimeInterval(3600))
+        waiting.followUp = .waiting
+        waiting.synced = waiting.remoteState
+        store.replaceRemote(conversations: [waiting], accounts: store.accounts, invalidatingUndo: [])
+        var trashed = thread
+        trashed.workflow = .snoozed
+        trashed.snoozedUntil = waiting.snoozedUntil
+        trashed.removal = .trash
+        assert(store.mergeRemote(remoteBatch(2, [trashed])))
+        assert(store.conversation(thread.id)!.followUp == nil)
+        print("PASS: replies use Reply-To, the demo reply is refused in real mail, and offline sends back off and report once")
+    }
+
+    @MainActor static func checkReplyWinsOverUnsyncedMove() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-reply-wins-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        let thread = remoteThread()
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        assert(store.move(thread.id, to: .settled) && !store.conversation(thread.id)!.remoteWriteFields.isEmpty)
+        // The server answers the Settle with a reply the phone had not seen. The reply wins, as an arrival does.
+        var answered = thread
+        answered.unread = true
+        answered.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                               date: .now, body: "One more thing", outgoing: false, subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(2, [answered])))
+        let c = store.conversation(thread.id)!
+        assert(c.workflow == .inbox && c.unread && !c.remoteWriteFields.contains(.workflow))
+        // A pending Trash gives way to a new reply too, and the reply ends a reminder even after it turned overdue.
+        assert(store.apply(ids: [thread.id], action: .remove(.trash)))
+        var overdue = store.conversation(thread.id)!
+        overdue.followUp = .noReply
+        store.replaceRemote(conversations: [overdue], accounts: store.accounts, invalidatingUndo: [])
+        answered.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                               date: .now, body: "And another", outgoing: false, subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(3, [answered])))
+        let rescued = store.conversation(thread.id)!
+        assert(rescued.removal == nil && rescued.workflow == .inbox && rescued.followUp == nil)
+        // A thread muted and settled on the phone stays settled when a reply merges before the server confirms.
+        store.toggleMute(thread.id)
+        assert(store.move(thread.id, to: .settled))
+        answered.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                               date: .now, body: "Still there?", outgoing: false, subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(4, [answered])))
+        assert(store.conversation(thread.id)!.workflow == .settled)
+        // A reply that answers a reminder on a muted thread settles it quietly instead of leaving it snoozed.
+        var waiting = store.conversation(thread.id)!
+        waiting.move(to: .snoozed, until: .now.addingTimeInterval(3600))
+        waiting.followUp = .waiting
+        store.replaceRemote(conversations: [waiting], accounts: store.accounts, invalidatingUndo: [])
+        answered.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                               date: .now, body: "Done", outgoing: false, subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(5, [answered])))
+        let quiet = store.conversation(thread.id)!
+        assert(quiet.workflow == .settled && quiet.followUp == nil && quiet.snoozedUntil == nil)
+        // A message another client marked deleted is not a reply, so it leaves a waiting reminder alone.
+        var reminded = store.conversation(thread.id)!
+        reminded.move(to: .snoozed, until: .now.addingTimeInterval(3600))
+        reminded.followUp = .waiting
+        store.replaceRemote(conversations: [reminded], accounts: store.accounts, invalidatingUndo: [])
+        var deletedReply = RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                         date: .now, body: "Never mind", outgoing: false, subject: "Re: Plans", hasHTML: false)
+        deletedReply.deleted = true
+        answered.messages.append(deletedReply)
+        assert(store.mergeRemote(remoteBatch(6, [answered])))
+        assert(store.conversation(thread.id)!.followUp == .waiting)
+        // The reply came before the deadline, but the phone syncs after the server woke the reminder: it still settles.
+        var late = store.conversation(thread.id)!
+        let deadline = Date.now.addingTimeInterval(-60)
+        late.snoozedUntil = deadline
+        late.synced = late.remoteState
+        store.replaceRemote(conversations: [late], accounts: store.accounts, invalidatingUndo: [])
+        assert(store.conversation(thread.id)!.remoteWriteFields.isEmpty)
+        var woke = answered
+        woke.workflow = .inbox
+        woke.snoozedUntil = nil
+        woke.returnedFromSnoozeAt = deadline
+        woke.muted = true
+        woke.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                           date: deadline.addingTimeInterval(-120), body: "Got it", outgoing: false,
+                                           subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(7, [woke])))
+        let settledLate = store.conversation(thread.id)!
+        assert(settledLate.workflow == .settled && settledLate.followUp == nil)
+        // The phone already turned the reminder into No Reply before the service found the reply sent in time.
+        var noReplyYet = settledLate
+        noReplyYet.move(to: .inbox)
+        noReplyYet.followUp = .noReply
+        noReplyYet.returnedFromSnoozeAt = deadline
+        noReplyYet.synced = noReplyYet.remoteState
+        store.replaceRemote(conversations: [noReplyYet], accounts: store.accounts, invalidatingUndo: [])
+        var found = woke
+        found.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                            date: deadline.addingTimeInterval(-30), body: "Sent in time", outgoing: false,
+                                            subject: "Re: Plans", hasHTML: false))
+        assert(store.mergeRemote(remoteBatch(8, [found])))
+        let settledOverdue = store.conversation(thread.id)!
+        assert(settledOverdue.workflow == .settled && settledOverdue.followUp == nil)
+        // A send from an alias the server no longer lists is refused instead of going out from the main address.
+        var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        draft.to = "alex@example.test"
+        draft.fromAddress = "gone@example.test"
+        store.sendRemote = { _ in fatalError("must not send") }
+        let refused = await store.sendNow(draft)
+        assert(!refused && store.error?.contains("no longer an address") == true)
+        print("PASS: a reply wins over an unconfirmed move, and a removed alias is refused")
+    }
+
+    @MainActor static func checkReplyDuringSend() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-reply-during-send-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        let thread = remoteThread()
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        var draft = ComposerDraft.make(mode: .reply(thread.id), conversation: store.conversation(thread.id), accounts: store.accounts)
+        draft.text = "On my way."
+        // The correspondent answers while the send request is still open.
+        store.sendRemote = { prepared in
+            var answered = thread
+            answered.unread = true
+            answered.messages.append(RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                                                   date: .now, body: "See you there", outgoing: false, subject: "Re: Plans", hasHTML: false))
+            answered.messages.append(RemoteMessage(id: prepared.draft.id, sender: "Me", address: remoteAccount.address, date: .now,
+                                                   body: prepared.draft.text, outgoing: true, subject: "Re: Plans", hasHTML: false))
+            assert(store.mergeRemote(remoteBatch(2, [answered])))
+        }
+        let sent = await store.sendNow(draft)
+        let c = store.conversation(thread.id)!
+        assert(sent && c.messages.count == 3 && c.workflow == .inbox && c.unread)
+        // A new message works the same way when its first sync already holds the answer.
+        var fresh = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        fresh.to = "sam@example.test"
+        fresh.subject = "Lunch?"
+        store.sendRemote = { prepared in
+            let answered = RemoteConversation(id: prepared.draft.id, accountID: remoteAccount.id, subject: "Lunch?", workflow: .inbox,
+                                              unread: true, pinned: false, muted: false, messages: [
+                RemoteMessage(id: prepared.draft.id, sender: "Me", address: remoteAccount.address, date: .now,
+                              body: "Lunch?", outgoing: true, subject: "Lunch?", hasHTML: false),
+                RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                              date: .now, body: "Sure", outgoing: false, subject: "Re: Lunch?", hasHTML: false)])
+            assert(store.mergeRemote(remoteBatch(3, [answered])))
+        }
+        let sentFresh = await store.sendNow(fresh)
+        let f = store.conversation(fresh.id)!
+        assert(sentFresh && f.messages.count == 2 && f.workflow == .inbox && f.unread)
+        print("PASS: a reply that arrives during a send keeps the thread in Inbox, unread")
+    }
+
+    @MainActor static func checkLateConfirmation() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-late-confirmation-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        let thread = remoteThread()
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        var draft = ComposerDraft.make(mode: .reply(thread.id), conversation: store.conversation(thread.id), accounts: store.accounts)
+        draft.text = "Any news?"
+        draft.richText = Data("rich".utf8)
+        // The send is confirmed after its reminder date, and sync finds the sent copy with its HTML first.
+        draft.followUp = .now.addingTimeInterval(-60)
+        store.sendRemote = { prepared in
+            var sent = thread
+            sent.messages.append(RemoteMessage(id: prepared.draft.id, sender: "Me", address: remoteAccount.address, date: .now,
+                                               body: prepared.draft.text, outgoing: true, subject: "Re: Plans", hasHTML: true))
+            assert(store.mergeRemote(remoteBatch(2, [sent])))
+        }
+        let sent = await store.sendNow(draft)
+        assert(sent)
+        let c = store.conversation(thread.id)!
+        let own = c.messages.first { $0.id == draft.id }!
+        assert(own.richText != nil && own.remoteHTML == nil && own.html == nil)
+        assert(c.workflow == .inbox && c.followUp == .noReply && c.returnedFromSnoozeAt != nil)
+        // The server never woke this reminder, so it confirms Inbox without a return time. The local one stays.
+        var confirmed = thread
+        confirmed.messages.append(RemoteMessage(id: draft.id, sender: "Me", address: remoteAccount.address, date: .now,
+                                                body: draft.text, outgoing: true, subject: "Re: Plans", hasHTML: true))
+        assert(store.mergeRemote(remoteBatch(3, [confirmed])))
+        let synced = store.conversation(thread.id)!
+        assert(synced.followUp == .noReply && synced.returnedFromSnoozeAt == c.returnedFromSnoozeAt)
+        print("PASS: a late confirmation keeps the reminder due and the composer's rich text")
+    }
+
+    @MainActor static func checkCancelDuringSlowSend() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-cancel-during-send-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        assert(store.mergeRemote(remoteBatch(1, [], reset: true)))
+        let drafts = DraftStore(url: directory.appending(path: "drafts.json"), mail: store)
+        var messages: [ComposerDraft] = []
+        for subject in ["First", "Second"] {
+            var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+            draft.to = "alex@example.test"
+            draft.subject = subject
+            let scheduled = await drafts.schedule(draft, at: .now.addingTimeInterval(-1))
+            assert(scheduled)
+            messages.append(draft)
+        }
+        // The first send hangs. Canceling the other message while it waits must keep that message from going out.
+        var submitted: [UUID] = []
+        var release: CheckedContinuation<Void, Never>?
+        store.sendRemote = { prepared in
+            submitted.append(prepared.draft.id)
+            if submitted.count == 1 { await withCheckedContinuation { release = $0 } }
+        }
+        let sending = Task { await drafts.sendDue(through: store) }
+        while release == nil { await Task.yield() }
+        let other = messages.first { $0.id != submitted[0] }!.id
+        let canceling = Task { await drafts.unschedule(other) }
+        for _ in 0..<10 { await Task.yield() }
+        release?.resume()
+        await sending.value
+        let canceled = await canceling.value
+        assert(canceled && submitted.count == 1 && drafts.all.contains { $0.id == other && $0.sendAt == nil })
+        // Base64 attachments keep their slashes unescaped, so a message stays within the server's size limit.
+        let encoded = String(decoding: try RemoteJSON.encoder.encode(["a/b+c="]), as: UTF8.self)
+        assert(encoded == #"["a/b+c="]"#)
+        print("PASS: Cancel Send during another message's slow send keeps the canceled message")
+    }
+
+    @MainActor static func checkAccountAliases() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-aliases-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        var account = remoteAccount
+        account.aliases = ["hello@example.test"]
+        var thread = remoteThread()
+        thread.messages[0].to = ["Hello@example.test"]
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true, account: account)))
+        let synced = store.account(account.id)
+        assert(synced.addresses == [account.address, "hello@example.test"] && synced.owns("HELLO@example.test"))
+        // A reply goes out from the address the message was sent to; Reply All leaves every own address out.
+        var c = store.conversation(thread.id)!
+        let reply = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
+        assert(reply.fromAddress == "hello@example.test" && reply.sender(in: synced) == "hello@example.test" && reply.cc.isEmpty)
+        // List mail or a blind copy names your alias only in its delivery address. The reply still uses it.
+        c.messages[0].to = ["list@example.test"]
+        c.messages[0].deliveredTo = ["hello@example.test"]
+        let fromList = ComposerDraft.make(mode: .reply(c.id), conversation: c, accounts: store.accounts)
+        assert(fromList.fromAddress == "hello@example.test")
+        // Forwarded mail lists the main address first, from the last server on the chain. The alias still wins.
+        c.messages[0].deliveredTo = [account.address, "hello@example.test"]
+        let forwarded = ComposerDraft.make(mode: .reply(c.id), conversation: c, accounts: store.accounts)
+        assert(forwarded.fromAddress == "hello@example.test")
+        c.messages[0].deliveredTo = nil
+        // Mail to the main address answers from the main address.
+        c.messages[0].to = [account.address]
+        let plain = ComposerDraft.make(mode: .reply(c.id), conversation: c, accounts: store.accounts)
+        assert(plain.fromAddress == nil && plain.sender(in: synced) == account.address)
+        // Reply All to your own message goes to its other recipients, not back to your alias.
+        c.messages[0].outgoing = true
+        c.messages[0].address = account.address
+        c.messages[0].to = ["Hello@example.test", "sam@example.test"]
+        let own = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
+        assert(own.to == "sam@example.test")
+        // With only your own addresses in To, Reply All goes to Cc and leaves To empty.
+        c.messages[0].to = ["Hello@example.test"]
+        c.messages[0].cc = ["sam@example.test"]
+        let toCc = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
+        assert(toCc.to.isEmpty && toCc.cc == "sam@example.test")
+        // A plain Reply goes to the Cc instead of back to you.
+        let replyToCc = ComposerDraft.make(mode: .reply(c.id), conversation: c, accounts: store.accounts)
+        assert(replyToCc.to == "sam@example.test")
+        // With only your own addresses anywhere, Reply All addresses nobody until you add someone.
+        c.messages[0].cc = []
+        let nobody = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
+        assert(nobody.to.isEmpty && nobody.cc.isEmpty && !nobody.canSend)
+        // Mail received from your own alias counts as your own, so Reply All does not address only yourself.
+        c.messages[0].outgoing = false
+        c.messages[0].address = "hello@example.test"
+        c.messages[0].to = [account.address]
+        c.messages[0].cc = ["sam@example.test"]
+        let fromSelf = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
+        assert(fromSelf.to.isEmpty && fromSelf.cc == "sam@example.test")
+        var other = reply
+        other.fromAddress = nil
+        assert(!reply.hasSameSubmission(as: other))
+        store.sendRemote = { _ in throw URLError(.networkConnectionLost) }
+        let accepted = await store.sendNow(reply)
+        assert(!accepted && store.hasPendingRemoteSend(reply.id))
+        account.aliases = []
+        assert(store.mergeRemote(remoteBatch(3, [thread], account: account)))
+        assert(store.senderAddress(for: reply) == "hello@example.test")
+        print("PASS: account aliases sync, count as own addresses, and set the reply sender")
+    }
+
+    @MainActor static func checkUnconfirmedSendRetry() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-unconfirmed-send-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try remoteStore(at: directory.appending(path: "mail.sqlite"))
+        assert(store.mergeRemote(remoteBatch(1, [], reset: true)))
+        var draft = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        draft.to = "alex@example.test"
+        draft.subject = "Plans"
+        var submitted: [String] = []
+        store.sendRemote = { prepared in
+            submitted.append(prepared.draft.to)
+            throw URLError(.networkConnectionLost)
+        }
+        let lost = await store.sendNow(draft)
+        assert(!lost && store.hasPendingRemoteSend(draft.id))
+        // The draft holds the only Retry Send, so it cannot be deleted while the send is unconfirmed.
+        let drafts = DraftStore(url: directory.appending(path: "drafts.json"), mail: store)
+        let saved = await drafts.save(draft)
+        let deleted = await drafts.delete(draft.id)
+        assert(saved && !deleted && drafts.all.contains { $0.id == draft.id })
+        let discarded = await drafts.discardDrafts(for: [draft.id])
+        assert(!discarded && drafts.error != nil && drafts.all.contains { $0.id == draft.id })
+        drafts.error = nil
+        // When the server can never confirm the send, the draft becomes an ordinary draft the user can delete.
+        store.sendRemote = { _ in throw RemoteSendUnconfirmable(message: "delivery could not be confirmed") }
+        let unconfirmable = await store.sendNow(draft)
+        assert(!unconfirmable && !store.hasPendingRemoteSend(draft.id) && store.error?.contains("back in Drafts") == true)
+        let deletable = DraftStore(url: directory.appending(path: "drafts-after.json"), mail: store)
+        let kept = await deletable.save(draft)
+        let removed = await deletable.delete(draft.id)
+        assert(kept && removed)
+        store.error = nil
+        // Another ambiguous attempt sets up the retry below.
+        store.sendRemote = { _ in throw URLError(.networkConnectionLost) }
+        _ = await store.sendNow(draft)
+        assert(store.hasPendingRemoteSend(draft.id))
+        // A retry repeats the first submission, which may already be out, and says that later changes were not sent.
+        var edited = draft
+        edited.to = "sam@example.test"
+        store.error = nil
+        store.sendRemote = { prepared in submitted.append(prepared.draft.to) }
+        let retried = await store.sendNow(edited)
+        assert(retried && submitted == ["alex@example.test", "alex@example.test"] && !store.hasPendingRemoteSend(draft.id))
+        assert(store.error?.contains("were not sent") == true)
+        // A sync that rewrites the sent message's metadata keeps Undo for a later move.
+        let sent = store.conversation(draft.id)!
+        assert(store.apply(ids: [sent.id], action: .move(.inbox)))
+        let copy = RemoteConversation(id: sent.id, accountID: sent.accountID, subject: sent.subject, workflow: .inbox,
+                                      unread: false, pinned: false, muted: false, messages: [
+            RemoteMessage(id: draft.id, sender: "Me", address: remoteAccount.address, date: sent.latest.date,
+                          body: draft.text, outgoing: true, subject: draft.subject, hasHTML: false, messageID: "<copy@example.test>")])
+        assert(store.mergeRemote(remoteBatch(2, [copy])))
+        store.undo()
+        assert(store.conversation(sent.id)!.workflow == .settled)
+        print("PASS: an edited retry of an unconfirmed send repeats the original and says so; Undo survives a metadata-only sync")
+    }
+
+    @MainActor static func checkRemoteSending() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-remote-send-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "mail.sqlite")
+        let store = try remoteStore(at: url)
+        let drafts = DraftStore(url: directory.appending(path: "drafts.json"), mail: store)
+        let thread = remoteThread()
+        assert(store.mergeRemote(remoteBatch(1, [thread], reset: true)))
+        var draft = ComposerDraft.make(mode: .reply(thread.id), conversation: store.conversation(thread.id), accounts: store.accounts)
+        draft.bcc = "hidden@example.test"
+        draft.followUp = .now.addingTimeInterval(3600)
+        draft.attachments = [MailAttachment(name: "note.txt", data: Data("note".utf8), contentType: "text/plain")]
+
+        var missing = draft
+        missing.answering = UUID()
+        var posts = 0
+        store.sendRemote = { _ in posts += 1 }
+        let immediate = await store.sendNow(missing)
+        assert(!immediate && posts == 0)
+        missing.mode = .reply(UUID())
+        let queued = await drafts.schedule(missing, at: .now)
+        assert(queued)
+        let refused = await drafts.sendNow(missing.id, through: store)
+        assert(!refused && posts == 0 && drafts.drafts.map(\.id) == [missing.id])
+        let removed = await drafts.delete(missing.id)
+        assert(removed)
+
+        // Sync sees the exact draft ID in the reply thread during the POST.
+        store.sendRemote = { prepared in
+            posts += 1
+            assert(prepared.conversationID == thread.id && prepared.replyTo?.id == thread.messages[0].id)
+            var synced = thread
+            synced.messages.append(RemoteMessage(id: draft.id, sender: "Me", address: remoteAccount.address, date: .now,
+                                                 body: draft.text, outgoing: true, subject: draft.subject, hasHTML: false))
+            assert(store.mergeRemote(remoteBatch(2, [synced])))
+        }
+        let replied = await store.sendNow(draft)
+        let filed = store.conversation(thread.id)!
+        assert(replied && posts == 1 && store.discardedDraftIDs.contains(draft.id))
+        assert(filed.messages.map(\.id) == [thread.messages[0].id, draft.id] && filed.workflow == .snoozed && filed.followUp == .waiting)
+        assert(filed.latest.attachments == draft.attachments && filed.latest.bcc == ["hidden@example.test"])
+
+        var reply = draft
+        reply.id = UUID()
+        let scheduled = await drafts.schedule(reply, at: .now, holdingForUndo: true)
+        assert(scheduled)
+        drafts.undoable = reply.id
+        var db: OpaquePointer?
+        assert(sqlite3_open(url.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        store.sendRemote = { _ in
+            posts += 1
+            // The original thread disappears after preflight. Save from the submitted snapshot.
+            assert(store.mergeRemote(remoteBatch(3, [], deleted: [thread.id])))
+            let reject = "CREATE TRIGGER reject_filing BEFORE INSERT ON settings WHEN NEW.key = 'discardedDraftIDs' BEGIN SELECT RAISE(ABORT, 'receipt unavailable'); END"
+            assert(sqlite3_exec(db, reject, nil, nil, nil) == SQLITE_OK)
+        }
+        let failedFiling = await drafts.sendNow(reply.id, through: store)
+        assert(!failedFiling && posts == 2 && drafts.outbox.map(\.id) == [reply.id] && drafts.undoable == nil)
+        assert(store.error?.contains("Message was sent") == true && store.conversation(thread.id) == nil)
+        let tookBack = await drafts.unschedule(reply.id)
+        assert(!tookBack)
+        assert(sqlite3_exec(db, "DROP TRIGGER reject_filing", nil, nil, nil) == SQLITE_OK)
+        let afterFilingFailure = try remoteStore(at: url)
+        let recoveredDrafts = DraftStore(url: directory.appending(path: "drafts.json"), mail: afterFilingFailure)
+        let retried = await recoveredDrafts.sendNow(reply.id, through: afterFilingFailure)
+        assert(retried && posts == 2 && recoveredDrafts.outbox.isEmpty)
+        assert(afterFilingFailure.conversation(thread.id)?.messages.map(\.id) == [reply.id])
+        assert(afterFilingFailure.conversation(thread.id)?.latest.inReplyTo == "<source@example.test>")
+
+        var newMail = ComposerDraft.make(mode: .new, conversation: nil, accounts: afterFilingFailure.accounts)
+        newMail.to = "sam@example.test"
+        newMail.bcc = "edited@example.test"
+        var sent = remoteThread()
+        sent.id = newMail.id
+        sent.messages[0].id = newMail.id
+        sent.messages[0].outgoing = true
+        assert(afterFilingFailure.mergeRemote(remoteBatch(4, [sent])))
+        // A synced copy also proves acceptance on retry when no local receipt was saved.
+        let recovered = await afterFilingFailure.sendNow(newMail)
+        assert(recovered && posts == 2 && afterFilingFailure.conversations.filter { $0.id == newMail.id }.count == 1)
+        assert(afterFilingFailure.discardedDraftIDs.contains(newMail.id))
+        assert(afterFilingFailure.conversation(newMail.id)?.latest.bcc == nil)
+
+        assert(afterFilingFailure.mergeRemote(remoteBatch(4, [thread])))
+        var ambiguous = draft
+        ambiguous.id = UUID()
+        ambiguous.text = "Original content"
+        ambiguous.richText = Data("Original formatting".utf8)
+        let editedAttachment = MailAttachment(name: "other.txt", data: Data("edited".utf8), contentType: "text/plain")
+        afterFilingFailure.sendRemote = { prepared in
+            posts += 1
+            assert(prepared.draft == ambiguous && prepared.replyTo?.id == thread.messages[0].id)
+            assert(afterFilingFailure.mergeRemote(remoteBatch(5, [], deleted: [thread.id])))
+            throw URLError(.networkConnectionLost)
+        }
+        let lost = await afterFilingFailure.sendNow(ambiguous)
+        assert(!lost && posts == 3)
+        let restarted = try remoteStore(at: url)
+        assert(restarted.conversation(thread.id) == nil)
+        var edited = ambiguous
+        edited.bcc = "edited@example.test"
+        edited.text = "Edited content"
+        edited.richText = nil
+        edited.attachments = [editedAttachment]
+        restarted.sendRemote = { prepared in
+            posts += 1
+            assert(prepared.draft == ambiguous && prepared.replyTo?.id == thread.messages[0].id)
+        }
+        let resumed = await restarted.sendNow(edited)
+        let exact = restarted.conversation(thread.id)?.latest
+        assert(resumed && posts == 4 && exact?.body == ambiguous.text && exact?.richText == ambiguous.richText)
+        assert(exact?.bcc == ["hidden@example.test"] && exact?.attachments == ambiguous.attachments)
+
+        var observed = ambiguous
+        observed.id = UUID()
+        observed.mode = .new
+        restarted.sendRemote = { prepared in
+            posts += 1
+            assert(prepared.draft == observed)
+            throw URLError(.networkConnectionLost)
+        }
+        let unconfirmed = await restarted.sendNow(observed)
+        assert(!unconfirmed && posts == 5)
+        let pulled = try remoteStore(at: url)
+        sent.id = observed.id
+        sent.messages[0].id = observed.id
+        sent.messages[0].body = observed.text
+        let client = RemoteMailboxStub()
+        client.fetch = { _, _ in remoteBatch(6, [sent]) }
+        try await ServerSync(client: client, store: pulled).pull(wait: 0)
+        assert(pulled.discardedDraftIDs.contains(observed.id) && posts == 5)
+        assert(pulled.conversation(observed.id)?.latest.attachments == observed.attachments)
+        assert(pulled.conversation(observed.id)?.latest.bcc == ["hidden@example.test"])
+        print("PASS: send preflight blocks missing sources. After restart, accepted mail files from the original snapshot and ambiguous retries reuse it.")
+    }
+
+    @MainActor static func checkOutboxDuringSourceDelete() async throws {
+        let directory = URL.temporaryDirectory.appending(path: "mailern-outbox-source-delete-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mailURL = directory.appending(path: "mail.sqlite")
+        let draftURL = directory.appending(path: "drafts.json")
+        let store = try remoteStore(at: mailURL)
+        let drafts = DraftStore(url: draftURL, mail: store)
+        var source = remoteThread()
+        source.removal = .trash
+        assert(store.mergeRemote(remoteBatch(1, [source], reset: true)))
+        var reply = ComposerDraft.make(mode: .reply(source.id), conversation: store.conversation(source.id), accounts: store.accounts)
+        reply.bcc = "hidden@example.test"
+        reply.attachments = [MailAttachment(name: "plan.txt", data: Data("Fictional plans".utf8), contentType: "text/plain")]
+        let queued = await drafts.schedule(reply, at: .now.addingTimeInterval(3600))
+        var unsent = reply
+        unsent.id = UUID()
+        let queuedUnsent = await drafts.schedule(unsent, at: .now.addingTimeInterval(3600))
+        assert(queued && queuedUnsent)
+
+        var submitted: PreparedRemoteSend?
+        store.sendRemote = { prepared in
+            submitted = prepared
+            throw URLError(.networkConnectionLost)
+        }
+        let unconfirmed = await drafts.sendNow(reply.id, through: store)
+        assert(!unconfirmed && submitted?.replyTo?.id == source.messages[0].id)
+        let deleted = await drafts.discardDrafts(for: [source.id], scheduled: true) {
+            store.deletePermanently([source.id], from: .trash, discarding: $0)
+        }
+        assert(deleted && store.pendingRemoteDeletes[source.id] != nil && store.conversation(source.id) == nil)
+        assert(drafts.outbox.map(\.id) == [reply.id], "Source deletion must preserve the unresolved outbox entry")
+
+        let retry = try remoteStore(at: mailURL)
+        let retryDrafts = DraftStore(url: draftURL, mail: retry)
+        var accepted = false
+        retry.sendRemote = { prepared in
+            assert(prepared == submitted)
+            accepted = true
+        }
+        let filedDuringDelete = await retryDrafts.sendNow(reply.id, through: retry)
+        assert(accepted && !filedDuringDelete && retryDrafts.outbox.map(\.id) == [reply.id],
+               "Acceptance must keep the outbox entry while the source delete is pending")
+        assert(retry.conversation(source.id) == nil && retry.pendingRemoteDeletes[source.id] != nil)
+
+        let recovered = try remoteStore(at: mailURL)
+        let recoveredDrafts = DraftStore(url: draftURL, mail: recovered)
+        assert(recoveredDrafts.outbox.map(\.id) == [reply.id])
+        let client = RemoteMailboxStub()
+        client.remove = { id, request in
+            assert(id == source.id && request.messageIDs == [source.messages[0].id])
+            return true
+        }
+        let sync = ServerSync(client: client, store: recovered)
+        await sync.push()
+        assert(recovered.pendingRemoteDeletes.isEmpty)
+        client.fetch = { _, _ in remoteBatch(2, [], deleted: [source.id]) }
+        try await sync.pull(wait: 0)
+        assert(recovered.discardedDraftIDs == [reply.id] && recovered.conversation(source.id)?.latest.id == reply.id)
+        assert(recovered.conversation(source.id)?.latest.attachments == reply.attachments)
+        assert(recovered.conversation(source.id)?.latest.bcc == ["hidden@example.test"])
+        await recoveredDrafts.recoverAfterMailLoad()
+        assert(recoveredDrafts.outbox.isEmpty && DraftStore(url: draftURL).outbox.isEmpty)
+        print("PASS: source deletion removes unsent replies and preserves unresolved sends until they can be filed")
     }
 
     @MainActor static func checkMute() throws {
@@ -785,6 +1880,9 @@ import os
         assert(retryMail.discardedDraftIDs.isEmpty && retryMail.conversations.flatMap(\.messages).filter { $0.id == immediate.id }.count == 1)
         let staleEditorScheduled = await reopened.schedule(immediate, at: deadline)
         assert(!staleEditorScheduled && reopened.outbox.isEmpty)
+        // Save Draft from a stale editor does not bring back a draft for mail that already went out.
+        let staleEditorSaved = await reopened.save(immediate)
+        assert(staleEditorSaved && reopened.all.isEmpty)
         let current = DraftStore(url: draftURL, mail: retryMail)
         assert(current.outbox == [pending] && current.drafts == [writing])
         let persisted = try AttachmentJSON.load([ComposerDraft].self, from: draftURL)

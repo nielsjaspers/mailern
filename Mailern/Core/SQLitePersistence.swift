@@ -54,6 +54,15 @@ final class SQLitePersistence: ConversationPersistence {
         if let discarded = try setting(db, "discardedDraftIDs") {
             data.discardedDraftIDs = try decoder.decode(Set<UUID>.self, from: discarded)
         }
+        if let revision = try setting(db, "remoteRevision") {
+            data.remoteRevision = try decoder.decode(UInt64.self, from: revision)
+        }
+        if let pendingDeletes = try setting(db, "pendingRemoteDeletes") {
+            data.pendingRemoteDeletes = try decoder.decode([UUID: PendingRemoteDelete].self, from: pendingDeletes)
+        }
+        if let pendingSends = try setting(db, "pendingRemoteSends") {
+            data.pendingRemoteSends = try decoder.decode([UUID: PendingRemoteSend].self, from: pendingSends)
+        }
         var loaded: [UUID: Int] = [:]
         try query(db, "SELECT position, payload FROM conversations ORDER BY position") { row in
             let conversation = try decoder.decode(Conversation.self, from: Self.blob(row, 1))
@@ -136,6 +145,15 @@ final class SQLitePersistence: ConversationPersistence {
             if previous?.blockedSenders != data.blockedSenders {
                 try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('blockedSenders', ?)", [.blob(encoder.encode(data.blockedSenders))])
             }
+            if data.remoteRevision != (previous?.remoteRevision ?? 0) {
+                try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('remoteRevision', ?)", [.blob(encoder.encode(data.remoteRevision))])
+            }
+            if data.pendingRemoteDeletes != (previous?.pendingRemoteDeletes ?? [:]) {
+                try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('pendingRemoteDeletes', ?)", [.blob(encoder.encode(data.pendingRemoteDeletes))])
+            }
+            if data.pendingRemoteSends != (previous?.pendingRemoteSends ?? [:]) {
+                try run(db, "INSERT OR REPLACE INTO settings (key, payload) VALUES ('pendingRemoteSends', ?)", [.blob(encoder.encode(data.pendingRemoteSends))])
+            }
             try saveDraftDiscards(db, data.discardedDraftIDs)
             try exec(db, "COMMIT")
         } catch {
@@ -144,8 +162,12 @@ final class SQLitePersistence: ConversationPersistence {
         }
         stored = data
         self.positions = positions
-        if previous == nil || !removed.isEmpty {
-            AttachmentJSON.removePayloads(for: url, keeping: Set(data.conversations.flatMap { $0.messages.flatMap { $0.attachments ?? [] } }.map(\.id)))
+        if previous == nil || !removed.isEmpty || previous?.pendingRemoteSends.count != data.pendingRemoteSends.count ||
+            previous?.pendingRemoteDeletes.count != data.pendingRemoteDeletes.count {
+            let cached = data.conversations + data.pendingRemoteDeletes.values.map(\.cached)
+            let filed = cached.flatMap { $0.messages.flatMap { $0.attachments ?? [] } }
+            let pending = data.pendingRemoteSends.values.flatMap { $0.prepared.draft.attachments }
+            AttachmentJSON.removePayloads(for: url, keeping: Set((filed + pending).map(\.id)))
         }
     }
 

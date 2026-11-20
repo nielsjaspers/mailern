@@ -4,3 +4,5 @@ build/
 xcuserdata/
 *.xcuserstate
 __pycache__/
+/server/config.json
+/server/secrets/

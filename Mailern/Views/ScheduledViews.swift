@@ -38,17 +38,25 @@ struct ScheduledCard: View {
                 Label("Remind me \(followUp.formatted(.dateTime.weekday(.abbreviated).hour().minute())) if nobody replies", systemImage: "hourglass")
                     .font(.caption).foregroundStyle(.orange)
             }
-            HStack {
-                Button("Edit", systemImage: "square.and.pencil") { run { await drafts.edit(draft.id) } }
-                    .buttonStyle(.bordered)
-                Button("Send Now", systemImage: "paperplane") { run { _ = await drafts.sendNow(draft.id, through: store) } }
-                    .buttonStyle(.bordered)
-                Spacer()
-                // Cancel Send keeps the message as a draft, so it is not destructive.
-                Button("Cancel Send", systemImage: "calendar.badge.minus") { run { _ = await drafts.unschedule(draft.id) } }
-                    .labelStyle(.iconOnly)
+            // An unconfirmed send may already be out, so it can only be retried, not edited or canceled.
+            if store.hasPendingRemoteSend(draft.id) {
+                Label("Delivery is unconfirmed", systemImage: "exclamationmark.arrow.circlepath")
+                    .font(.caption).foregroundStyle(.orange)
+                Button("Retry Send", systemImage: "arrow.clockwise") { run { _ = await drafts.sendNow(draft.id, through: store) } }
+                    .buttonStyle(.bordered).tint(.blue).disabled(busy)
+            } else {
+                HStack {
+                    Button("Edit", systemImage: "square.and.pencil") { run { await drafts.edit(draft.id) } }
+                        .buttonStyle(.bordered)
+                    Button("Send Now", systemImage: "paperplane") { run { _ = await drafts.sendNow(draft.id, through: store) } }
+                        .buttonStyle(.bordered)
+                    Spacer()
+                    // Cancel Send keeps the message as a draft, so it is not destructive.
+                    Button("Cancel Send", systemImage: "calendar.badge.minus") { run { _ = await drafts.unschedule(draft.id) } }
+                        .labelStyle(.iconOnly)
+                }
+                .lineLimit(1).tint(.blue).disabled(busy)
             }
-            .lineLimit(1).tint(.blue).disabled(busy)
         }
         .padding(18)
         .background(Color.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
@@ -82,8 +90,13 @@ struct ScheduledMailboxView: View {
                             NavigationLink(value: MailboxRoute.scheduledMessage(draft.id)) { ScheduledRow(draft: draft) }
                                 .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                                 .swipeActions(edge: .trailing) {
-                                    Button("Cancel Send", systemImage: "xmark") { Task { await drafts.unschedule(draft.id) } }.tint(.orange)
-                                    Button("Send Now", systemImage: "paperplane") { Task { await drafts.sendNow(draft.id, through: store) } }.tint(.blue)
+                                    // An unconfirmed send may already be out, so it can only be retried.
+                                    if store.hasPendingRemoteSend(draft.id) {
+                                        Button("Retry Send", systemImage: "arrow.clockwise") { Task { await drafts.sendNow(draft.id, through: store) } }.tint(.blue)
+                                    } else {
+                                        Button("Cancel Send", systemImage: "xmark") { Task { await drafts.unschedule(draft.id) } }.tint(.orange)
+                                        Button("Send Now", systemImage: "paperplane") { Task { await drafts.sendNow(draft.id, through: store) } }.tint(.blue)
+                                    }
                                 }
                         }
                     } footer: {

@@ -46,6 +46,7 @@ struct SettingsView: View {
         Form {
             Section {
                 NavigationLink("Notifications") { MailNotificationSettingsView() }
+                NavigationLink("Mail Server") { MailServerSettingsView() }
                 NavigationLink("Accounts") { AccountsSettingsView() }
                 NavigationLink("Blocked Senders") { BlockedSendersView() }
                 NavigationLink("Snooze settings") { SnoozeSettingsView() }

@@ -47,6 +47,12 @@ struct MailAccount: Codable, Identifiable, Hashable {
     var address: String
     var color: AccountColor
     var signature = ""
+    var mailboxIdentities: RemovedMailboxIdentities?
+    /// Other addresses the account receives and sends as. Server accounts list them in the server config.
+    var aliases: [String]?
+    /// The main address first, then the aliases.
+    var addresses: [String] { [address] + (aliases ?? []) }
+    func owns(_ address: String) -> Bool { addresses.contains { $0.caseInsensitiveCompare(address) == .orderedSame } }
     /// Seed data for a new or reset store. The first account is the default sender for new mail.
     static let demo = [
         Self(id: "icloud", name: "Personal", address: "morgan@personal.example.com", color: .blue, signature: "Morgan"),
@@ -80,15 +86,20 @@ struct MailMessage: Codable, Identifiable, Equatable {
     var inReplyTo: String?
     /// The Message-IDs of the thread before this message, oldest first.
     var references: [String]?
-    /// The provider's own ID for this message. Nil for demo mail.
-    var remoteID: String?
+    /// The mail server holds an HTML part the phone has not loaded yet. The reader loads it on open.
+    var remoteHTML: Bool?
+    /// Where the sender wants replies, such as a contact form's visitor or a mailing list.
+    var replyTo: [String]?
+    /// The addresses the message was delivered to. A blind copy or list mail names your alias only here.
+    var deliveredTo: [String]?
 
     /// The ID other messages use to refer to this one. Messages without a Message-ID get a stable local stand-in.
     var threadingID: String { messageID ?? "<\(id.uuidString)@mailern.local>" }
-    /// A new Message-ID in the domain of the sending address.
-    static func newMessageID(from address: String) -> String {
+    /// A Message-ID in the domain of the sending address. Sent mail uses its draft's ID, so the mail server can find
+    /// a copy that already went out instead of sending it twice.
+    static func newMessageID(from address: String, id: UUID = UUID()) -> String {
         let domain = address.split(separator: "@").last.map(String.init) ?? "mailern.local"
-        return "<\(UUID().uuidString)@\(domain)>"
+        return "<\(id.uuidString.lowercased())@\(domain)>"
     }
     /// Sets the headers of a reply to `message`.
     mutating func answer(_ message: MailMessage) {
@@ -113,6 +124,10 @@ struct Conversation: Codable, Identifiable, Equatable {
     var followUp: FollowUp?
     /// Connects a group of blocked replies in Junk to the conversation they answered.
     var blockedReplySourceID: UUID?
+    /// The state the mail server last confirmed. Nil for demo mail and for changes the server has not seen.
+    var synced: RemoteState?
+    /// The fields of a PUT that may have reached the server without a saved acknowledgment.
+    var pendingRemoteWrite: Set<RemoteStateField>?
     var messages: [MailMessage]
     var latest: MailMessage { messages[messages.count - 1] }
     var effectiveSubject: String { subject(at: latest) }
