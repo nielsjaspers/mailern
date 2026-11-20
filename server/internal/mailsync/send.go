@@ -108,6 +108,7 @@ func (a *Account) Send(req SendRequest) error {
 					differentAttempt = differentAttempt || strings.HasPrefix(key, prefix)
 				}
 			}
+			differentAttempt = differentAttempt || st.RetiredDrafts[strings.ToLower(req.ID)]
 			uncertain = uncertain || differentAttempt
 		}
 		thread := st.Conversations[req.ConversationID]

@@ -480,4 +480,14 @@ func TestDraftAttemptedFromAnotherAccountIsNotSentAgain(t *testing.T) {
 	if err := h.account.Send(req); err != uncertainDelivery || len(h.lab.Submitted()) != 0 {
 		t.Fatalf("a draft attempted from another account went out again: %v, deliveries %d", err, len(h.lab.Submitted()))
 	}
+	// Removing that account from the config keeps the attempt on record.
+	if err := h.account.store.Update(func(st *State) error {
+		st.configureAccounts([]AccountConfig{h.account.cfg})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.account.Send(req); err != uncertainDelivery || len(h.lab.Submitted()) != 0 {
+		t.Fatalf("a draft attempted from a removed account went out again: %v, deliveries %d", err, len(h.lab.Submitted()))
+	}
 }

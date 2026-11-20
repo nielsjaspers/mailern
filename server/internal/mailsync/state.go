@@ -3,9 +3,12 @@ package mailsync
 import (
 	"encoding/json"
 	"errors"
+	"iter"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -117,6 +120,8 @@ type State struct {
 	Accounts      map[string]*AccountState `json:"accounts"`
 	// Deleted conversation IDs with the revision of their removal, so a phone that synced earlier drops them.
 	Tombstones map[string]uint64 `json:"tombstones"`
+	// Draft IDs that a removed or replaced account sent or tried to send. No other account sends them again.
+	RetiredDrafts map[string]bool `json:"retiredDrafts,omitempty"`
 }
 
 type Store struct {
@@ -216,6 +221,17 @@ func (st *State) configureAccounts(accounts []AccountConfig) {
 		for threadID, c := range st.Conversations {
 			if c.AccountID == id {
 				st.removeConversation(threadID)
+			}
+		}
+		for _, keys := range []iter.Seq[string]{maps.Keys(cached.Receipts), maps.Keys(cached.Submitting)} {
+			for key := range keys {
+				// A key is the Message-ID <draft-id@domain>.
+				if draft, _, ok := strings.Cut(strings.TrimPrefix(key, "<"), "@"); ok {
+					if st.RetiredDrafts == nil {
+						st.RetiredDrafts = map[string]bool{}
+					}
+					st.RetiredDrafts[draft] = true
+				}
 			}
 		}
 		delete(st.Accounts, id)
