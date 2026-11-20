@@ -136,7 +136,8 @@ func OpenStore(path string) (*Store, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		// Revisions start from the time, so they are above any revision a phone got from an earlier state at this
-		// path. A state makes far fewer than 1024 changes per millisecond, and the value stays exact in JSON.
+		// path, as long as that state made fewer than 1024 changes per millisecond of its life. The value stays
+		// exact in JSON.
 		s.state.Revision = uint64(time.Now().UnixMilli()) << 10
 		s.state.FirstRevision = s.state.Revision
 		return s, nil
