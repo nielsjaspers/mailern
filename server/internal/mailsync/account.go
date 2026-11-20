@@ -31,6 +31,8 @@ type Account struct {
 	mailboxes       map[Role]string
 	scannedUIDNext  map[Role]imap.UID
 	sentUnavailable bool
+	// Why the Sent mailbox could not be read. The other mailboxes still sync, so the pass itself succeeds.
+	sentError error
 	// Gmail has no Archive mailbox. Its All Mail holds every message, so leaving it deletes the message,
 	// and mail must be copied out of it instead of moved.
 	archiveIsAll bool
@@ -53,13 +55,7 @@ func (a *Account) Trigger() {
 
 func (a *Account) Run(ctx context.Context, poll time.Duration) {
 	for {
-		if err := a.Sync(); err != nil {
-			log.Printf("%s: sync failed: %v", a.cfg.ID, err)
-			message := err.Error()
-			a.syncError.Store(&message)
-		} else {
-			a.syncError.Store(nil)
-		}
+		a.syncAndReport()
 		select {
 		case <-ctx.Done():
 			a.mu.Lock()
@@ -69,6 +65,26 @@ func (a *Account) Run(ctx context.Context, poll time.Duration) {
 		case <-a.trigger:
 		case <-time.After(poll):
 		}
+	}
+}
+
+// syncAndReport runs one sync pass and keeps its failure, or an unreadable Sent mailbox, for the phone to show.
+func (a *Account) syncAndReport() {
+	err := a.Sync()
+	if err != nil {
+		log.Printf("%s: sync failed: %v", a.cfg.ID, err)
+	} else {
+		a.mu.Lock()
+		if a.sentError != nil {
+			err = fmt.Errorf("Sent mailbox: %w", a.sentError)
+		}
+		a.mu.Unlock()
+	}
+	if err != nil {
+		message := err.Error()
+		a.syncError.Store(&message)
+	} else {
+		a.syncError.Store(nil)
 	}
 }
 
@@ -321,6 +337,7 @@ func (a *Account) read(c *imapclient.Client, recoverKeys ...string) error {
 		if err != nil {
 			if a.unreadableSent(role, err) {
 				snapshots[role] = mailboxSnapshot{unavailable: true}
+				a.sentError = err
 				continue
 			}
 			return fmt.Errorf("%s: %w", name, err)
@@ -332,6 +349,9 @@ func (a *Account) read(c *imapclient.Client, recoverKeys ...string) error {
 	}
 	a.scannedUIDNext = make(map[Role]imap.UID, len(snapshots))
 	a.sentUnavailable = snapshots[RoleSent].unavailable
+	if !a.sentUnavailable {
+		a.sentError = nil
+	}
 	for role, snap := range snapshots {
 		if !snap.unavailable {
 			a.scannedUIDNext[role] = snap.uidNext

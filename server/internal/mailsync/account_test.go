@@ -616,7 +616,10 @@ func checkUnreadableSent(t *testing.T, configured bool) {
 	unavailable.Store(true)
 	h.deliver("INBOX", "New incoming mail", "")
 	h.deliver("Sent", "Reply outside the partial scan", root)
-	h.sync()
+	h.account.syncAndReport()
+	if message := h.account.syncError.Load(); message == nil || !strings.Contains(*message, "Sent") {
+		t.Fatal("the phone should see that the Sent mailbox could not be read")
+	}
 	if got := h.conversations(); got["New incoming mail"].ID == "" || got[sent].ID != initial[sent].ID || !slices.Contains(h.mailbox("INBOX")[inbox], imap.FlagFlagged) {
 		t.Fatalf("partial scan lost cached mail or missed Inbox changes: %+v", got)
 	}
@@ -624,7 +627,10 @@ func checkUnreadableSent(t *testing.T, configured bool) {
 		t.Fatal("partial scan allowed a permanent delete")
 	}
 	unavailable.Store(false)
-	h.sync()
+	h.account.syncAndReport()
+	if h.account.syncError.Load() != nil {
+		t.Fatal("a complete scan should clear the Sent error")
+	}
 	got := h.conversations()
 	if got[sent].ID != initial[sent].ID || got[trash].ID != initial[trash].ID || len(got[trash].Messages) != 2 {
 		t.Fatalf("Sent recovery lost a cached ID or missed the reply: %+v", got)
