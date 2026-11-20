@@ -96,6 +96,19 @@ func (a *Account) Send(req SendRequest) error {
 					break
 				}
 			}
+			// The same draft sent or attempted from another account must not go out a second time.
+			for id, other := range st.Accounts {
+				if id == a.cfg.ID {
+					continue
+				}
+				for key := range other.Receipts {
+					differentAttempt = differentAttempt || strings.HasPrefix(key, prefix)
+				}
+				for key := range other.Submitting {
+					differentAttempt = differentAttempt || strings.HasPrefix(key, prefix)
+				}
+			}
+			uncertain = uncertain || differentAttempt
 		}
 		thread := st.Conversations[req.ConversationID]
 		invalidThread = thread != nil && (thread.AccountID != a.cfg.ID || thread.Deleting)

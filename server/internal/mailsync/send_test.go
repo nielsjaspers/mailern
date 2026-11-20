@@ -464,3 +464,20 @@ func TestOversizedSendIsNotAccepted(t *testing.T) {
 		t.Fatalf("oversized send: status %d, marker %q, %s", response.StatusCode, response.Header.Get("Mailern-Submission"), message)
 	}
 }
+
+func TestDraftAttemptedFromAnotherAccountIsNotSentAgain(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	req := SendRequest{ID: "a2a16159-c8b5-47b0-8df8-d09fa58cccb0", ConversationID: "773d0952-7399-4227-91c4-438e25311b1b",
+		AccountID: h.account.cfg.ID, To: []string{"sam@example.com"}, Subject: "Plans"}
+	// The draft first went to another account, which could not confirm it.
+	if err := h.account.store.Update(func(st *State) error {
+		st.account("other").Submitting = map[string]submission{"<" + req.ID + "@other.example.com>": {MessageID: req.ID}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.account.Send(req); err != uncertainDelivery || len(h.lab.Submitted()) != 0 {
+		t.Fatalf("a draft attempted from another account went out again: %v, deliveries %d", err, len(h.lab.Submitted()))
+	}
+}
