@@ -553,8 +553,9 @@ func (s *Service) send(w http.ResponseWriter, r *http.Request) {
 	}
 	account := s.account(req.AccountID)
 	if account == nil {
-		// Without this account we cannot check the receipt for an earlier attempt.
-		http.Error(w, "unknown account", http.StatusBadRequest)
+		// Without this account we cannot check the receipt for an earlier attempt, and no retry can.
+		w.Header().Set("Mailern-Submission", "unconfirmable")
+		http.Error(w, "the sending account was removed or replaced", http.StatusConflict)
 		return
 	}
 	if err := account.Send(req); err != nil {

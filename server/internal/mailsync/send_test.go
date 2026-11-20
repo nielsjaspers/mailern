@@ -310,8 +310,9 @@ func TestQueuedSendCannotUseReplacementAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != 400 || response.Header.Get("Mailern-Submission") != "" || len(h.lab.Submitted()) != 0 {
-		t.Fatalf("unknown account must leave earlier submission unresolved: status %d, marker %q", response.StatusCode, response.Header.Get("Mailern-Submission"))
+	// An earlier attempt can never be checked, so the phone stops retrying and returns the draft to Drafts.
+	if response.StatusCode != 409 || response.Header.Get("Mailern-Submission") != "unconfirmable" || len(h.lab.Submitted()) != 0 {
+		t.Fatalf("unknown account must not be retried: status %d, marker %q", response.StatusCode, response.Header.Get("Mailern-Submission"))
 	}
 }
 
