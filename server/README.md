@@ -42,7 +42,7 @@ Only the Tailscale users in `allowedUsers` can use the service. Keep the service
 | --- | --- |
 | `stateDir` | Where the service keeps its state and its Tailscale device. Defaults to `mailern-server` in your user config directory. A relative path is relative to the config file. |
 | `pollSeconds` | How often each account checks for changes. Defaults to 60. Changes from Mailern sync at once. |
-| `windowDays` | How many days of archived and sent mail to keep. Defaults to 90. |
+| `windowDays` | How many days back the service looks for archived and sent mail it has not seen yet. Mail it already tracks stays. Defaults to 90. |
 | `accounts[].provider` | `gmail`, `icloud`, `proton-bridge`, or `imap` with `imap` and `smtp` endpoints (`host`, `port`, `security`: `tls` or `starttls`). |
 | `accounts[].aliases` | Other addresses of the account, such as Proton addresses on your own domain. Mail from them counts as yours, and Mailern can send from them. Bridge delivers mail for all of them to the same inbox. |
 | `accounts[].username` | Defaults to the address. iCloud needs its own iCloud Mail address here when `address` is a custom domain. |
