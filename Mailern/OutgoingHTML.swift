@@ -7,8 +7,6 @@ enum OutgoingHTML {
 
     static func make(_ text: NSAttributedString) -> String? {
         let light = UITraitCollection(userInterfaceStyle: .light)
-        // Stored rich text keeps the label color as it looked when written: black, or white in dark mode.
-        let defaultColors = [light, UITraitCollection(userInterfaceStyle: .dark)].map { UIColor.label.resolvedColor(with: $0) }
         let prepared = NSMutableAttributedString(attributedString: text)
         let range = NSRange(location: 0, length: prepared.length)
         // Colors resolve in light mode: in dark mode the default text color is white, which would stay white on a
@@ -16,11 +14,11 @@ enum OutgoingHTML {
         for key in [NSAttributedString.Key.foregroundColor, .backgroundColor] {
             prepared.enumerateAttribute(key, in: range) { value, part, _ in
                 guard let color = value as? UIColor else { return }
-                let resolved = color.resolvedColor(with: light)
-                if key == .foregroundColor && defaultColors.contains(where: { matches($0, resolved) }) {
+                // RichText.decode marks default text with the dynamic label color. A chosen black or white stays.
+                if key == .foregroundColor && color == .label {
                     prepared.removeAttribute(key, range: part)
                 } else {
-                    prepared.addAttribute(key, value: resolved, range: part)
+                    prepared.addAttribute(key, value: color.resolvedColor(with: light), range: part)
                 }
             }
         }
@@ -33,12 +31,5 @@ enum OutgoingHTML {
             // Text without a color still gets black from the exporter. Removing it lets the client choose.
             .replacingOccurrences(of: #"(?<![\w-])color:\s*#000000\s*;?"#, with: "", options: .regularExpression)
         return style + html[end.lowerBound...]
-    }
-
-    /// Compares color values, since decoded rich text can use another color space than UIKit's own colors.
-    private static func matches(_ a: UIColor, _ b: UIColor) -> Bool {
-        var (ar, ag, ab, aa, br, bg, bb, ba): (CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0, 0, 0, 0, 0)
-        guard a.getRed(&ar, green: &ag, blue: &ab, alpha: &aa), b.getRed(&br, green: &bg, blue: &bb, alpha: &ba) else { return false }
-        return abs(ar - br) < 0.02 && abs(ag - bg) < 0.02 && abs(ab - bb) < 0.02 && abs(aa - ba) < 0.02
     }
 }

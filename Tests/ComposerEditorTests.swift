@@ -552,15 +552,20 @@ import SwiftUI
     }
 
     func testOutgoingHTMLUsesPortableFontsAndClientTextColor() throws {
-        // Written in dark mode, so the default text color is white.
+        // Written in dark mode, where the default text color is white. The stored draft round-trips through RichText.
         let dark = UITraitCollection(userInterfaceStyle: .dark)
         let text = NSMutableAttributedString(string: "hello, world! ", attributes: [
-            .font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label.resolvedColor(with: dark)])
+            .font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.label])
         text.append(NSAttributedString(string: "red", attributes: [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.systemRed]))
+        let stored = RichText.decode(try RichText.encode(text), fallback: text.string)
         var html = ""
-        dark.performAsCurrent { html = OutgoingHTML.make(text) ?? "" }
+        dark.performAsCurrent { html = OutgoingHTML.make(stored) ?? "" }
         XCTAssertTrue(html.contains("hello, world!"))
         XCTAssertFalse(html.contains("#ffffff"), "the dark-mode text color must not reach the recipient")
+        // White text the user chose on a black highlight keeps both colors.
+        let chosen = OutgoingHTML.make(NSAttributedString(string: "inverse", attributes: [
+            .font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: UIColor.white, .backgroundColor: UIColor.black])) ?? ""
+        XCTAssertTrue(chosen.contains("color: #ffffff") && chosen.contains("background-color: #000000"), chosen)
         XCTAssertFalse(html.contains("'.S"), "private system font names must not reach the recipient")
         XCTAssertTrue(html.contains("-apple-system"))
         XCTAssertTrue(html.contains("color: #"), "an explicit color stays")
