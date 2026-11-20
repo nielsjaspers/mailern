@@ -86,8 +86,6 @@ struct MailMessage: Codable, Identifiable, Equatable {
     var inReplyTo: String?
     /// The Message-IDs of the thread before this message, oldest first.
     var references: [String]?
-    /// The provider's own ID for this message. Nil for demo mail.
-    var remoteID: String?
     /// The mail server holds an HTML part the phone has not loaded yet. The reader loads it on open.
     var remoteHTML: Bool?
     /// Where the sender wants replies, such as a contact form's visitor or a mailing list.

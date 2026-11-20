@@ -324,7 +324,7 @@ extension MailStore {
             var m = MailMessage(id: message.id, sender: message.sender, address: message.address, to: message.to ?? [],
                                 cc: message.cc ?? [], date: message.date, body: message.body, outgoing: message.outgoing,
                                 subject: message.subject, messageID: message.messageID, inReplyTo: message.inReplyTo,
-                                references: message.references, remoteID: message.id.uuidString)
+                                references: message.references)
             if let old = local?.messages.first(where: { $0.id == message.id }) {
                 m.html = old.html
                 m.richText = old.richText

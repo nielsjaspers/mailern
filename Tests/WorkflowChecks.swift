@@ -1404,7 +1404,7 @@ import os
         let filed = store.conversation(thread.id)!
         assert(replied && posts == 1 && store.discardedDraftIDs.contains(draft.id))
         assert(filed.messages.map(\.id) == [thread.messages[0].id, draft.id] && filed.workflow == .snoozed && filed.followUp == .waiting)
-        assert(filed.latest.attachments == draft.attachments && filed.latest.bcc == ["hidden@example.test"] && filed.latest.remoteID != nil)
+        assert(filed.latest.attachments == draft.attachments && filed.latest.bcc == ["hidden@example.test"])
 
         var reply = draft
         reply.id = UUID()
