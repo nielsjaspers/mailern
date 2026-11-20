@@ -1,3 +1,7 @@
+# Docs
+
+`docs/behavior.md` describes how the app behaves. Update it in the same change when behavior changes. Test details are in `docs/development.md`, and the build registry is in `docs/releasing.md`.
+
 # Simulator tests
 
 Run `scripts/check-ui.sh <disposable-simulator-id> [--only-testing <Target/Class/test>]`. Never use a simulator the user works in; create a disposable one with `xcrun simctl create` if none exists. The runner uses only that simulator. Prefer focused runs while iterating. The composer suite has a `scripts/check-composer-ui.sh` shortcut.
