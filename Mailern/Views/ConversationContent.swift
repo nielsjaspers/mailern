@@ -234,7 +234,7 @@ struct ConversationContent: View {
             ForEach(earlier.reversed()) { message in
                 Divider().padding(.horizontal, margin)
                 MessageRow(message: message, conversationID: conversation.id, threadSubject: conversation.subject, quoteStart: conversation.quoteStart(of: message), answered: conversation.answered(by: message),
-                               ownAddresses: ownAddresses, margin: margin, isPreview: true)
+                               ownAddresses: ownAddresses, margin: margin, isPreview: true, loadsHTML: false)
             }
         }
     }
@@ -259,6 +259,8 @@ private struct MessageRow: View {
     let margin: CGFloat
     /// A peek opens the conversation on any tap, so its HTML takes no touches and nothing folds or unfolds.
     var isPreview = false
+    /// Whether an open message fetches its HTML from the mail server. A peek fetches only its newest message.
+    var loadsHTML = true
     var expanded = true
     /// Folds or opens the message. Nil when it cannot fold: a single-message thread or a peek.
     var toggle: (() -> Void)?
@@ -299,8 +301,8 @@ private struct MessageRow: View {
             if !open { showsQuote = false; showsDetails = false }
         }
         // Server mail syncs as text. Its HTML loads the first time the message opens and then stays on the phone.
-        .task(id: expanded && message.remoteHTML == true) {
-            guard expanded, message.remoteHTML == true else { return }
+        .task(id: expanded && loadsHTML && message.remoteHTML == true) {
+            guard expanded, loadsHTML, message.remoteHTML == true else { return }
             await store.loadHTML(message: message.id, in: conversationID)
         }
     }
