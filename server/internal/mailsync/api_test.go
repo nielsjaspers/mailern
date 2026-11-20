@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -173,5 +174,36 @@ func TestDeliveryAddressReachesThePhone(t *testing.T) {
 	h.request("GET", "/v1/sync?since=0", nil, &resp)
 	if m := resp.Conversations[0].Messages[0]; len(m.DeliveredTo) != 1 || m.DeliveredTo[0] != "gh@example.org" {
 		t.Fatalf("the phone should learn where the message was delivered, got %v", m.DeliveredTo)
+	}
+}
+
+func TestRebuiltStateSendsEverythingAgain(t *testing.T) {
+	dir := t.TempDir()
+	old, err := OpenStore(filepath.Join(dir, "old.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var phone uint64
+	old.Read(func(st *State) { phone = st.Revision + 5 })
+	time.Sleep(2 * time.Millisecond)
+	// The state is rebuilt at the same address, and the phone still holds a revision from the old one.
+	rebuilt, err := OpenStore(filepath.Join(dir, "rebuilt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The rebuilt state has made more changes since than the phone ever saw.
+	for range 10 {
+		if err := rebuilt.Update(func(st *State) error { st.Revision++; return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var resp syncResponse
+	rebuilt.Read(func(st *State) { resp = (&Service{}).changes(st, phone) })
+	if !resp.Reset {
+		t.Fatal("a phone that synced with an earlier state needs a full sync")
+	}
+	rebuilt.Read(func(st *State) { resp = (&Service{}).changes(st, st.Revision) })
+	if resp.Reset {
+		t.Fatal("a phone that is current needs only changes")
 	}
 }

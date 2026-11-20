@@ -169,7 +169,7 @@ func (s *Service) sync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) changes(st *State, since uint64) syncResponse {
-	resp := syncResponse{Revision: st.Revision, Reset: since == 0 || since > st.Revision,
+	resp := syncResponse{Revision: st.Revision, Reset: since == 0 || since < st.FirstRevision || since > st.Revision,
 		Conversations: []wireConversation{}, Deleted: []string{}}
 	if resp.Reset {
 		since = 0

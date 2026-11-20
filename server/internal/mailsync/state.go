@@ -109,7 +109,10 @@ type AccountState struct {
 // State is everything the service keeps between restarts. Mail itself can be fetched again; this file keeps the
 // IDs the phone already uses and the workflow state no server stores, such as snooze deadlines.
 type State struct {
-	Revision      uint64                   `json:"revision"`
+	Revision uint64 `json:"revision"`
+	// The first revision of this state. A phone that synced with a state rebuilt since then holds a lower revision
+	// and gets everything again, with its old conversations dropped.
+	FirstRevision uint64                   `json:"firstRevision"`
 	Conversations map[string]*Conversation `json:"conversations"`
 	Accounts      map[string]*AccountState `json:"accounts"`
 	// Deleted conversation IDs with the revision of their removal, so a phone that synced earlier drops them.
@@ -132,8 +135,10 @@ func OpenStore(path string) (*Store, error) {
 	}}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		// Revision 0 asks for everything, so even an empty state starts above it.
-		s.state.Revision = 1
+		// Revisions start from the time, so they are above any revision a phone got from an earlier state at this
+		// path. A state makes far fewer than 1024 changes per millisecond, and the value stays exact in JSON.
+		s.state.Revision = uint64(time.Now().UnixMilli()) << 10
+		s.state.FirstRevision = s.state.Revision
 		return s, nil
 	}
 	if err != nil {
