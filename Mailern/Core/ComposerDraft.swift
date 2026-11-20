@@ -163,8 +163,11 @@ struct ComposerDraft: Codable, Equatable, Identifiable, Sendable {
         switch mode {
         case .reply, .replyAll:
             draft.answering = target.id
-            // Answering your own message goes to its other recipients, not back to you.
-            let others = target.to.filter { address in !accounts.contains { $0.owns(address) } }
+            // Answering your own message goes to its other recipients, not back to you. When you were its only To, a
+            // Reply goes to its Cc. Reply All keeps them in Cc.
+            let external = { (list: [String]) in list.filter { address in !accounts.contains { $0.owns(address) } } }
+            var others = external(target.to)
+            if case .reply = mode, others.isEmpty { others = external(target.cc) }
             // Mail from any of your addresses, also one of another connected account, counts as your own.
             let fromYou = target.outgoing || accounts.contains { $0.owns(target.address) }
             // A reply goes where the sender asked: Reply-To when the message has one, otherwise its sender.

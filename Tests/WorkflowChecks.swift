@@ -1304,6 +1304,9 @@ import os
         c.messages[0].cc = ["sam@example.test"]
         let toCc = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
         assert(toCc.to.isEmpty && toCc.cc == "sam@example.test")
+        // A plain Reply goes to the Cc instead of back to you.
+        let replyToCc = ComposerDraft.make(mode: .reply(c.id), conversation: c, accounts: store.accounts)
+        assert(replyToCc.to == "sam@example.test")
         // With only your own addresses anywhere, Reply All addresses nobody until you add someone.
         c.messages[0].cc = []
         let nobody = ComposerDraft.make(mode: .replyAll(c.id), conversation: c, accounts: store.accounts)
