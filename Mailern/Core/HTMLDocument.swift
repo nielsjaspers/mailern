@@ -18,7 +18,7 @@ struct HTMLDocument {
         // Replies quote the thread, often with a signature built on a fixed-width table that never wraps. Such a
         // signature would widen the page, and scaling it to fit would shrink every line of the conversation.
         // Only the quote markers of mail clients count. A newsletter can use a plain blockquote for a testimonial.
-        isConversation = lowered.range(of: #"<blockquote[^>]*(type\s*=\s*["']?cite|protonmail_quote)|gmail_quote|yahoo_quoted|divrplyfwdmsg|original message"#,
+        isConversation = lowered.range(of: #"<blockquote[^>]*(type\s*=\s*["']?cite|protonmail_quote)|gmail_quote|yahoo_quoted|divrplyfwdmsg|-{2,}\s*original message\s*-{2,}"#,
                                        options: .regularExpression) != nil
         hasRemoteContent = lowered.range(of: #"(src|srcset|background)\s*=\s*["']?\s*(https?:)?//|url\(\s*(["']|&quot;|&#0*39;)?\s*(https?:)?//|<link\b|@import\b"#,
                                          options: .regularExpression) != nil

@@ -466,6 +466,8 @@ import os
         assert(!newsletter.isConversation && !newsletter.html.contains("white-space: normal !important"))
         assert(HTMLDocument(#"<blockquote class="protonmail_quote">Sam</blockquote>"#, remoteContent: false).isConversation)
         assert(!HTMLDocument("<blockquote>A great read.</blockquote><table width=600></table>", remoteContent: false).isConversation)
+        assert(HTMLDocument("<div>-----Original Message-----<br>From: Sam</div>", remoteContent: false).isConversation)
+        assert(!HTMLDocument("<table width=600><tr><td>View the original message online</td></tr></table>", remoteContent: false).isConversation)
         func dark(_ html: String) -> Bool { HTMLDocument(html, remoteContent: false).adaptsToDarkMode }
         assert(dark("<style>@media (prefers-color-scheme: dark) { body { color: #fff } }</style>"))
         assert(dark(#"<meta name="color-scheme" content="light dark">"#) && dark(":root { color-scheme: dark; }"))
