@@ -56,6 +56,4 @@ Only the Tailscale users in `allowedUsers` can use the service. Keep the service
 
 `go test ./...` runs the sync, workflow, send, and API tests against the same fictional mail server.
 
-The command lives in `cmd/mailern-server`. `internal/mailsync` holds the service: config, sync, workflow placement, sending, and the API the app uses. `internal/maillab` is the fictional mail server that `demo` and the tests run.
-
 `serve -listen 127.0.0.1:PORT` serves real accounts over plain HTTP on this computer only, without Tailscale or sign-in.
