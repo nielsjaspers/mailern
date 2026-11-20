@@ -567,6 +567,10 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, errNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, uncertainDelivery):
+		// Only a definite answer tells the phone to stop retrying. A failed check can still confirm on a retry.
+		if err == uncertainDelivery {
+			w.Header().Set("Mailern-Submission", "unconfirmable")
+		}
 		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.As(err, &unsent):
 		w.Header().Set("Mailern-Submission", "not-accepted")

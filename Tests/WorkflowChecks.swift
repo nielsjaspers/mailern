@@ -1343,6 +1343,19 @@ import os
         let discarded = await drafts.discardDrafts(for: [draft.id])
         assert(!discarded && drafts.error != nil && drafts.all.contains { $0.id == draft.id })
         drafts.error = nil
+        // When the server can never confirm the send, the draft becomes an ordinary draft the user can delete.
+        store.sendRemote = { _ in throw RemoteSendUnconfirmable(message: "delivery could not be confirmed") }
+        let unconfirmable = await store.sendNow(draft)
+        assert(!unconfirmable && !store.hasPendingRemoteSend(draft.id) && store.error?.contains("back in Drafts") == true)
+        let deletable = DraftStore(url: directory.appending(path: "drafts-after.json"), mail: store)
+        let kept = await deletable.save(draft)
+        let removed = await deletable.delete(draft.id)
+        assert(kept && removed)
+        store.error = nil
+        // Another ambiguous attempt sets up the retry below.
+        store.sendRemote = { _ in throw URLError(.networkConnectionLost) }
+        _ = await store.sendNow(draft)
+        assert(store.hasPendingRemoteSend(draft.id))
         // A retry repeats the first submission, which may already be out, and says that later changes were not sent.
         var edited = draft
         edited.to = "sam@example.test"

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -315,8 +316,14 @@ func TestQueuedSendCannotUseReplacementAccount(t *testing.T) {
 func TestAmbiguousDeliveryPreservesClientSubmission(t *testing.T) {
 	response := httptest.NewRecorder()
 	writeError(response, uncertainDelivery)
-	if response.Code != 409 {
-		t.Fatalf("ambiguous delivery returned status %d", response.Code)
+	if response.Code != 409 || response.Header().Get("Mailern-Submission") != "unconfirmable" {
+		t.Fatalf("ambiguous delivery returned status %d, marker %q", response.Code, response.Header().Get("Mailern-Submission"))
+	}
+	// A failed check can still confirm on a retry, so the phone keeps retrying.
+	retry := httptest.NewRecorder()
+	writeError(retry, errors.Join(uncertainDelivery, errors.New("imap: connection reset")))
+	if retry.Code != 409 || retry.Header().Get("Mailern-Submission") != "" {
+		t.Fatalf("a failed check returned status %d, marker %q", retry.Code, retry.Header().Get("Mailern-Submission"))
 	}
 }
 

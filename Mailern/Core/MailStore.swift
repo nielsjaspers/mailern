@@ -775,6 +775,14 @@ final class MailStore {
                     report("Message could not be sent. \(error.localizedDescription)", to: onMessage)
                     return .refused
                 }
+                // Retrying cannot settle it, so the draft returns to Drafts, where it can be kept or deleted.
+                if error is RemoteSendUnconfirmable {
+                    var pending = pendingRemoteSends
+                    pending.removeValue(forKey: draft.id)
+                    guard save(replacingConversations: conversations, pendingSends: pending, onMessage: onMessage) else { return .waitingToFile }
+                    report("Delivery could not be confirmed, so the message is back in Drafts. Check with the recipient before you send it again.", to: onMessage)
+                    return .refused
+                }
                 // A connection that never opened sent nothing, so the attempt can be dropped: the draft stays
                 // scheduled and can still be canceled or edited.
                 let unreachable = (error as? URLError).map { [.notConnectedToInternet, .cannotFindHost, .cannotConnectToHost,

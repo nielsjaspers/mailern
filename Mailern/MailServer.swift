@@ -42,6 +42,9 @@ struct MailServerClient: RemoteMailboxClient {
                 if status == 503 { throw RemoteSendUnavailable(message: message) }
                 if status == 400 || status == 422 { throw RemoteSendRejection(message: message) }
             }
+            if outcome == "unconfirmable" {
+                throw RemoteSendUnconfirmable(message: String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+            }
             throw Failure(status: status, message: "Mailern did not confirm delivery (HTTP \(status)).")
         }
         guard (200..<300).contains(status) else {

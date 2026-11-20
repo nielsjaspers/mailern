@@ -232,6 +232,13 @@ struct RemoteSendUnavailable: LocalizedError {
     var errorDescription: String? { message }
 }
 
+/// The server cannot confirm an earlier attempt and will not send this message again. Only the recipient can say
+/// whether it arrived.
+struct RemoteSendUnconfirmable: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 struct RemoteSendRejection: LocalizedError {
     let message: String
     var errorDescription: String? { message }
