@@ -116,6 +116,42 @@ func queueProviderDelete(t *testing.T, h *harness, id string) {
 	}
 }
 
+func TestDeleteContinuesWhenACopyLeaves(t *testing.T) {
+	h := newHarness(t)
+	parent := h.deliver("INBOX", "Dinner", "")
+	// A reply with yourself in CC has a copy in Sent and in the Inbox.
+	own := maillab.Message("Me <"+labAddress+">", labAddress, "Re: Dinner", "Count me in.", parent, time.Now())
+	for _, mailbox := range []string{"Sent", "INBOX"} {
+		if err := h.lab.Deliver(labAddress, mailbox, own, imap.FlagSeen); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.sync()
+	h.set(h.conversations()["Dinner"], func(s *ConversationState) { s.Removal = RoleTrash })
+	h.sync()
+	if code := h.delete(h.conversations()["Dinner"], RoleTrash); code != http.StatusNoContent {
+		t.Fatalf("delete: %d", code)
+	}
+	// The Sent copy is gone before the delete runs, as after a pass that expunged it and had to wait with Trash.
+	other, err := imapclient.DialInsecure(h.imap.Address(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Login(labAddress, "lab").Wait()
+	other.Select("Sent", nil).Wait()
+	other.Store(imap.SeqSetNum(1), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close()
+	other.Expunge().Close()
+	other.Close()
+	h.sync()
+	h.sync()
+	if _, ok := h.conversations()["Dinner"]; ok {
+		t.Fatal("the deleted thread came back")
+	}
+	if n := h.count("Trash"); n != 0 {
+		t.Fatalf("delete left %d messages in Trash", n)
+	}
+}
+
 func TestProviderRevalidatesEveryDeleteMemberAfterScan(t *testing.T) {
 	h := newHarness(t)
 	root := h.deliver("Trash", "Parent stays in Trash", "")

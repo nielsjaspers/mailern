@@ -606,8 +606,8 @@ func (a *Account) merge(st *State, snapshots map[Role]mailboxSnapshot) {
 		located := byUID(role)
 		for uid, m := range located {
 			if _, ok := snap.flags[uid]; !ok {
+				// A copy that left does not cancel a delete: the delete expunges copies itself, one mailbox at a time.
 				delete(m.Locations, role)
-				locationsChanged[m.ConversationID] = true
 				changed[m.ConversationID] = true
 			}
 		}
