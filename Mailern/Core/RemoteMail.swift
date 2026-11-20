@@ -258,6 +258,8 @@ enum RemoteJSON {
     static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
+        // Attachments travel as base64, which has many slashes. Escaping each one would add a byte to it.
+        encoder.outputFormatting = .withoutEscapingSlashes
         return encoder
     }()
 }

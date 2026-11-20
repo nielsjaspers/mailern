@@ -1254,6 +1254,9 @@ import os
         await sending.value
         let canceled = await canceling.value
         assert(canceled && submitted.count == 1 && drafts.all.contains { $0.id == other && $0.sendAt == nil })
+        // Base64 attachments keep their slashes unescaped, so a message stays within the server's size limit.
+        let encoded = String(decoding: try RemoteJSON.encoder.encode(["a/b+c="]), as: UTF8.self)
+        assert(encoded == #"["a/b+c="]"#)
         print("PASS: Cancel Send during another message's slow send keeps the canceled message")
     }
 

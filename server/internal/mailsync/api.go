@@ -537,6 +537,13 @@ func (s *Service) html(w http.ResponseWriter, r *http.Request) {
 func (s *Service) send(w http.ResponseWriter, r *http.Request) {
 	var req SendRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 40<<20)).Decode(&req); err != nil {
+		// Nothing reached SMTP, so the phone can return the message to Drafts.
+		w.Header().Set("Mailern-Submission", "not-accepted")
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "the message is too large to send", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

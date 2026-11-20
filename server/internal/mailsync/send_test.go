@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -446,5 +447,19 @@ func TestUnsavedSubmissionRecordIsConfirmedUnsent(t *testing.T) {
 	if resp.StatusCode != 503 || resp.Header.Get("Mailern-Submission") != "not-accepted" || len(h.lab.Submitted()) != 0 {
 		t.Fatalf("a send whose record could not be saved never reached the provider, got %d %q",
 			resp.StatusCode, resp.Header.Get("Mailern-Submission"))
+	}
+}
+
+func TestOversizedSendIsNotAccepted(t *testing.T) {
+	h := newHarness(t)
+	body := `{"attachments":[{"data":"` + strings.Repeat("A", 41<<20) + `"}]}`
+	response, err := h.http.Client().Post(h.http.URL+"/v1/send", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	message, _ := io.ReadAll(response.Body)
+	if response.StatusCode != 400 || response.Header.Get("Mailern-Submission") != "not-accepted" || !strings.Contains(string(message), "too large") {
+		t.Fatalf("oversized send: status %d, marker %q, %s", response.StatusCode, response.Header.Get("Mailern-Submission"), message)
 	}
 }
