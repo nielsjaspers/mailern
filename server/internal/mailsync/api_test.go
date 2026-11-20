@@ -2,6 +2,7 @@ package mailsync
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -205,5 +206,26 @@ func TestRebuiltStateSendsEverythingAgain(t *testing.T) {
 	rebuilt.Read(func(st *State) { resp = (&Service{}).changes(st, st.Revision) })
 	if resp.Reset {
 		t.Fatal("a phone that is current needs only changes")
+	}
+}
+
+func TestProviderFailureReachesThePhone(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	// The provider stops answering, as when Proton Mail Bridge is not running.
+	h.lab.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { h.account.Run(ctx, time.Hour); close(done) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for h.account.syncError.Load() == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	var resp syncResponse
+	h.request("GET", "/v1/sync?since=0", nil, &resp)
+	if len(resp.Accounts) != 1 || resp.Accounts[0].SyncError == "" {
+		t.Fatalf("the phone should see that the provider failed: %+v", resp.Accounts)
 	}
 }

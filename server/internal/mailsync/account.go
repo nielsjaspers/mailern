@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
@@ -33,6 +34,9 @@ type Account struct {
 	// Gmail has no Archive mailbox. Its All Mail holds every message, so leaving it deletes the message,
 	// and mail must be copied out of it instead of moved.
 	archiveIsAll bool
+	// The latest sync failure, or nil after a sync that worked. The phone shows it, since its own pulls of the
+	// cached state keep working while the provider is unreachable.
+	syncError atomic.Pointer[string]
 }
 
 func NewAccount(cfg AccountConfig, store *Store, window time.Duration) *Account {
@@ -51,6 +55,10 @@ func (a *Account) Run(ctx context.Context, poll time.Duration) {
 	for {
 		if err := a.Sync(); err != nil {
 			log.Printf("%s: sync failed: %v", a.cfg.ID, err)
+			message := err.Error()
+			a.syncError.Store(&message)
+		} else {
+			a.syncError.Store(nil)
 		}
 		select {
 		case <-ctx.Done():

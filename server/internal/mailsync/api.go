@@ -28,6 +28,7 @@ type wireAccount struct {
 	Address           string          `json:"address"`
 	Aliases           []string        `json:"aliases,omitempty"`
 	MailboxIdentities map[Role]string `json:"mailboxIdentities,omitempty"`
+	SyncError         string          `json:"syncError,omitempty"`
 }
 
 func mailboxToken(identity mailboxIdentity) string {
@@ -176,6 +177,9 @@ func (s *Service) changes(st *State, since uint64) syncResponse {
 	}
 	for _, a := range s.accounts {
 		account := wireAccount{ID: a.cfg.ID, Name: a.cfg.Name, Address: a.cfg.Address, Aliases: a.cfg.Aliases}
+		if message := a.syncError.Load(); message != nil {
+			account.SyncError = *message
+		}
 		if state := st.Accounts[a.cfg.ID]; state != nil {
 			account.MailboxIdentities = map[Role]string{}
 			for _, role := range []Role{RoleTrash, RoleJunk} {

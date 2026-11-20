@@ -157,6 +157,8 @@ struct RemoteAccount: Decodable, Equatable {
     var address: String
     var aliases: [String]?
     var mailboxIdentities: RemovedMailboxIdentities?
+    /// The server's latest failure to sync this account with its provider.
+    var syncError: String?
 }
 
 struct RemoteMessage: Decodable, Equatable {
@@ -388,6 +390,8 @@ final class ServerSync {
     @ObservationIgnored private let store: MailStore
     private(set) var problem: String?
     private(set) var lastSync: Date?
+    /// Accounts the server could not sync with their provider, such as when Proton Mail Bridge is not running.
+    private(set) var accountProblems: [String] = []
     @ObservationIgnored private var pushTask: Task<Void, Never>?
     @ObservationIgnored private var pushRequested = false
     @ObservationIgnored private var pushGeneration: UInt64 = 0
@@ -434,6 +438,7 @@ final class ServerSync {
         try applyPull(changes, resolvingDeletes: resolving)
         needsFullSync = false
         problem = nil
+        accountProblems = changes.accounts.compactMap { account in account.syncError.map { "\(account.name): \($0)" } }
         lastSync = .now
         return true
     }

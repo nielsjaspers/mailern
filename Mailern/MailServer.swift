@@ -172,6 +172,7 @@ struct MailServerSettingsView: View {
                         Text(problem).foregroundStyle(.red).accessibilityIdentifier("mail-server-problem")
                     } else if let last = server.sync?.lastSync {
                         LabeledContent("Last sync") { Text(last, style: .relative) }
+                        ForEach(server.sync?.accountProblems ?? [], id: \.self) { Text($0).foregroundStyle(.red) }
                     } else {
                         ProgressView("Syncing")
                     }
