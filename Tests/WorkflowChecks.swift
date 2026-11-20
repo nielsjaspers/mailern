@@ -1171,6 +1171,22 @@ import os
         let sent = await store.sendNow(draft)
         let c = store.conversation(thread.id)!
         assert(sent && c.messages.count == 3 && c.workflow == .inbox && c.unread)
+        // A new message works the same way when its first sync already holds the answer.
+        var fresh = ComposerDraft.make(mode: .new, conversation: nil, accounts: store.accounts)
+        fresh.to = "sam@example.test"
+        fresh.subject = "Lunch?"
+        store.sendRemote = { prepared in
+            let answered = RemoteConversation(id: prepared.draft.id, accountID: remoteAccount.id, subject: "Lunch?", workflow: .inbox,
+                                              unread: true, pinned: false, muted: false, messages: [
+                RemoteMessage(id: prepared.draft.id, sender: "Me", address: remoteAccount.address, date: .now,
+                              body: "Lunch?", outgoing: true, subject: "Lunch?", hasHTML: false),
+                RemoteMessage(id: UUID(), sender: "Sam", address: "sam@example.test", to: [remoteAccount.address],
+                              date: .now, body: "Sure", outgoing: false, subject: "Re: Lunch?", hasHTML: false)])
+            assert(store.mergeRemote(remoteBatch(3, [answered])))
+        }
+        let sentFresh = await store.sendNow(fresh)
+        let f = store.conversation(fresh.id)!
+        assert(sentFresh && f.messages.count == 2 && f.workflow == .inbox && f.unread)
         print("PASS: a reply that arrives during a send keeps the thread in Inbox, unread")
     }
 

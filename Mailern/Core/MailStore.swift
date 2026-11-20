@@ -819,7 +819,7 @@ final class MailStore {
         }
         return PreparedRemoteSend(draft: draft, conversationID: draft.mode.replyID ?? draft.id, from: from, replyTo: source.map {
             PreparedRemoteSend.Reply(id: $0.id, threadingID: $0.threadingID, references: ($0.references ?? []) + [$0.threadingID])
-        }, incomingIDs: draft.mode.replyID.flatMap(conversation).map { $0.messages.filter { !$0.outgoing }.map(\.id) })
+        }, incomingIDs: (draft.mode.replyID.flatMap(conversation)?.messages ?? []).filter { !$0.outgoing }.map(\.id))
     }
 
     func fileReadyRemoteSends() {
