@@ -17,7 +17,9 @@ struct HTMLDocument {
         adaptsToDarkMode = lowered.range(of: #"color-scheme[^;>{]*\bdark"#, options: .regularExpression) != nil
         // Replies quote the thread, often with a signature built on a fixed-width table that never wraps. Such a
         // signature would widen the page, and scaling it to fit would shrink every line of the conversation.
-        isConversation = ["<blockquote", "gmail_quote", "divrplyfwdmsg", "original message"].contains { lowered.contains($0) }
+        // Only the quote markers of mail clients count. A newsletter can use a plain blockquote for a testimonial.
+        isConversation = lowered.range(of: #"<blockquote[^>]*(type\s*=\s*["']?cite|protonmail_quote)|gmail_quote|divrplyfwdmsg|original message"#,
+                                       options: .regularExpression) != nil
         hasRemoteContent = lowered.range(of: #"(src|srcset|background)\s*=\s*["']?\s*(https?:)?//|url\(\s*(["']|&quot;|&#0*39;)?\s*(https?:)?//|<link\b|@import\b"#,
                                          options: .regularExpression) != nil
         // Early iOS 18 WebKit opens preconnect and DNS prefetch connections without asking the content blocker.
