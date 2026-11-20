@@ -10,14 +10,14 @@ Open `Mailern.xcodeproj`, choose your development team under Signing & Capabilit
 
 ```sh
 scripts/check-workflow.sh                  # store and persistence checks, runs in seconds
-scripts/check-ui.sh <simulator-id>         # full UI suite on one disposable simulator
+scripts/check-ui.sh DISPOSABLE_SIMULATOR_ID # full UI suite on one disposable simulator
 python3 scripts/create-project.py          # regenerate the Xcode project after adding files
 ```
 
 ```sh
 cd server
-go run ./cmd/mailern-server demo           # fictional mail on http://127.0.0.1:8025
 go test ./...
+go run ./cmd/mailern-server demo           # fictional mail on http://127.0.0.1:8025
 ```
 
 To read your own mail, set up the server with [server/README.md](server/README.md), then enter its address under More → Settings → Mail Server.
