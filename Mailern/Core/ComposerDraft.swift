@@ -339,7 +339,9 @@ final class DraftStore {
                 return ids.contains(draft.id) || draft.mode.replyID.map(ids.contains) == true
             }.map(\.id))
             // A draft whose send is unconfirmed holds the only Retry Send. Opening it offers Retry Send.
-            let unconfirmed = ids.contains { self.mail?.hasPendingRemoteSend($0) == true }
+            let unconfirmed = self.all.contains { draft in
+                (ids.contains(draft.id) || draft.mode.replyID.map(ids.contains) == true) && self.mail?.hasPendingRemoteSend(draft.id) == true
+            }
             let unconfirmedMessage = "A message that may already be sent stays in Drafts. Open it to retry the send."
             if removed.isEmpty, unconfirmed {
                 self.error = unconfirmedMessage
