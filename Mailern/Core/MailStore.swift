@@ -780,7 +780,7 @@ final class MailStore {
                     var pending = pendingRemoteSends
                     pending.removeValue(forKey: draft.id)
                     guard save(replacingConversations: conversations, pendingSends: pending, onMessage: onMessage) else { return .waitingToFile }
-                    report("Delivery could not be confirmed, so the message is back in Drafts. Check with the recipient before you send it again.", to: onMessage)
+                    report("Delivery could not be confirmed, so the message is back in Drafts. Check with the recipient. Mailern will not send this draft again, so use a new message if it did not arrive.", to: onMessage)
                     return .refused
                 }
                 // A connection that never opened sent nothing, so the attempt can be dropped: the draft stays

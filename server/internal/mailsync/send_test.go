@@ -179,7 +179,8 @@ func TestSubmissionEndsAtSMTPAcceptance(t *testing.T) {
 			if code == 251 {
 				var pending bool
 				account.store.Read(func(st *State) { pending = len(st.account(account.cfg.ID).Submitting) == 1 })
-				if err != uncertainDelivery || !pending {
+				// The phone must keep retrying, so the answer is not the final one.
+				if !errors.Is(err, uncertainDelivery) || err == uncertainDelivery || !pending {
 					t.Fatalf("unexpected final reply lost submission: %v, pending %v", err, pending)
 				}
 			}

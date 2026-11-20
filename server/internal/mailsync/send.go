@@ -421,7 +421,8 @@ func (a *Account) submit(req SendRequest, raw []byte) error {
 		if errors.As(err, &rejection) && rejection.Code >= 400 && rejection.Code < 600 {
 			return errors.Join(submissionError(err), a.markSubmitting(key, nil))
 		}
-		return uncertainDelivery
+		// The mail may be out. A retry checks the Sent mailbox, so this answer is not final.
+		return errors.Join(uncertainDelivery, err)
 	}
 	return nil
 }
