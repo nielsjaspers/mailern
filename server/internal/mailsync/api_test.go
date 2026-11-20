@@ -165,7 +165,7 @@ func TestHTMLRejectsStaleMailboxIdentity(t *testing.T) {
 
 func TestDeliveryAddressReachesThePhone(t *testing.T) {
 	h := newHarness(t)
-	raw := "Delivered-To: Niels <gh@example.org>\r\nFrom: List <list@example.com>\r\nTo: list@example.com\r\nSubject: Release\r\n" +
+	raw := "Delivered-To: Morgan <hello@example.org>\r\nFrom: List <list@example.com>\r\nTo: list@example.com\r\nSubject: Release\r\n" +
 		"Message-ID: <release@example.com>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHello\r\n"
 	if err := h.lab.Deliver(labAddress, "INBOX", []byte(raw)); err != nil {
 		t.Fatal(err)
@@ -173,7 +173,7 @@ func TestDeliveryAddressReachesThePhone(t *testing.T) {
 	h.sync()
 	var resp syncResponse
 	h.request("GET", "/v1/sync?since=0", nil, &resp)
-	if m := resp.Conversations[0].Messages[0]; len(m.DeliveredTo) != 1 || m.DeliveredTo[0] != "gh@example.org" {
+	if m := resp.Conversations[0].Messages[0]; len(m.DeliveredTo) != 1 || m.DeliveredTo[0] != "hello@example.org" {
 		t.Fatalf("the phone should learn where the message was delivered, got %v", m.DeliveredTo)
 	}
 }
