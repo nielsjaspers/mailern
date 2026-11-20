@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// Talks to mailern-server over HTTPS on the tailnet, or plain HTTP on this machine during development.
 struct MailServerClient: RemoteMailboxClient {
@@ -128,7 +129,10 @@ extension ServerSync {
             html: draft.richText.flatMap { OutgoingHTML.make(RichText.decode($0, fallback: draft.text)) },
             inReplyTo: target?.threadingID,
             references: target?.references,
-            attachments: draft.attachments.map { .init(name: $0.name, contentType: $0.contentType, data: $0.data) },
+            // Attachments store a type identifier such as public.jpeg. Mail needs a MIME type.
+            attachments: draft.attachments.map {
+                .init(name: $0.name, contentType: UTType($0.contentType)?.preferredMIMEType ?? "application/octet-stream", data: $0.data)
+            },
             from: draft.sender(in: prepared.from))
     }
 }
